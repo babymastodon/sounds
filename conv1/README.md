@@ -1,6 +1,6 @@
 # conv1
 
-`conv1` renders a reproducible matrix of long-form, creative convolutions on the CPU. Its 24 ambient-oriented inputs range from 1 to 30 seconds. Every unordered pair, including self-convolutions, is rendered once: 300 unique WAVs represent all 576 cells in the symmetric 24×24 matrix.
+`conv1` renders a reproducible matrix of long-form, creative convolutions on the CPU. Its 48 ambient-oriented inputs range from 1 to 54 seconds. Every unordered pair, including self-convolutions, is rendered once: 1,176 unique WAVs represent all 2,304 cells in the symmetric 48×48 matrix.
 
 ## Run the complete pipeline
 
@@ -10,7 +10,7 @@ Requirements: a current Rust toolchain, `curl`, FFmpeg/FFprobe, `awk`, and `sha2
 ./scripts/render_all.sh
 ```
 
-Downloaded and prepared inputs are written under `samples/`; rendered audio and reports are written under `outputs/`. Both media trees are ignored by Git. [`sources.tsv`](sources.tsv) is the authoritative provenance manifest and includes each acoustic domain, creator, source page, download URL, license, excerpt offset, and target duration. The manifest loader refuses a corpus unless at least half of its entries have the explicit `industrial` domain; the checked-in set has 13 industrial recordings out of 24.
+Downloaded and prepared inputs are written under `samples/`; rendered audio and reports are written under `outputs/`. Both media trees are ignored by Git. [`sources.tsv`](sources.tsv) is the authoritative provenance manifest and includes each acoustic domain, creator, source page, download URL, license, excerpt offset, and target duration. The manifest loader requires exactly 48 distinct sources, including exactly 24 lasting over 30 through 60 seconds, and refuses a corpus unless at least half of its entries have the explicit `industrial` domain. The checked-in set has 25 industrial recordings out of 48.
 
 To render or verify separately:
 
@@ -39,7 +39,7 @@ Pairs are grouped by FFT length. Each input spectrum is calculated once per size
 
 ## Output and quality gates
 
-`outputs/matrix.csv` is the complete ordered 24×24 lookup table. Because convolution is commutative, mirrored cells reference the same canonical WAV. `outputs/metrics.csv` records measurements for each unique file, and `outputs/verification.json` summarizes the exhaustive post-render audit.
+`outputs/matrix.csv` is the complete ordered 48×48 lookup table. Because convolution is commutative, mirrored cells reference the same canonical WAV. `outputs/metrics.csv` records measurements for each unique file, and `outputs/verification.json` summarizes the exhaustive post-render audit.
 
 Verification rejects any result with:
 
@@ -49,10 +49,6 @@ Verification rejects any result with:
 - RMS outside −30 to −10 dBFS;
 - absolute DC offset above 0.005;
 - the wrong channel count, sample rate, or PCM format.
-
-### Latest full-run audit
-
-The complete pipeline was force-rendered and verified on 2026-07-19 with 8 logical CPU cores. It produced 300 distinct canonical WAVs (694 MiB) for all 576 ordered matrix cells in 3.09 seconds, with peak resident memory of 519,648 KiB. The checked-in manifest contributed 13 industrial inputs out of 24. Every matrix path resolved, all 300 WAVs had distinct SHA-256 hashes, RMS ranged from -20.49 to -20.11 dBFS, maximum peak was 0.797, and no output contained clipping or non-finite samples. The generated `outputs/verification.json` records the machine-readable result.
 
 ## Source licensing
 

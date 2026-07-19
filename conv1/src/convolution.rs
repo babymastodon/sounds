@@ -152,12 +152,12 @@ mod tests {
 
     #[test]
     fn job_count_is_upper_triangle_including_diagonal() {
-        let clips = (0..24)
+        let clips = (0..48)
             .map(|index| AudioClip {
                 id: format!("clip_{index}"),
                 samples: vec![1.0],
             })
             .collect::<Vec<_>>();
-        assert_eq!(make_jobs(&clips).len(), 300);
+        assert_eq!(make_jobs(&clips).len(), 1_176);
     }
 }

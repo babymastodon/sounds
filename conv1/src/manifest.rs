@@ -39,8 +39,8 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
                 entry.id
             );
         }
-        if !(1.0..=30.0).contains(&entry.seconds) {
-            bail!("{} has duration outside 1..=30 seconds", entry.id);
+        if !(1.0..=60.0).contains(&entry.seconds) {
+            bail!("{} has duration outside 1..=60 seconds", entry.id);
         }
         if entry.trim_start < 0.0 {
             bail!("{} has a negative trim offset", entry.id);
@@ -54,11 +54,15 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
         entries.push(entry);
     }
 
-    if entries.len() < 20 {
-        bail!(
-            "expected a couple dozen sources; found only {}",
-            entries.len()
-        );
+    if entries.len() != 48 {
+        bail!("expected exactly 48 sources; found {}", entries.len());
+    }
+    let long_count = entries
+        .iter()
+        .filter(|entry| entry.seconds > 30.0 && entry.seconds <= 60.0)
+        .count();
+    if long_count != 24 {
+        bail!("expected exactly 24 sources over 30 through 60 seconds; found {long_count}");
     }
     let providers = entries
         .iter()
@@ -71,8 +75,8 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
         .iter()
         .map(|entry| entry.category.as_str())
         .collect::<HashSet<_>>();
-    if categories.len() < 20 {
-        bail!("expected at least twenty distinct ambient categories");
+    if categories.len() < 40 {
+        bail!("expected at least forty distinct ambient categories");
     }
     let industrial_count = entries
         .iter()
@@ -104,5 +108,39 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
             }
         }
     }
+    let download_urls = entries
+        .iter()
+        .map(|entry| entry.download_url.as_str())
+        .collect::<HashSet<_>>();
+    if download_urls.len() != entries.len() {
+        bail!("every source must have a distinct download URL");
+    }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_in_manifest_has_the_required_shape() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("sources.tsv");
+        let entries = load_manifest(&path).unwrap();
+
+        assert_eq!(entries.len(), 48);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.seconds > 30.0 && entry.seconds <= 60.0)
+                .count(),
+            24
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.domain == "industrial")
+                .count(),
+            25
+        );
+    }
 }

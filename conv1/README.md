@@ -50,6 +50,10 @@ Verification rejects any result with:
 - absolute DC offset above 0.005;
 - the wrong channel count, sample rate, or PCM format.
 
+### Latest full-run audit
+
+The expanded pipeline was force-rendered and verified on 2026-07-19 with 8 logical CPU cores. It produced 1,176 distinct canonical WAVs (5.8 GiB) for all 2,304 ordered matrix cells. Rendering took 24.4 seconds and the complete render-plus-verification process took 39.54 seconds, with peak resident memory of 1,754,468 KiB. The manifest contributed 25 industrial inputs out of 48. Every matrix path resolved, all 48 downloaded inputs and all 1,176 WAVs had distinct SHA-256 hashes, RMS ranged from -21.07 to -20.09 dBFS, maximum peak was 0.890, and no output contained clipping or non-finite samples. The generated `outputs/verification.json` records the machine-readable result.
+
 ## Source licensing
 
 The set draws from four independent providers and many acoustic domains:

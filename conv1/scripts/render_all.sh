@@ -8,4 +8,4 @@ cd "$project_dir"
 ./scripts/download_samples.sh
 cargo run --release -- render --jobs "$jobs"
 cargo run --release -- verify --jobs "$jobs"
-
+cargo run --release -- concat

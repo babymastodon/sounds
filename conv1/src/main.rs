@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use conv1::{RenderOptions, VerifyOptions, render_matrix, verify_matrix};
+use conv1::{
+    ConcatOptions, RenderOptions, VerifyOptions, concatenate_master, render_matrix, verify_matrix,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -40,6 +42,22 @@ enum Command {
         #[arg(long)]
         jobs: Option<usize>,
     },
+    /// Concatenate every canonical WAV into FLAC and AAC masters.
+    Concat {
+        #[arg(long, default_value = "sources.tsv")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "outputs/metrics.csv")]
+        metrics: PathBuf,
+        #[arg(long, default_value = "outputs/final")]
+        output_dir: PathBuf,
+        #[arg(long, default_value_t = 5.0)]
+        crossfade_seconds: f64,
+        #[arg(long, default_value_t = 192)]
+        aac_bitrate_kbps: u32,
+        /// Rebuild both final encodings even if they already exist.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -69,6 +87,21 @@ fn main() -> Result<()> {
             input_dir,
             output_dir,
             jobs: jobs.unwrap_or_else(default_jobs),
+        }),
+        Command::Concat {
+            manifest,
+            metrics,
+            output_dir,
+            crossfade_seconds,
+            aac_bitrate_kbps,
+            force,
+        } => concatenate_master(ConcatOptions {
+            manifest,
+            metrics,
+            output_dir,
+            crossfade_seconds,
+            aac_bitrate_kbps,
+            force,
         }),
     }
 }

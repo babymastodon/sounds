@@ -18,9 +18,12 @@ To render or verify separately:
 ./scripts/download_samples.sh
 cargo run --release -- render
 cargo run --release -- verify
+cargo run --release -- concat
 ```
 
 Set `DOWNLOAD_JOBS` to control concurrent downloads and `CONV_JOBS` (or `--jobs`) to control parallel convolution renders. Existing valid WAVs are reused, making interrupted renders resumable. Pass `--force` to render everything again.
+
+The `concat` stage reads the 1,176 canonical WAVs in matrix order and streams them through linear crossfades into `outputs/final/final_mix.flac` and a 192 kbit/s AAC `outputs/final/final_mix.m4a`. It uses a full five-second crossfade whenever both the accumulated master and incoming clip are long enough; for the six convolution files shorter than five seconds, it uses the complete shorter clip as the longest physically possible fade. No oversized intermediate WAV is created. `outputs/final/timeline.csv` records every clip's start time and actual incoming fade, while `outputs/final/concat.json` records the encoding audit. Use `concat --force` to rebuild existing masters.
 
 ## Algorithm
 

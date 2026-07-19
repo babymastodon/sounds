@@ -14,7 +14,7 @@ use crate::manifest::load_manifest;
 const FLAC_NAME: &str = "final_mix.flac";
 const AAC_NAME: &str = "final_mix.m4a";
 const OPUS_NAME: &str = "final_mix.opus";
-const OPUS_16K_NAME: &str = "final_mix_16k.opus";
+const OPUS_32K_NAME: &str = "final_mix_32k.opus";
 const RF64_NAME: &str = "final_mix.rf64.wav";
 const RF64_HEADER_BYTES: u64 = 80;
 
@@ -73,14 +73,14 @@ struct ConcatReport {
     flac: EncodedFileReport,
     aac: EncodedFileReport,
     opus: EncodedFileReport,
-    opus_16k: EncodedFileReport,
+    opus_32k: EncodedFileReport,
 }
 
 struct EncodingTargets<'a> {
     flac: &'a Path,
     aac: &'a Path,
-    opus_64k: &'a Path,
-    opus_16k: &'a Path,
+    opus_main: &'a Path,
+    opus_32k: &'a Path,
 }
 
 pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
@@ -140,7 +140,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     let flac_path = options.output_dir.join(FLAC_NAME);
     let aac_path = options.output_dir.join(AAC_NAME);
     let opus_path = options.output_dir.join(OPUS_NAME);
-    let opus_16k_path = options.output_dir.join(OPUS_16K_NAME);
+    let opus_32k_path = options.output_dir.join(OPUS_32K_NAME);
 
     if !rf64_path.is_file() || options.force {
         assemble_sequence(
@@ -157,13 +157,13 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     let rf64 = probe_encoding(&rf64_path, "pcm_s16le", output_seconds)?;
 
     let all_encodings_exist =
-        flac_path.is_file() && aac_path.is_file() && opus_path.is_file() && opus_16k_path.is_file();
+        flac_path.is_file() && aac_path.is_file() && opus_path.is_file() && opus_32k_path.is_file();
     if !all_encodings_exist || options.force {
         let targets = EncodingTargets {
             flac: &flac_path,
             aac: &aac_path,
-            opus_64k: &opus_path,
-            opus_16k: &opus_16k_path,
+            opus_main: &opus_path,
+            opus_32k: &opus_32k_path,
         };
         encode_outputs(
             &rf64_path,
@@ -179,7 +179,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
     let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
-    let opus_16k = probe_encoding(&opus_16k_path, "opus", output_seconds)?;
+    let opus_32k = probe_encoding(&opus_32k_path, "opus", output_seconds)?;
     let report = ConcatReport {
         status: "pass",
         input_files: rows.len(),
@@ -196,7 +196,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         flac,
         aac,
         opus,
-        opus_16k,
+        opus_32k,
     };
     fs::write(
         options.output_dir.join("concat.json"),
@@ -363,12 +363,12 @@ fn encode_outputs(
 ) -> Result<()> {
     let temporary_flac = targets.flac.with_file_name("final_mix.part.flac");
     let temporary_aac = targets.aac.with_file_name("final_mix.part.m4a");
-    let temporary_opus = targets.opus_64k.with_file_name("final_mix.part.opus");
-    let temporary_opus_16k = targets.opus_16k.with_file_name("final_mix_16k.part.opus");
+    let temporary_opus = targets.opus_main.with_file_name("final_mix.part.opus");
+    let temporary_opus_32k = targets.opus_32k.with_file_name("final_mix_32k.part.opus");
     let rebuild_flac = force || !targets.flac.is_file();
     let rebuild_aac = force || !targets.aac.is_file();
-    let rebuild_opus = force || !targets.opus_64k.is_file();
-    let rebuild_opus_16k = force || !targets.opus_16k.is_file();
+    let rebuild_opus = force || !targets.opus_main.is_file();
+    let rebuild_opus_32k = force || !targets.opus_32k.is_file();
     let mut jobs = Vec::new();
 
     if rebuild_flac {
@@ -403,7 +403,7 @@ fn encode_outputs(
             .with_context(|| format!("start parallel AAC encoder {aac_encoder}"))?;
         jobs.push(("AAC", child, temporary_aac, targets.aac.to_owned()));
     }
-    let opus_encoder = if rebuild_opus || rebuild_opus_16k {
+    let opus_encoder = if rebuild_opus || rebuild_opus_32k {
         Some(preferred_opus_encoder()?)
     } else {
         None
@@ -416,21 +416,21 @@ fn encode_outputs(
             opus_encoder.as_deref().unwrap_or("libopus"),
             opus_bitrate_kbps,
         )?;
-        jobs.push(("Opus", child, temporary_opus, targets.opus_64k.to_owned()));
+        jobs.push(("Opus", child, temporary_opus, targets.opus_main.to_owned()));
     }
-    if rebuild_opus_16k {
-        remove_if_present(&temporary_opus_16k)?;
+    if rebuild_opus_32k {
+        remove_if_present(&temporary_opus_32k)?;
         let child = spawn_opus(
             rf64_path,
-            &temporary_opus_16k,
+            &temporary_opus_32k,
             opus_encoder.as_deref().unwrap_or("libopus"),
-            16,
+            32,
         )?;
         jobs.push((
-            "Opus 16k",
+            "Opus 32k",
             child,
-            temporary_opus_16k,
-            targets.opus_16k.to_owned(),
+            temporary_opus_32k,
+            targets.opus_32k.to_owned(),
         ));
     }
     let names = jobs

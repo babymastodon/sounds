@@ -62,8 +62,8 @@ Verification rejects:
 
 - lossless FLAC at compression level 3;
 - 192 kbit/s AAC/M4A;
-- stereo VBR Opus at 64 kbit/s;
-- stereo VBR Opus at 16 kbit/s.
+- stereo VBR Opus at 128 kbit/s;
+- stereo VBR Opus at 32 kbit/s.
 
 `outputs/final/concat.json` records codec, duration, channel count, and file-size verification. Without `--force`, valid existing final stages are reused and only missing encodings are generated.
 

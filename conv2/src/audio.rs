@@ -52,6 +52,8 @@ pub struct StereoMetrics {
     pub right_peak: f32,
     pub right_rms_dbfs: f32,
     pub right_dc_offset: f32,
+    pub stereo_difference_rms: f32,
+    pub stereo_difference_rms_dbfs: f32,
 }
 
 pub fn read_prepared_clip(id: &str, path: &Path, expected_seconds: f64) -> Result<AudioClip> {
@@ -260,6 +262,17 @@ pub fn measure_stereo(audio: &StereoAudio) -> Result<StereoMetrics> {
     let left = measure(&audio.left);
     let right = measure(&audio.right);
     let rms = ((left.rms * left.rms + right.rms * right.rms) * 0.5).sqrt();
+    let difference_rms = (audio
+        .left
+        .iter()
+        .zip(&audio.right)
+        .map(|(&left, &right)| {
+            let difference = f64::from(left - right);
+            difference * difference
+        })
+        .sum::<f64>()
+        / audio.left.len() as f64)
+        .sqrt() as f32;
     Ok(StereoMetrics {
         frames: audio.left.len(),
         duration_seconds: audio.left.len() as f64 / SAMPLE_RATE as f64,
@@ -275,6 +288,8 @@ pub fn measure_stereo(audio: &StereoAudio) -> Result<StereoMetrics> {
         right_peak: right.peak,
         right_rms_dbfs: right.rms_dbfs,
         right_dc_offset: right.dc_offset,
+        stereo_difference_rms: difference_rms,
+        stereo_difference_rms_dbfs: 20.0 * difference_rms.max(1.0e-12).log10(),
     })
 }
 

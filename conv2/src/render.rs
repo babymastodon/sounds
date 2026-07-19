@@ -55,6 +55,8 @@ struct PairMetrics {
     right_peak: f32,
     right_rms_dbfs: f32,
     right_dc_offset: f32,
+    stereo_difference_rms: f32,
+    stereo_difference_rms_dbfs: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +76,9 @@ struct VerificationReport {
     maximum_output_rms_dbfs: f32,
     maximum_output_peak: f32,
     maximum_left_right_rms_delta_db: f32,
+    minimum_non_self_difference_rms_dbfs: f32,
+    maximum_non_self_difference_rms_dbfs: f32,
+    verified_dual_mono_self_pairs: usize,
 }
 
 pub fn render_matrix(options: RenderOptions) -> Result<()> {
@@ -199,6 +204,33 @@ fn verify_loaded(
         bail!("found {actual_wavs} WAVs, expected exactly {}", jobs.len());
     }
 
+    let non_self_difference = jobs
+        .iter()
+        .zip(&metrics)
+        .filter(|(job, _)| job.left != job.right)
+        .map(|(_, metric)| metric.stereo_difference_rms_dbfs)
+        .collect::<Vec<_>>();
+    let dual_mono_self_pairs = jobs
+        .iter()
+        .zip(&metrics)
+        .filter(|(job, metric)| job.left == job.right && metric.stereo_difference_rms_dbfs <= -80.0)
+        .count();
+    let expected_self_pairs = sources.len();
+    if dual_mono_self_pairs != expected_self_pairs {
+        bail!(
+            "only {dual_mono_self_pairs}/{expected_self_pairs} self-pairs are verified dual-mono"
+        );
+    }
+    let minimum_non_self_difference = non_self_difference
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    if minimum_non_self_difference <= -80.0 {
+        bail!(
+            "a non-self pair is effectively dual-mono ({minimum_non_self_difference:.1} dBFS difference)"
+        );
+    }
+
     let report = VerificationReport {
         status: "pass",
         source_count: sources.len(),
@@ -233,6 +265,12 @@ fn verify_loaded(
             .iter()
             .map(|metric| (metric.left_rms_dbfs - metric.right_rms_dbfs).abs())
             .fold(0.0, f32::max),
+        minimum_non_self_difference_rms_dbfs: minimum_non_self_difference,
+        maximum_non_self_difference_rms_dbfs: non_self_difference
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max),
+        verified_dual_mono_self_pairs: dual_mono_self_pairs,
     };
     let report_path = output_dir.join("verification.json");
     fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
@@ -290,6 +328,8 @@ fn pair_metrics(
         right_peak: audio.right_peak,
         right_rms_dbfs: audio.right_rms_dbfs,
         right_dc_offset: audio.right_dc_offset,
+        stereo_difference_rms: audio.stereo_difference_rms,
+        stereo_difference_rms_dbfs: audio.stereo_difference_rms_dbfs,
     }
 }
 
@@ -367,6 +407,8 @@ mod tests {
             right_peak: 0.5,
             right_rms_dbfs: -20.0,
             right_dc_offset: 0.0,
+            stereo_difference_rms: 0.1,
+            stereo_difference_rms_dbfs: -20.0,
         };
         let mut writer = csv::Writer::from_writer(Vec::new());
         writer.serialize(metrics).unwrap();

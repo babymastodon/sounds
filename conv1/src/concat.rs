@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -13,6 +13,8 @@ use crate::manifest::load_manifest;
 
 const FLAC_NAME: &str = "final_mix.flac";
 const AAC_NAME: &str = "final_mix.m4a";
+const RF64_NAME: &str = "final_mix.rf64.wav";
+const RF64_HEADER_BYTES: u64 = 80;
 
 #[derive(Clone, Debug)]
 pub struct ConcatOptions {
@@ -62,6 +64,7 @@ struct ConcatReport {
     output_frames: u64,
     output_duration_seconds: f64,
     aac_bitrate_kbps: u32,
+    rf64: EncodedFileReport,
     flac: EncodedFileReport,
     aac: EncodedFileReport,
 }
@@ -116,23 +119,27 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         &transitions,
     )?;
 
+    let rf64_path = options.output_dir.join(RF64_NAME);
     let flac_path = options.output_dir.join(FLAC_NAME);
     let aac_path = options.output_dir.join(AAC_NAME);
-    let both_exist = flac_path.is_file() && aac_path.is_file();
-    if (flac_path.exists() || aac_path.exists()) && !both_exist && !options.force {
-        bail!("only one final encoding exists; pass --force to rebuild both");
-    }
 
-    if !both_exist || options.force {
-        encode_sequence(
+    if !rf64_path.is_file() || options.force {
+        assemble_sequence(
             input_root,
             &rows,
             &transitions,
+            requested_frames,
             output_frames,
-            &flac_path,
-            &aac_path,
-            options.aac_bitrate_kbps,
+            &rf64_path,
         )?;
+    } else {
+        eprintln!("reusing existing RF64 PCM master");
+    }
+    let rf64 = probe_encoding(&rf64_path, "pcm_s16le", output_seconds)?;
+
+    let both_encodings_exist = flac_path.is_file() && aac_path.is_file();
+    if !both_encodings_exist || options.force {
+        encode_outputs(&rf64_path, &flac_path, &aac_path, options.aac_bitrate_kbps)?;
     } else {
         eprintln!("reusing existing FLAC and AAC encodings");
     }
@@ -149,6 +156,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         output_frames,
         output_duration_seconds: output_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
+        rf64,
         flac,
         aac,
     };
@@ -230,43 +238,20 @@ fn write_timeline(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn encode_sequence(
+fn assemble_sequence(
     input_root: &Path,
     rows: &[MetricsRow],
     transitions: &[usize],
+    requested_frames: usize,
     expected_output_frames: u64,
-    flac_path: &Path,
-    aac_path: &Path,
-    aac_bitrate_kbps: u32,
+    rf64_path: &Path,
 ) -> Result<()> {
-    let temporary_flac = flac_path.with_file_name("final_mix.part.flac");
-    let temporary_aac = aac_path.with_file_name("final_mix.part.m4a");
-    for temporary in [&temporary_flac, &temporary_aac] {
-        if temporary.exists() {
-            fs::remove_file(temporary)?;
-        }
+    let temporary_rf64 = rf64_path.with_file_name("final_mix.part.rf64.wav");
+    if temporary_rf64.exists() {
+        fs::remove_file(&temporary_rf64)?;
     }
-
-    let mut child = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(["-f", "f32le", "-ar", "48000", "-ac", "1"])
-        .args(["-i", "pipe:0"])
-        .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "8"])
-        .arg(&temporary_flac)
-        .args(["-map", "0:a:0", "-c:a", "aac", "-b:a"])
-        .arg(format!("{aac_bitrate_kbps}k"))
-        .args(["-movflags", "+faststart"])
-        .arg(&temporary_aac)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("start ffmpeg FLAC/AAC encoder")?;
-    let mut encoder = child.stdin.take().context("open ffmpeg input pipe")?;
+    let mut master = Rf64Writer::create(&temporary_rf64, expected_output_frames)?;
     let mut tail = Vec::<f32>::new();
-    let requested_frames = transitions.iter().copied().max().unwrap_or(0);
-    let mut written_frames = 0_u64;
 
     for (index, row) in rows.iter().enumerate() {
         let path = input_root.join(&row.path);
@@ -291,8 +276,7 @@ fn encode_sequence(
         };
 
         let flush_frames = combined.len().saturating_sub(requested_frames);
-        write_f32le(&mut encoder, &combined[..flush_frames])?;
-        written_frames += flush_frames as u64;
+        master.write_samples(&combined[..flush_frames])?;
         tail.clear();
         tail.extend_from_slice(&combined[flush_frames..]);
         combined.clear();
@@ -302,20 +286,72 @@ fn encode_sequence(
             eprintln!("concatenated {completed}/{} WAVs", rows.len());
         }
     }
-    write_f32le(&mut encoder, &tail)?;
-    written_frames += tail.len() as u64;
-    if written_frames != expected_output_frames {
-        bail!("wrote {written_frames} master frames, expected {expected_output_frames}");
-    }
-    drop(encoder);
+    master.write_samples(&tail)?;
+    master.finalize()?;
+    fs::rename(&temporary_rf64, rf64_path)?;
+    Ok(())
+}
 
-    let status = child.wait().context("wait for ffmpeg encoders")?;
-    if !status.success() {
-        bail!("ffmpeg encoding failed with {status}");
+fn encode_outputs(
+    rf64_path: &Path,
+    flac_path: &Path,
+    aac_path: &Path,
+    aac_bitrate_kbps: u32,
+) -> Result<()> {
+    let temporary_flac = flac_path.with_file_name("final_mix.part.flac");
+    let temporary_aac = aac_path.with_file_name("final_mix.part.m4a");
+    for temporary in [&temporary_flac, &temporary_aac] {
+        if temporary.exists() {
+            fs::remove_file(temporary)?;
+        }
+    }
+
+    let aac_encoder = preferred_aac_encoder()?;
+    eprintln!("encoding FLAC and AAC in parallel (FLAC level 3, AAC via {aac_encoder})");
+    let mut flac = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(rf64_path)
+        .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"])
+        .arg(&temporary_flac)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("start parallel FLAC encoder")?;
+    let mut aac = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(rf64_path)
+        .args(["-map", "0:a:0", "-c:a"])
+        .arg(&aac_encoder)
+        .arg("-b:a")
+        .arg(format!("{aac_bitrate_kbps}k"))
+        .arg(&temporary_aac)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("start parallel AAC encoder")?;
+
+    let flac_status = flac.wait().context("wait for FLAC encoder")?;
+    let aac_status = aac.wait().context("wait for AAC encoder")?;
+    if !flac_status.success() || !aac_status.success() {
+        bail!("parallel encoding failed: FLAC={flac_status}, AAC={aac_status}");
     }
     fs::rename(&temporary_flac, flac_path)?;
     fs::rename(&temporary_aac, aac_path)?;
     Ok(())
+}
+
+fn preferred_aac_encoder() -> Result<String> {
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-h", "encoder=libfdk_aac"])
+        .output()
+        .context("inspect ffmpeg AAC encoders")?;
+    Ok(if output.status.success() {
+        "libfdk_aac".to_owned()
+    } else {
+        "aac".to_owned()
+    })
 }
 
 fn read_pcm16(path: &Path, expected_frames: usize) -> Result<Vec<f32>> {
@@ -361,15 +397,81 @@ fn append_linear_crossfade(output: &mut Vec<f32>, left: &[f32], right: &[f32]) {
     );
 }
 
-fn write_f32le(writer: &mut impl Write, samples: &[f32]) -> Result<()> {
+struct Rf64Writer {
+    writer: BufWriter<File>,
+    expected_frames: u64,
+    written_frames: u64,
+}
+
+impl Rf64Writer {
+    fn create(path: &Path, expected_frames: u64) -> Result<Self> {
+        let file = File::create(path).with_context(|| format!("create RF64 {}", path.display()))?;
+        let mut writer = BufWriter::new(file);
+        write_rf64_header(&mut writer, expected_frames)?;
+        Ok(Self {
+            writer,
+            expected_frames,
+            written_frames: 0,
+        })
+    }
+
+    fn write_samples(&mut self, samples: &[f32]) -> Result<()> {
+        write_pcm16le(&mut self.writer, samples)?;
+        self.written_frames += samples.len() as u64;
+        Ok(())
+    }
+
+    fn finalize(mut self) -> Result<()> {
+        if self.written_frames != self.expected_frames {
+            bail!(
+                "wrote {} master frames, expected {}",
+                self.written_frames,
+                self.expected_frames
+            );
+        }
+        self.writer.flush().context("flush RF64 master")?;
+        Ok(())
+    }
+}
+
+fn write_rf64_header(writer: &mut impl Write, frames: u64) -> Result<()> {
+    let data_bytes = frames.checked_mul(2).context("RF64 data size overflow")?;
+    let riff_size = data_bytes
+        .checked_add(RF64_HEADER_BYTES - 8)
+        .context("RF64 RIFF size overflow")?;
+
+    writer.write_all(b"RF64")?;
+    writer.write_all(&u32::MAX.to_le_bytes())?;
+    writer.write_all(b"WAVE")?;
+    writer.write_all(b"ds64")?;
+    writer.write_all(&28_u32.to_le_bytes())?;
+    writer.write_all(&riff_size.to_le_bytes())?;
+    writer.write_all(&data_bytes.to_le_bytes())?;
+    writer.write_all(&frames.to_le_bytes())?;
+    writer.write_all(&0_u32.to_le_bytes())?;
+    writer.write_all(b"fmt ")?;
+    writer.write_all(&16_u32.to_le_bytes())?;
+    writer.write_all(&1_u16.to_le_bytes())?;
+    writer.write_all(&1_u16.to_le_bytes())?;
+    writer.write_all(&SAMPLE_RATE.to_le_bytes())?;
+    writer.write_all(&(SAMPLE_RATE * 2).to_le_bytes())?;
+    writer.write_all(&2_u16.to_le_bytes())?;
+    writer.write_all(&16_u16.to_le_bytes())?;
+    writer.write_all(b"data")?;
+    writer.write_all(&u32::MAX.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_pcm16le(writer: &mut impl Write, samples: &[f32]) -> Result<()> {
     const CHUNK_FRAMES: usize = 16_384;
-    let mut bytes = Vec::with_capacity(CHUNK_FRAMES * size_of::<f32>());
+    let mut bytes = Vec::with_capacity(CHUNK_FRAMES * size_of::<i16>());
     for chunk in samples.chunks(CHUNK_FRAMES) {
         bytes.clear();
         for &sample in chunk {
-            bytes.extend_from_slice(&sample.to_le_bytes());
+            let quantized = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+            bytes.extend_from_slice(&quantized.to_le_bytes());
         }
-        writer.write_all(&bytes).context("stream PCM to ffmpeg")?;
+        writer.write_all(&bytes).context("write RF64 PCM")?;
     }
     Ok(())
 }
@@ -464,5 +566,18 @@ mod tests {
         append_linear_crossfade(&mut output, &[1.0, 1.0, 1.0], &[0.0, 0.0, 0.0]);
 
         assert_eq!(output, vec![1.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn rf64_header_contains_64_bit_sizes() {
+        let mut header = Vec::new();
+        write_rf64_header(&mut header, 100).unwrap();
+
+        assert_eq!(header.len(), RF64_HEADER_BYTES as usize);
+        assert_eq!(&header[0..4], b"RF64");
+        assert_eq!(&header[12..16], b"ds64");
+        assert_eq!(u64::from_le_bytes(header[28..36].try_into().unwrap()), 200);
+        assert_eq!(u64::from_le_bytes(header[36..44].try_into().unwrap()), 100);
+        assert_eq!(&header[72..76], b"data");
     }
 }

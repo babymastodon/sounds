@@ -35,6 +35,8 @@ For inputs of lengths `N` and `M`, the renderer computes linear—not circular�
 
 Pairs are grouped by FFT length. Each input spectrum is calculated once per size group and shared by all applicable pairs. Rayon schedules independent forward transforms, inverse transforms, conditioning, WAV writes, and verification across all configured CPU cores.
 
+`realfft` is used instead of a convenience FFT wrapper because this workload benefits from explicit reusable plans, scratch buffers, real-valued transforms, and spectrum caching. `rayon` supplies all-core scheduling and `hound` handles deterministic WAV I/O. A direct `ndarray` convolution would be quadratic for these clip lengths, while `rodio` is intentionally omitted because playback is separate from offline rendering; it can be added later as a thin preview layer without changing the DSP pipeline.
+
 ## Output and quality gates
 
 `outputs/matrix.csv` is the complete ordered 24×24 lookup table. Because convolution is commutative, mirrored cells reference the same canonical WAV. `outputs/metrics.csv` records measurements for each unique file, and `outputs/verification.json` summarizes the exhaustive post-render audit.
@@ -47,6 +49,10 @@ Verification rejects any result with:
 - RMS outside −30 to −10 dBFS;
 - absolute DC offset above 0.005;
 - the wrong channel count, sample rate, or PCM format.
+
+### Latest full-run audit
+
+The complete pipeline was force-rendered and verified on 2026-07-19 with 8 logical CPU cores. It produced 300 distinct canonical WAVs (694 MiB) for all 576 ordered matrix cells in 3.09 seconds, with peak resident memory of 519,648 KiB. The checked-in manifest contributed 13 industrial inputs out of 24. Every matrix path resolved, all 300 WAVs had distinct SHA-256 hashes, RMS ranged from -20.49 to -20.11 dBFS, maximum peak was 0.797, and no output contained clipping or non-finite samples. The generated `outputs/verification.json` records the machine-readable result.
 
 ## Source licensing
 

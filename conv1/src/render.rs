@@ -36,14 +36,21 @@ struct PairMetrics {
     left: String,
     right: String,
     path: String,
-    #[serde(flatten)]
-    audio: AudioMetrics,
+    frames: usize,
+    duration_seconds: f64,
+    peak: f32,
+    rms: f32,
+    rms_dbfs: f32,
+    dc_offset: f32,
+    clipped_samples: usize,
+    non_finite_samples: usize,
 }
 
 #[derive(Debug, Serialize)]
 struct VerificationReport {
     status: &'static str,
     source_count: usize,
+    industrial_source_count: usize,
     ordered_matrix_cells: usize,
     unique_pair_files: usize,
     sample_rate: u32,
@@ -176,6 +183,10 @@ fn verify_loaded(
     let report = VerificationReport {
         status: "pass",
         source_count: sources.len(),
+        industrial_source_count: sources
+            .iter()
+            .filter(|source| source.domain == "industrial")
+            .count(),
         ordered_matrix_cells: sources.len() * sources.len(),
         unique_pair_files: jobs.len(),
         sample_rate: crate::audio::SAMPLE_RATE,
@@ -236,7 +247,14 @@ fn pair_metrics(
             .unwrap_or(&path)
             .to_string_lossy()
             .into_owned(),
-        audio,
+        frames: audio.frames,
+        duration_seconds: audio.duration_seconds,
+        peak: audio.peak,
+        rms: audio.rms,
+        rms_dbfs: audio.rms_dbfs,
+        dc_offset: audio.dc_offset,
+        clipped_samples: audio.clipped_samples,
+        non_finite_samples: audio.non_finite_samples,
     }
 }
 
@@ -283,4 +301,33 @@ fn write_matrix(output_dir: &Path, clips: &[AudioClip]) -> Result<()> {
     }
     writer.flush().context("flush matrix CSV")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_metrics_is_a_flat_csv_record() {
+        let metrics = PairMetrics {
+            pair: "01-02".into(),
+            left: "left".into(),
+            right: "right".into(),
+            path: "wav/left__right.wav".into(),
+            frames: 42,
+            duration_seconds: 0.000_875,
+            peak: 0.5,
+            rms: 0.1,
+            rms_dbfs: -20.0,
+            dc_offset: 0.0,
+            clipped_samples: 0,
+            non_finite_samples: 0,
+        };
+        let mut writer = csv::Writer::from_writer(Vec::new());
+        writer.serialize(metrics).unwrap();
+        let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+
+        assert!(encoded.starts_with("pair,left,right,path,frames,duration_seconds"));
+        assert_eq!(encoded.lines().count(), 2);
+    }
 }

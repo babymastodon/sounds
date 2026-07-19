@@ -68,6 +68,12 @@ Verification rejects:
 
 `outputs/final/concat.json` records codec, duration, channel count, and file-size verification. Without `--force`, valid existing final stages are reused and only missing encodings are generated.
 
+## Latest full-run audit
+
+The complete pipeline was rendered and verified on 2026-07-19 with eight logical CPU cores. It produced 1,176 canonical stereo WAVs totaling 10,414,511,040 bytes for all 2,304 matrix cells. The render itself took 49.3 seconds; release compilation, rendering, and exhaustive verification took 93.31 seconds with peak resident memory of 1,924,908 KiB. Overall RMS ranged from −20.77 to −20.08 dBFS, maximum peak was 0.890, and maximum left/right RMS imbalance was 1.374 dB. All 1,176 pairs, including all 48 self-pairs, had verified stereo differences from −34.70 to −15.86 dBFS.
+
+The final master contains 2,322,166,832 frames (13:26:18.476), with 1,167 full five-second crossfades and eight duration-limited fades. RF64 assembly plus four parallel encoders took 626.35 seconds with peak resident memory of 247,864 KiB. Outputs are a 9,288,667,408-byte stereo RF64, 3,260,025,090-byte FLAC, 1,170,169,057-byte AAC/M4A, 751,081,424-byte 128 kbit/s Opus, and 194,419,136-byte 32 kbit/s Opus. Every compressed master decoded end to end without errors.
+
 ## Source licensing
 
 The corpus draws from ESC-50/Freesound, Wikimedia Commons, BigSoundBank, and NASA Artemis audio. Consult `sources.tsv` before redistributing inputs or derivatives: ESC-50 sources are CC BY-NC, while CC BY and CC BY-SA sources require attribution. Downloaded media is intentionally excluded from Git.

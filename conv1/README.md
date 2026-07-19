@@ -57,6 +57,8 @@ Verification rejects any result with:
 
 The expanded pipeline was force-rendered and verified on 2026-07-19 with 8 logical CPU cores. It produced 1,176 distinct canonical WAVs (5.8 GiB) for all 2,304 ordered matrix cells. Rendering took 24.4 seconds and the complete render-plus-verification process took 39.54 seconds, with peak resident memory of 1,754,468 KiB. The manifest contributed 25 industrial inputs out of 48. Every matrix path resolved, all 48 downloaded inputs and all 1,176 WAVs had distinct SHA-256 hashes, RMS ranged from -21.07 to -20.09 dBFS, maximum peak was 0.890, and no output contained clipping or non-finite samples. The generated `outputs/verification.json` records the machine-readable result.
 
+The final-master stage was force-run with the optimized RF64-first pipeline. It assembled 2,830,030,830 frames (16:22:38.976), applying 1,169 full five-second crossfades and six duration-limited fades. The complete assembly plus parallel encoding took 398.40 seconds with peak resident memory of 688,828 KiB. The results were a 5,660,061,740-byte RF64, 1,973,208,898-byte lossless FLAC, and 1,426,079,629-byte AAC/M4A. Both encodings decoded end-to-end without errors; the PCM master measured -19.9 dB mean and -1.0 dB maximum volume.
+
 ## Source licensing
 
 The set draws from four independent providers and many acoustic domains:

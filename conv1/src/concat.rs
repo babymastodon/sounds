@@ -13,6 +13,7 @@ use crate::manifest::load_manifest;
 
 const FLAC_NAME: &str = "final_mix.flac";
 const AAC_NAME: &str = "final_mix.m4a";
+const OPUS_NAME: &str = "final_mix.opus";
 const RF64_NAME: &str = "final_mix.rf64.wav";
 const RF64_HEADER_BYTES: u64 = 80;
 
@@ -23,6 +24,7 @@ pub struct ConcatOptions {
     pub output_dir: PathBuf,
     pub crossfade_seconds: f64,
     pub aac_bitrate_kbps: u32,
+    pub opus_bitrate_kbps: u32,
     pub force: bool,
 }
 
@@ -64,9 +66,11 @@ struct ConcatReport {
     output_frames: u64,
     output_duration_seconds: f64,
     aac_bitrate_kbps: u32,
+    opus_bitrate_kbps: u32,
     rf64: EncodedFileReport,
     flac: EncodedFileReport,
     aac: EncodedFileReport,
+    opus: EncodedFileReport,
 }
 
 pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
@@ -75,6 +79,9 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     }
     if options.aac_bitrate_kbps == 0 {
         bail!("--aac-bitrate-kbps must be at least 1");
+    }
+    if options.opus_bitrate_kbps == 0 {
+        bail!("--opus-bitrate-kbps must be at least 1");
     }
 
     let sources = load_manifest(&options.manifest)?;
@@ -122,6 +129,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     let rf64_path = options.output_dir.join(RF64_NAME);
     let flac_path = options.output_dir.join(FLAC_NAME);
     let aac_path = options.output_dir.join(AAC_NAME);
+    let opus_path = options.output_dir.join(OPUS_NAME);
 
     if !rf64_path.is_file() || options.force {
         assemble_sequence(
@@ -137,15 +145,24 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     }
     let rf64 = probe_encoding(&rf64_path, "pcm_s16le", output_seconds)?;
 
-    let both_encodings_exist = flac_path.is_file() && aac_path.is_file();
-    if !both_encodings_exist || options.force {
-        encode_outputs(&rf64_path, &flac_path, &aac_path, options.aac_bitrate_kbps)?;
+    let all_encodings_exist = flac_path.is_file() && aac_path.is_file() && opus_path.is_file();
+    if !all_encodings_exist || options.force {
+        encode_outputs(
+            &rf64_path,
+            &flac_path,
+            &aac_path,
+            &opus_path,
+            options.aac_bitrate_kbps,
+            options.opus_bitrate_kbps,
+            options.force,
+        )?;
     } else {
-        eprintln!("reusing existing FLAC and AAC encodings");
+        eprintln!("reusing existing FLAC, AAC, and Opus encodings");
     }
 
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
+    let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
     let report = ConcatReport {
         status: "pass",
         input_files: rows.len(),
@@ -156,9 +173,11 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         output_frames,
         output_duration_seconds: output_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
+        opus_bitrate_kbps: options.opus_bitrate_kbps,
         rf64,
         flac,
         aac,
+        opus,
     };
     fs::write(
         options.output_dir.join("concat.json"),
@@ -296,49 +315,99 @@ fn encode_outputs(
     rf64_path: &Path,
     flac_path: &Path,
     aac_path: &Path,
+    opus_path: &Path,
     aac_bitrate_kbps: u32,
+    opus_bitrate_kbps: u32,
+    force: bool,
 ) -> Result<()> {
     let temporary_flac = flac_path.with_file_name("final_mix.part.flac");
     let temporary_aac = aac_path.with_file_name("final_mix.part.m4a");
-    for temporary in [&temporary_flac, &temporary_aac] {
-        if temporary.exists() {
-            fs::remove_file(temporary)?;
+    let temporary_opus = opus_path.with_file_name("final_mix.part.opus");
+    let rebuild_flac = force || !flac_path.is_file();
+    let rebuild_aac = force || !aac_path.is_file();
+    let rebuild_opus = force || !opus_path.is_file();
+    let mut jobs = Vec::new();
+
+    if rebuild_flac {
+        remove_if_present(&temporary_flac)?;
+        let child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(rf64_path)
+            .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"])
+            .arg(&temporary_flac)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("start parallel FLAC encoder")?;
+        jobs.push(("FLAC", child, temporary_flac, flac_path.to_owned()));
+    }
+    if rebuild_aac {
+        remove_if_present(&temporary_aac)?;
+        let aac_encoder = preferred_aac_encoder()?;
+        let child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(rf64_path)
+            .args(["-map", "0:a:0", "-c:a"])
+            .arg(&aac_encoder)
+            .arg("-b:a")
+            .arg(format!("{aac_bitrate_kbps}k"))
+            .arg(&temporary_aac)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("start parallel AAC encoder {aac_encoder}"))?;
+        jobs.push(("AAC", child, temporary_aac, aac_path.to_owned()));
+    }
+    if rebuild_opus {
+        remove_if_present(&temporary_opus)?;
+        let opus_encoder = preferred_opus_encoder()?;
+        let child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(rf64_path)
+            .args(["-map", "0:a:0", "-c:a"])
+            .arg(&opus_encoder)
+            .args(["-b:a", &format!("{opus_bitrate_kbps}k")])
+            .args([
+                "-vbr",
+                "on",
+                "-application",
+                "audio",
+                "-compression_level",
+                "10",
+            ])
+            .arg(&temporary_opus)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("start parallel Opus encoder {opus_encoder}"))?;
+        jobs.push(("Opus", child, temporary_opus, opus_path.to_owned()));
+    }
+
+    let names = jobs
+        .iter()
+        .map(|(name, _, _, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("encoding in parallel: {names}");
+    for (name, mut child, temporary, final_path) in jobs {
+        let status = child
+            .wait()
+            .with_context(|| format!("wait for {name} encoder"))?;
+        if !status.success() {
+            bail!("{name} encoding failed with {status}");
         }
+        fs::rename(temporary, final_path)?;
     }
+    Ok(())
+}
 
-    let aac_encoder = preferred_aac_encoder()?;
-    eprintln!("encoding FLAC and AAC in parallel (FLAC level 3, AAC via {aac_encoder})");
-    let mut flac = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(rf64_path)
-        .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"])
-        .arg(&temporary_flac)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("start parallel FLAC encoder")?;
-    let mut aac = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(rf64_path)
-        .args(["-map", "0:a:0", "-c:a"])
-        .arg(&aac_encoder)
-        .arg("-b:a")
-        .arg(format!("{aac_bitrate_kbps}k"))
-        .arg(&temporary_aac)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("start parallel AAC encoder")?;
-
-    let flac_status = flac.wait().context("wait for FLAC encoder")?;
-    let aac_status = aac.wait().context("wait for AAC encoder")?;
-    if !flac_status.success() || !aac_status.success() {
-        bail!("parallel encoding failed: FLAC={flac_status}, AAC={aac_status}");
+fn remove_if_present(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)?;
     }
-    fs::rename(&temporary_flac, flac_path)?;
-    fs::rename(&temporary_aac, aac_path)?;
     Ok(())
 }
 
@@ -351,6 +420,18 @@ fn preferred_aac_encoder() -> Result<String> {
         "libfdk_aac".to_owned()
     } else {
         "aac".to_owned()
+    })
+}
+
+fn preferred_opus_encoder() -> Result<String> {
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-h", "encoder=libopus"])
+        .output()
+        .context("inspect ffmpeg Opus encoders")?;
+    Ok(if output.status.success() {
+        "libopus".to_owned()
+    } else {
+        "opus".to_owned()
     })
 }
 

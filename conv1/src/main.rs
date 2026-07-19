@@ -54,7 +54,9 @@ enum Command {
         crossfade_seconds: f64,
         #[arg(long, default_value_t = 192)]
         aac_bitrate_kbps: u32,
-        /// Rebuild both final encodings even if they already exist.
+        #[arg(long, default_value_t = 64)]
+        opus_bitrate_kbps: u32,
+        /// Rebuild the RF64 and all final encodings even if they already exist.
         #[arg(long)]
         force: bool,
     },
@@ -94,6 +96,7 @@ fn main() -> Result<()> {
             output_dir,
             crossfade_seconds,
             aac_bitrate_kbps,
+            opus_bitrate_kbps,
             force,
         } => concatenate_master(ConcatOptions {
             manifest,
@@ -101,6 +104,7 @@ fn main() -> Result<()> {
             output_dir,
             crossfade_seconds,
             aac_bitrate_kbps,
+            opus_bitrate_kbps,
             force,
         }),
     }

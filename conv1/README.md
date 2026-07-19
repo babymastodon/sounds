@@ -10,7 +10,7 @@ Requirements: a current Rust toolchain, `curl`, FFmpeg/FFprobe, `awk`, and `sha2
 ./scripts/render_all.sh
 ```
 
-Downloaded and prepared inputs are written under `samples/`; rendered audio and reports are written under `outputs/`. Both media trees are ignored by Git. [`sources.tsv`](sources.tsv) is the authoritative provenance manifest and includes each creator, source page, download URL, license, excerpt offset, and target duration.
+Downloaded and prepared inputs are written under `samples/`; rendered audio and reports are written under `outputs/`. Both media trees are ignored by Git. [`sources.tsv`](sources.tsv) is the authoritative provenance manifest and includes each acoustic domain, creator, source page, download URL, license, excerpt offset, and target duration. The manifest loader refuses a corpus unless at least half of its entries have the explicit `industrial` domain; the checked-in set has 13 industrial recordings out of 24.
 
 To render or verify separately:
 
@@ -50,11 +50,11 @@ Verification rejects any result with:
 
 ## Source licensing
 
-The set draws from three independent providers and many acoustic domains:
+The set draws from four independent providers and many acoustic domains:
 
 - ESC-50/Freesound environmental recordings under CC BY-NC 3.0;
 - Wikimedia Commons field recordings under per-file CC0, CC BY, or CC BY-SA licenses;
+- BigSoundBank factory, workshop, sawmill, nature, and city recordings released under CC0;
 - NASA Artemis audio cleared for creative reuse under NASA's media usage guidelines.
 
 The downloaded media is intentionally not redistributed from this repository. Consult [`sources.tsv`](sources.tsv) before redistributing inputs or derived material; in particular, ESC-50's CC BY-NC terms are non-commercial and CC BY/CC BY-SA sources require attribution.
-

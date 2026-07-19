@@ -5,7 +5,7 @@ project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$project_dir/sources.tsv"
 raw_dir="$project_dir/samples/raw"
 prepared_dir="$project_dir/samples/prepared"
-download_jobs=${DOWNLOAD_JOBS:-4}
+download_jobs=${DOWNLOAD_JOBS:-2}
 
 for command in curl ffmpeg ffprobe sha256sum awk; do
     command -v "$command" >/dev/null || {
@@ -24,16 +24,45 @@ prepare_one() {
     local raw_path="$raw_dir/$id.media"
     local prepared_path="$prepared_dir/$id.wav"
     local temporary="$prepared_path.part.wav"
+    local expected_frames
+
+    expected_frames=$(awk -v seconds="$seconds" 'BEGIN { printf "%.0f", seconds*48000 }')
 
     if [[ ! -s "$raw_path" ]]; then
         echo "download $id" >&2
-        curl --fail --location --retry 5 --retry-all-errors \
-            --user-agent 'conv1-audio-research/0.1' \
-            --output "$raw_path.part" "$download_url"
+        local downloaded=0
+        local attempt
+        for attempt in 1 2 3 4 5; do
+            if curl --fail --location --silent --show-error \
+                --user-agent 'conv1-audio-research/0.1 (license-tracked offline DSP project)' \
+                --output "$raw_path.part" "$download_url"; then
+                downloaded=1
+                break
+            fi
+            echo "$id: download attempt $attempt failed; retrying shortly" >&2
+            sleep $((attempt * 5))
+        done
+        if ((downloaded == 0)); then
+            echo "$id: download failed after 5 attempts" >&2
+            return 1
+        fi
         mv "$raw_path.part" "$raw_path"
     fi
 
+    local needs_prepare=0
     if [[ ! -s "$prepared_path" ]]; then
+        needs_prepare=1
+    else
+        local cached_frames
+        cached_frames=$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=duration_ts -of default=nw=1:nk=1 "$prepared_path")
+        if [[ "$cached_frames" != "$expected_frames" ]]; then
+            echo "rebuild $id: manifest now expects $expected_frames frames" >&2
+            needs_prepare=1
+        fi
+    fi
+
+    if ((needs_prepare)); then
         local fade_out
         fade_out=$(awk -v seconds="$seconds" 'BEGIN { value=seconds-0.02; if (value<0) value=0; printf "%.6f", value }')
         echo "prepare $id (${seconds}s)" >&2
@@ -44,10 +73,9 @@ prepare_one() {
         mv "$temporary" "$prepared_path"
     fi
 
-    local actual_frames expected_frames
+    local actual_frames
     actual_frames=$(ffprobe -v error -select_streams a:0 \
         -show_entries stream=duration_ts -of default=nw=1:nk=1 "$prepared_path")
-    expected_frames=$(awk -v seconds="$seconds" 'BEGIN { printf "%.0f", seconds*48000 }')
     if [[ "$actual_frames" != "$expected_frames" ]]; then
         echo "$id: expected $expected_frames frames, found $actual_frames" >&2
         return 1
@@ -62,8 +90,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-while IFS=$'\t' read -r id _category seconds trim_start _provider _creator _license _license_url _source_page download_url; do
+manifest_count=0
+while IFS=$'\t' read -r id _category _domain seconds trim_start _provider _creator _license _license_url _source_page download_url; do
     [[ "$id" == "id" || -z "$id" ]] && continue
+    manifest_count=$((manifest_count + 1))
     prepare_one "$id" "$seconds" "$trim_start" "$download_url" &
     active_pids+=("$!")
     if ((${#active_pids[@]} >= download_jobs)); then
@@ -83,5 +113,4 @@ find "$raw_dir" -type f -name '*.media' -print0 \
     | sort -z \
     | xargs -0 sha256sum > "$raw_dir/SHA256SUMS"
 
-echo "prepared $(find "$prepared_dir" -maxdepth 1 -name '*.wav' | wc -l) clips in $prepared_dir" >&2
-
+echo "prepared $manifest_count manifest clips in $prepared_dir" >&2

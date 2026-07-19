@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub struct SourceEntry {
     pub id: String,
     pub category: String,
+    pub domain: String,
     pub seconds: f64,
     pub trim_start: f64,
     pub provider: String,
@@ -73,9 +74,25 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
     if categories.len() < 20 {
         bail!("expected at least twenty distinct ambient categories");
     }
+    let industrial_count = entries
+        .iter()
+        .filter(|entry| entry.domain == "industrial")
+        .count();
+    if industrial_count * 2 < entries.len() {
+        bail!(
+            "at least half of ambient sources must be industrial; found {industrial_count}/{}",
+            entries.len()
+        );
+    }
     for entry in &entries {
-        if entry.creator.trim().is_empty() || entry.license.trim().is_empty() {
-            bail!("{} is missing creator or license provenance", entry.id);
+        if entry.domain.trim().is_empty()
+            || entry.creator.trim().is_empty()
+            || entry.license.trim().is_empty()
+        {
+            bail!(
+                "{} is missing domain, creator, or license provenance",
+                entry.id
+            );
         }
         for (label, url) in [
             ("license", entry.license_url.as_str()),

@@ -13,7 +13,7 @@ pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-broader-envelopes-v12";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-pitched-grit-v13";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -66,7 +66,7 @@ pub struct NoteGesture {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvelopeKind {
-    Pluck,
+    BittenSustain,
     Swell,
     ReversePluck,
     TremoloArc,
@@ -75,7 +75,7 @@ pub enum EnvelopeKind {
 impl EnvelopeKind {
     pub const fn slug(self) -> &'static str {
         match self {
-            Self::Pluck => "pluck",
+            Self::BittenSustain => "bitten_sustain",
             Self::Swell => "swell",
             Self::ReversePluck => "reverse_pluck",
             Self::TremoloArc => "tremolo_arc",
@@ -118,15 +118,16 @@ impl InstrumentProfile {
     pub fn parameters(self) -> String {
         match self.kind {
             InstrumentKind::ModalNoiseResonator => format!(
-                "detune_cents={:.3};mode_disorder_percent={:.3};sustained_noise_percent={:.3};drive={:.3};folds={}",
+                "detune_cents={:.3};mode_disorder_percent={:.3};resonated_noise_percent={:.3};clean_percent=60.000;parallel_ruin_percent={:.3};drive={:.3};folds={}",
                 self.detune_spread_cents,
                 self.modal_disorder * 100.0,
                 self.sustained_noise_mix * 100.0,
+                (0.40 - self.sustained_noise_mix) * 100.0,
                 self.drive,
                 self.fold_count
             ),
             InstrumentKind::InharmonicFm => format!(
-                "detune_cents={:.3};feedback={:.3};index={:.3}->{:.3};drive={:.3};folds={}",
+                "detune_cents={:.3};feedback={:.3};crossfeedback_percent=8.000;index={:.3}->{:.3};clean_percent=45.000;raw_fm_percent=40.000;parallel_ruin_percent=15.000;phase_drift_radians=0.080;drive={:.3};folds={}",
                 self.detune_spread_cents,
                 self.fm_feedback,
                 self.fm_index_start,
@@ -219,7 +220,7 @@ pub fn gesture_profile(short_name: &str, long_name: &str) -> GestureProfile {
             db_below_local,
             duration_seconds,
             envelope: match (hash >> 32) % 4 {
-                0 => EnvelopeKind::Pluck,
+                0 => EnvelopeKind::BittenSustain,
                 1 => EnvelopeKind::Swell,
                 2 => EnvelopeKind::ReversePluck,
                 _ => EnvelopeKind::TremoloArc,
@@ -263,17 +264,17 @@ pub fn instrument_profile(profile: GestureProfile) -> InstrumentProfile {
     match kind {
         InstrumentKind::ModalNoiseResonator => {
             result.detune_spread_cents = hashed_range(profile, b"modal-detune", 38.0, 55.0);
-            result.modal_disorder = hashed_range(profile, b"modal-disorder", 0.07, 0.12);
-            result.sustained_noise_mix = hashed_range(profile, b"modal-noise", 0.30, 0.44);
-            result.drive = hashed_range(profile, b"modal-drive", 4.5, 6.0);
+            result.modal_disorder = hashed_range(profile, b"modal-disorder", 0.03, 0.06);
+            result.sustained_noise_mix = hashed_range(profile, b"modal-noise", 0.10, 0.18);
+            result.drive = hashed_range(profile, b"modal-drive", 3.8, 5.2);
             result.fold_count =
-                2 + (derived_hash(profile.fingerprint, b"modal-folds", 0) % 2) as u8;
+                1 + (derived_hash(profile.fingerprint, b"modal-folds", 0) % 2) as u8;
         }
         InstrumentKind::InharmonicFm => {
             result.detune_spread_cents = hashed_range(profile, b"fm-detune", 28.0, 48.0);
-            result.fm_feedback = hashed_range(profile, b"fm-feedback", 0.72, 0.92);
-            result.fm_index_start = hashed_range(profile, b"fm-index-start", 10.0, 14.0);
-            result.fm_index_end = hashed_range(profile, b"fm-index-end", 4.0, 6.0);
+            result.fm_feedback = hashed_range(profile, b"fm-feedback", 0.35, 0.55);
+            result.fm_index_start = hashed_range(profile, b"fm-index-start", 6.0, 9.0);
+            result.fm_index_end = hashed_range(profile, b"fm-index-end", 2.5, 4.0);
             result.drive = hashed_range(profile, b"fm-drive", 2.3, 3.2);
             result.fold_count = 2 + (derived_hash(profile.fingerprint, b"fm-folds", 0) % 2) as u8;
         }
@@ -425,40 +426,63 @@ fn modal_noise_note(
             2.0 * PI * unit_interval(derived_hash(seed, b"modal-phase", (bank * 6 + mode) as u64))
         })
     });
-    (0..frames)
-        .map(|frame| {
-            let time = frame as f32 / SAMPLE_RATE as f32;
-            let progress = time / duration;
-            let modes = frequencies
-                .iter()
-                .zip(phases)
-                .map(|(bank_frequencies, bank_phases)| {
-                    bank_frequencies
-                        .iter()
-                        .zip(AMPLITUDES)
-                        .zip(bank_phases)
-                        .enumerate()
-                        .map(|(mode, ((&frequency, amplitude), phase))| {
-                            let modal_decay = (-(1.1 + mode as f32 * 0.55) * progress).exp();
-                            amplitude * modal_decay * (2.0 * PI * frequency * time + phase).sin()
-                        })
-                        .sum::<f32>()
-                })
-                .sum::<f32>()
-                / 3.0;
-            let attack_noise = noise_sample(seed, frame) * (-time / 0.022).exp() * 0.42;
-            let scrape_noise = 0.62 * noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame)
-                + 0.38 * noise_sample(seed ^ 0x7135_91c7_4a2d_8b60, frame / 4);
-            let scrape_gate = 0.55 + 0.45 * (2.0 * PI * frequency * 1.731 * time).sin().abs();
-            let sustained_noise = scrape_noise * scrape_gate * instrument.sustained_noise_mix;
-            let ring = 0.70 + 0.30 * (2.0 * PI * frequency * 0.731 * time).sin();
-            let raw = modes * ring * (1.0 - instrument.sustained_noise_mix)
-                + 1.25 * attack_noise
-                + sustained_noise;
+    let mut modal_core = Vec::with_capacity(frames);
+    let mut resonated_noise = Vec::with_capacity(frames);
+    let mut previous_1 = [[0.0_f32; 6]; 3];
+    let mut previous_2 = [[0.0_f32; 6]; 3];
+    for frame in 0..frames {
+        let time = frame as f32 / SAMPLE_RATE as f32;
+        let progress = (time / duration).clamp(0.0, 1.0);
+        let excitation = noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame)
+            * (0.10 + 0.10 * (-time / 0.015).exp());
+        let mut modes = 0.0;
+        let mut resonance = 0.0;
+        for bank in 0..3 {
+            for mode in 0..6 {
+                let mode_frequency = frequencies[bank][mode];
+                let modal_decay = (-(0.25 + mode as f32 * 0.35) * progress).exp();
+                modes += AMPLITUDES[mode]
+                    * modal_decay
+                    * (2.0 * PI * mode_frequency * time + phases[bank][mode]).sin();
+
+                let quality = 24.0 + mode as f32 * 3.0;
+                let pole_radius = (-PI * mode_frequency / (quality * SAMPLE_RATE as f32)).exp();
+                let coefficient =
+                    2.0 * pole_radius * (2.0 * PI * mode_frequency / SAMPLE_RATE as f32).cos();
+                let filtered = excitation + coefficient * previous_1[bank][mode]
+                    - pole_radius * pole_radius * previous_2[bank][mode];
+                previous_2[bank][mode] = previous_1[bank][mode];
+                previous_1[bank][mode] = filtered;
+                resonance += AMPLITUDES[mode] * (1.0 - pole_radius) * filtered;
+            }
+        }
+        modal_core.push(modes / 3.0);
+        resonated_noise.push(resonance / 3.0);
+    }
+    normalize_rms(&mut modal_core, 1.0);
+    normalize_rms(&mut resonated_noise, 1.0);
+    let mut ruined = modal_core
+        .iter()
+        .zip(&resonated_noise)
+        .map(|(&modes, &resonance)| {
+            let raw = 0.82 * modes + 0.18 * resonance;
             let clipped = asymmetric_clip(raw, instrument.drive);
-            let folded = fold_signal(clipped * 1.75, instrument.fold_count);
-            let quantized = (folded * 511.0).round() / 511.0;
-            (0.06 * raw + 0.94 * quantized) * envelope(envelope_kind, time, duration)
+            let folded = fold_signal(clipped * 1.45, instrument.fold_count);
+            (folded * 511.0).round() / 511.0
+        })
+        .collect::<Vec<_>>();
+    normalize_rms(&mut ruined, 1.0);
+    let ruin_mix = 0.40 - instrument.sustained_noise_mix;
+    modal_core
+        .into_iter()
+        .zip(resonated_noise)
+        .zip(ruined)
+        .enumerate()
+        .map(|(frame, ((modes, resonance), ruined))| {
+            let time = frame as f32 / SAMPLE_RATE as f32;
+            let voice =
+                0.60 * modes + instrument.sustained_noise_mix * resonance + ruin_mix * ruined;
+            voice * envelope(envelope_kind, time, duration)
         })
         .collect()
 }
@@ -504,22 +528,30 @@ fn inharmonic_fm_note(
                 (2.0 * PI * carrier_frequency * SQRT_2 * time + phases[carrier][0]).sin();
             let modulator_2 =
                 (2.0 * PI * carrier_frequency * 2.731 * time + phases[carrier][1]).sin();
-            let phase_jitter =
-                0.55 * noise_sample(seed ^ 0x6c8e_9cf5_d812_4b37, frame / (9 + carrier * 3));
+            let drift_phase =
+                2.0 * PI * unit_interval(derived_hash(seed, b"fm-drift-phase", carrier as u64));
+            let phase_drift =
+                0.08 * (2.0 * PI * (0.31 + carrier as f32 * 0.13) * time + drift_phase).sin();
             let value = (carrier_phase
                 + index * modulator_1
                 + 2.2 * modulator_2
                 + PI * instrument.fm_feedback
-                    * (0.78 * prior[carrier] + 0.36 * prior[(carrier + 1) % 3])
-                + phase_jitter)
+                    * (0.90 * prior[carrier] + 0.08 * prior[(carrier + 1) % 3])
+                + phase_drift)
                 .sin();
             previous[carrier] = value;
             carriers += value;
         }
-        let raw = 0.97 * carriers / 3.0 + 0.03 * (2.0 * PI * frequency * time).sin();
-        let folded = fold_signal(raw * instrument.drive, instrument.fold_count);
+        let fm = carriers / 3.0;
+        let clean = frequencies
+            .iter()
+            .map(|&carrier_frequency| (2.0 * PI * carrier_frequency * time).sin())
+            .sum::<f32>()
+            / 3.0;
+        let folded = fold_signal(fm * instrument.drive, instrument.fold_count);
         let quantized = (folded * 1_023.0).round() / 1_023.0;
-        output.push(quantized * envelope(envelope_kind, time, duration));
+        let voice = 0.45 * clean + 0.40 * fm + 0.15 * quantized;
+        output.push(voice * envelope(envelope_kind, time, duration));
     }
     output
 }
@@ -689,12 +721,10 @@ fn hashed_range(profile: GestureProfile, tag: &[u8], minimum: f32, maximum: f32)
 fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
     let phase = (time / duration).clamp(0.0, 1.0);
     match kind {
-        EnvelopeKind::Pluck => {
-            let attack = (time / 0.004).min(1.0).powf(0.55);
-            let transition = smoothstep(0.12, 0.20, phase);
-            let softened_drop = 1.0 - 0.55 * transition;
-            let release = cosine_release(phase, 0.05);
-            attack * softened_drop * (-4.5 * phase).exp() * release
+        EnvelopeKind::BittenSustain => {
+            let attack = (time / 0.012).min(1.0).powf(0.70);
+            let bite = 1.0 - 0.40 * smoothstep(0.08, 0.30, phase);
+            attack * bite * cosine_release(phase, 0.25)
         }
         EnvelopeKind::Swell => {
             if phase < 0.68 {
@@ -780,6 +810,31 @@ mod tests {
                     + 0.05 * ((index * 7919 % 997) as f32 / 997.0 - 0.5)
             })
             .collect()
+    }
+
+    fn periodicity_near(samples: &[f32], frequency: f32) -> f32 {
+        let minimum_lag = (SAMPLE_RATE as f32 / (frequency * 1.15)).floor() as usize;
+        let maximum_lag = (SAMPLE_RATE as f32 / (frequency * 0.85)).ceil() as usize;
+        (minimum_lag..=maximum_lag)
+            .map(|lag| {
+                let (cross, left_energy, right_energy) = samples[..samples.len() - lag]
+                    .iter()
+                    .zip(&samples[lag..])
+                    .fold(
+                        (0.0_f64, 0.0_f64, 0.0_f64),
+                        |(cross, left_energy, right_energy), (&left, &right)| {
+                            let left = f64::from(left);
+                            let right = f64::from(right);
+                            (
+                                cross + left * right,
+                                left_energy + left * left,
+                                right_energy + right * right,
+                            )
+                        },
+                    );
+                (cross / (left_energy * right_energy).sqrt().max(1.0e-24)) as f32
+            })
+            .fold(f32::NEG_INFINITY, f32::max)
     }
 
     #[test]
@@ -917,7 +972,7 @@ mod tests {
             profiles[profile.kind as usize] = Some(profile);
         }
         let envelopes = [
-            EnvelopeKind::Pluck,
+            EnvelopeKind::BittenSustain,
             EnvelopeKind::Swell,
             EnvelopeKind::ReversePluck,
             EnvelopeKind::TremoloArc,
@@ -943,9 +998,9 @@ mod tests {
     }
 
     #[test]
-    fn broader_envelopes_have_controlled_crest_and_silent_edges() {
+    fn envelopes_have_controlled_crest_duration_and_silent_edges() {
         for envelope_kind in [
-            EnvelopeKind::Pluck,
+            EnvelopeKind::BittenSustain,
             EnvelopeKind::Swell,
             EnvelopeKind::ReversePluck,
             EnvelopeKind::TremoloArc,
@@ -960,6 +1015,80 @@ mod tests {
             let normalized_peak = values.iter().copied().fold(0.0_f32, f32::max) / envelope_rms;
             assert!((1.5..3.4).contains(&normalized_peak));
             assert!(values.iter().filter(|&&value| value >= 0.12).count() > 250);
+        }
+    }
+
+    #[test]
+    fn bitten_sustain_does_not_concentrate_energy_at_the_onset() {
+        let values = (0..SAMPLE_RATE as usize)
+            .map(|frame| {
+                envelope(
+                    EnvelopeKind::BittenSustain,
+                    frame as f32 / SAMPLE_RATE as f32,
+                    1.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        let total_energy = values.iter().map(|&sample| sample * sample).sum::<f32>();
+        let early_energy = values[..SAMPLE_RATE as usize * 150 / 1_000]
+            .iter()
+            .map(|&sample| sample * sample)
+            .sum::<f32>();
+        let early_fraction = early_energy / total_energy;
+        assert!(early_fraction < 0.35, "early fraction={early_fraction}");
+    }
+
+    #[test]
+    fn modal_and_fm_profiles_keep_grit_below_the_pitched_core() {
+        for index in 0..100 {
+            let profile = instrument_profile(gesture_profile(&format!("short-{index}"), "long"));
+            match profile.kind {
+                InstrumentKind::ModalNoiseResonator => {
+                    assert!((0.03..=0.06).contains(&profile.modal_disorder));
+                    assert!((0.10..=0.18).contains(&profile.sustained_noise_mix));
+                    assert!((3.8..=5.2).contains(&profile.drive));
+                    assert!((1..=2).contains(&profile.fold_count));
+                }
+                InstrumentKind::InharmonicFm => {
+                    assert!((0.35..=0.55).contains(&profile.fm_feedback));
+                    assert!((6.0..=9.0).contains(&profile.fm_index_start));
+                    assert!((2.5..=4.0).contains(&profile.fm_index_end));
+                }
+                InstrumentKind::SaturatedSawCluster => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_instrument_has_a_detectable_pitched_period() {
+        let mut profiles = [None; 3];
+        for index in 0..100 {
+            let profile = instrument_profile(gesture_profile(&format!("short-{index}"), "long"));
+            profiles[profile.kind as usize] = Some(profile);
+        }
+        for profile in profiles {
+            let profile = profile.expect("all instrument families should be selected");
+            for envelope_kind in [
+                EnvelopeKind::BittenSustain,
+                EnvelopeKind::Swell,
+                EnvelopeKind::ReversePluck,
+                EnvelopeKind::TremoloArc,
+            ] {
+                let note =
+                    synthesize_note(profile, 151.0, SAMPLE_RATE as usize, 1.0, envelope_kind, 42);
+                let periodicity = periodicity_near(&note, 151.0);
+                eprintln!(
+                    "{} {} periodicity={periodicity:.3}",
+                    profile.kind.slug(),
+                    envelope_kind.slug()
+                );
+                assert!(
+                    periodicity >= 0.15,
+                    "{} {} periodicity={periodicity}",
+                    profile.kind.slug(),
+                    envelope_kind.slug()
+                );
+            }
         }
     }
 

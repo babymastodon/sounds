@@ -11,8 +11,8 @@ Every short/long pair is rendered twice:
 
 The ordered pair of track names deterministically selects one of three aggressively ruined instrument families. The selection is approach-independent, so a pair uses the same instrument whether its long or short input is augmented. A second set of hashes varies the intensity inside the listed ranges for each pair:
 
-1. **Modal-noise resonator** runs three six-mode banks spread `±38–55` cents around the pitch, disorders upper modes by `±7–12%`, ring-modulates the banks, and mixes `30–44%` white/sample-held scrape noise behind an enlarged strike. Asymmetric clipping at `4.5–6×` drive, two or three wavefolds, and 9-bit output quantization supply the broken edge.
-2. **Inharmonic FM/PM** runs three carriers spread `±28–48` cents, each driven by non-integer modulators at `sqrt(2)` and `2.731` times its frequency. A modulation index falling from `10–14` to `4–6`, `0.72–0.92` self/cross feedback, sample-held phase jitter, `2.3–3.2×` drive, two or three folds, and 10-bit quantization push it into unstable metallic noise.
+1. **Modal-noise resonator** runs three six-mode banks spread `±38–55` cents around the pitch and limits upper-mode disorder to `±3–6%`. Its output is always 60% clean modal core, 10–18% noise passed through the same 18 resonant bands, and 22–30% parallel ruined signal. The noise has no direct broadband path and its 15 ms excitation is only a small increase above the sustained excitation. Asymmetric clipping at `3.8–5.2×` drive, one or two wavefolds, and 9-bit quantization affect only the parallel ruin path.
+2. **Inharmonic FM/PM** runs three carriers spread `±28–48` cents, each driven by non-integer modulators at `sqrt(2)` and `2.731` times its frequency. Its index now falls from `6–9` to `2.5–4`, self feedback is `0.35–0.55`, cross-feedback is only 8% of the feedback term, and the former sample-held phase jumps are replaced by smooth 0.08-radian drift. The final voice is 45% clean detuned carrier, 40% raw FM, and 15% parallel 10-bit folded ruin, keeping metallic grit around an audible pitch center.
 3. **Destroyed saw cluster** runs seven voices across `±55–85` cents with `±12–24` cents of independent drift. It blends `60–80%` deliberately aliased signal with `45–70%` hard-sync discontinuities, holds oscillator samples for two to four frames, adds digital dust, clips at `7–10×` drive, wavefolds three or four times, and finally crushes to 5–7 bits. This is intentionally the grittiest family.
 
 Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count, rotates chord-tone pattern `0,1,2,1,0,2,0,1`, and jitters each onset within an evenly distributed slot, so gestures span the clip without becoming a beat grid.
@@ -23,9 +23,11 @@ The ordered pair of input names hashes to a three-entry gesture profile, one ent
 duration = 0.4 × 10^((dB_below_local + 1.5) / 10)
 ~~~
 
-Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four controlled envelopes: a 4 ms pluck whose early drop is spread over 8% of the note, a quadratic swell with a slower collapse, a power-2.5 reverse rise with a broader decay, or a softly gated three-cycle tremolo arc with a 20% floor. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
+Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four controlled envelopes: a bitten sustain with a 12 ms attack, a gradual decay to 60%, a long hold, and a 25% cosine release; a quadratic swell with a slower collapse; a power-2.5 reverse rise with a broader decay; or a softly gated three-cycle tremolo arc with a 20% floor. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
 
-Compared with v11, envelope-only normalized peaks fall from `3.83×` to `3.32×` RMS for pluck, `3.18×` to `2.51×` for swell, `3.51×` to `2.70×` for reverse pluck, and `2.11×` to `1.94×` for tremolo. The portion above 12% amplitude expands from about 15% to 29% for pluck, 36% to 54% for swell, 31% to 49% for reverse pluck, and 44% to 81% for tremolo. The result retains articulation without concentrating the fixed power into such extreme peaks.
+The bitten sustain replaces the percussive v12 pluck, which put roughly 91% of a one-second note's energy into its first 150 ms after oscillator interaction. The replacement envelope has a `1.555×` normalized peak, remains above 12% amplitude for 92.6% of its duration, and places only 33.4% of its own one-second energy in the first 150 ms. All four shapes still start and finish at zero.
+
+Regression tests render every instrument/envelope combination and require a detectable period around the intended pitch. At 151 Hz the v13 autocorrelation scores are `0.721–0.807` for modal, `0.190–0.367` for FM, and `0.401–0.439` for destroyed saw; the diagnosed modal and FM designs were previously about `0.01–0.11`. These tests specifically prevent a future grit change from turning either generator back into an unpitched impact.
 
 Each complete oscillator-plus-envelope note is normalized to unit RMS before its hashed local-RMS target is applied. Thus added grit and envelope changes redistribute samples in time and spectrum without changing the note's average power. Combined with the inverse level/duration equation above, this also preserves the intended nearly constant total energy across differently shaped gestures.
 
@@ -93,7 +95,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-broader-envelopes-v12` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-pitched-grit-v13` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -125,7 +127,7 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Full-run audit
+## Superseded v12 full-run audit
 
 The `sparse-hashed-13edo-broader-envelopes-v12` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 1:12.96 with 1,305,872 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 15.95 seconds with 516,656 KiB peak resident memory.
 

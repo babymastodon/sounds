@@ -95,4 +95,24 @@ Every compressed master is decoded end to end after encoding. Downloaded inputs,
 
 ## Full-run audit
 
-Pending the first complete three-approach render.
+The first complete run finished on 2026-07-19 with eight logical CPU cores, reusing the exact 48 prepared WAVs and unchanged source manifest from `conv7`. All 576 pairs selected their chord from the prepared-file byte hashes. The chord-assignment columns in the three metrics tables have the same SHA-256 signature, and all 13 chords occur in each approach, from 35 to 58 pairs per chord.
+
+Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; the combined playground contains 1,728 WAVs and 11,667,525,120 bytes. Pure convolution rendered in 14.4 seconds, sequenced convolution in 20.0 seconds, and hybrid spectral in 20.3 seconds. Release compilation, all renders, and their built-in exhaustive verification took 1:39.61 with 1,228,104 KiB peak resident memory. A second independent verification of all 1,728 files and deterministic metadata took 27.67 seconds with 509,252 KiB peak resident memory.
+
+| Approach | RMS range dBFS | Maximum peak | Maximum L/R RMS delta | Stereo-difference range dBFS |
+|---|---:|---:|---:|---:|
+| Pure convolution | −20.86 to −20.07 | 0.836 | 0.555 dB | −26.60 to −15.87 |
+| Sequenced convolution | −22.02 to −20.07 | 0.857 | 0.670 dB | −26.39 to −14.59 |
+| Hybrid spectral | −21.21 to −20.09 | 0.869 | 1.057 dB | −22.74 to −15.02 |
+
+Every approach passed all finite-sample, clipping, peak, RMS, DC-offset, exact-length, matrix-membership, chord-metadata, and distinct-stereo checks.
+
+All three final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so their timelines remain sample-aligned. Assembly, twelve parallel-within-approach encodes, and end-to-end decode checks took 7:36.23.
+
+| Approach | RF64 | FLAC | AAC/M4A | Opus 128k | Opus 32k |
+|---|---:|---:|---:|---:|---:|
+| Pure convolution | 2,785,149,776 | 420,904,133 | 350,867,229 | 224,887,484 | 62,143,438 |
+| Sequenced convolution | 2,785,149,776 | 422,378,380 | 350,867,301 | 223,160,765 | 61,312,296 |
+| Hybrid spectral | 2,785,149,776 | 419,983,165 | 350,867,181 | 220,475,120 | 59,297,809 |
+
+Sizes are bytes. Every compressed master decoded without errors and independently probed as stereo 48 kHz with the expected codec and duration.

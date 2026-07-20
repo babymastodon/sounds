@@ -140,31 +140,31 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Superseded v13 full-run audit
+## Full-run audit
 
-The `sparse-hashed-13edo-pitched-grit-v13` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 1:30.29 with 1,275,936 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 16.40 seconds with 513,872 KiB peak resident memory.
+The `sparse-hashed-13edo-gradual-drones-v14` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 2:01.80 with 1,268,576 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 15.35 seconds with 501,928 KiB peak resident memory.
 
-The chord, gesture, instrument, and exact instrument-parameter columns have the same SHA-256 signature, `2d1d32ef1897daa1d541e3cd31c644e7e707b300620c4ba26b638aaa295a0850`, in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to destroyed saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 bitten sustains, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized base pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3. All 29 tests pass, including unit-RMS and integrated-energy invariants across all twelve instrument/envelope combinations and the new pitched-period regression.
+The shared chord, gesture fingerprint, envelope, instrument, and exact instrument-parameter columns have the same SHA-256 signature, `0686b8648ddb2ba36dd9835011692cc786437eb9ccfa724f51abd47e49b31be4`, in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to destroyed saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 soft drones, 432 broad swells, 432 late blooms, and 444 breathing drones. Long durations realize `3.000–6.999` seconds at 7.251–10.930 dB below local RMS; short durations realize `1.500–3.499` seconds at 4.241–7.919 dB below local RMS. Every serialized short duration equals half its corresponding long duration within `0.5 µs`. Long inputs contain 3–6 notes; short inputs contain 2–3. All 30 tests pass, including role-duration, preserved-energy, two-lane fit, slow-edge, onset-energy, unit-RMS, integrated-energy, and pitched-period regressions.
 
 The convolution-domain audit again confirms that partner spectra strongly affect the nominal tone stems. The existing one-way calibration boosts only masked cases and guarantees the −1.5 dB floor without attenuating already-strong stems:
 
 | Approach | Unscaled convolved tone | Pairs needing no boost | Boost median | Boost range | Final convolved tone |
 |---|---:|---:|---:|---:|---:|
-| Long additive | −38.29 to +20.76 dB | 41 | +9.95 dB | 0 to +36.79 dB | −1.50 to +20.76 dB |
-| Short additive | −30.38 to +22.62 dB | 83 | +7.54 dB | 0 to +28.88 dB | −1.50 to +22.62 dB |
+| Long additive | −34.53 to +20.68 dB | 47 | +9.82 dB | 0 to +33.03 dB | −1.50 to +20.68 dB |
+| Short additive | −30.87 to +22.87 dB | 84 | +7.92 dB | 0 to +29.37 dB | −1.50 to +22.87 dB |
 
 | Approach | Base correlation, minimum | Base tone-minus-input range | Output RMS range dBFS | Maximum peak | Maximum L/R RMS delta | Stereo-difference range dBFS |
 |---|---:|---:|---:|---:|---:|---:|
-| Long additive | 0.9137 | −18.13 to −6.95 dB | −20.84 to −20.10 | 0.876 | 0.252 dB | −25.14 to −16.62 |
-| Short additive | 0.8498 | −17.30 to −4.46 dB | −20.70 to −20.08 | 0.874 | 0.485 dB | −23.63 to −15.50 |
+| Long additive | 0.9105 | −21.30 to −6.89 dB | −20.40 to −20.09 | 0.871 | 0.214 dB | −23.39 to −16.10 |
+| Short additive | 0.8561 | −16.27 to −4.45 dB | −20.51 to −20.08 | 0.878 | 0.492 dB | −23.41 to −15.60 |
 
 Every matrix passed finite-sample, clipping, peak, RMS, DC-offset, exact-length, matrix-membership, chord, gesture, instrument, sparse-count, convolved-tone-floor, and distinct-stereo checks.
 
-Both final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so the timelines remain sample-aligned. Forced assembly, eight parallel-within-approach encodes, probes, and full parallel decode checks took 7:10.06 with 116,128 KiB peak resident memory.
+Both final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so the timelines remain sample-aligned. Forced assembly, eight parallel-within-approach encodes, probes, and full parallel decode checks took 7:07.78 with 115,916 KiB peak resident memory.
 
 | Approach | RF64 | FLAC | AAC/M4A | Opus 128k | Opus 32k |
 |---|---:|---:|---:|---:|---:|
-| Long additive | 2,785,149,776 | 1,007,129,876 | 350,869,773 | 220,358,022 | 54,829,455 |
-| Short additive | 2,785,149,776 | 1,054,909,135 | 350,869,881 | 216,930,312 | 52,775,221 |
+| Long additive | 2,785,149,776 | 1,027,399,613 | 350,869,629 | 219,560,317 | 54,450,953 |
+| Short additive | 2,785,149,776 | 1,062,464,127 | 350,869,857 | 216,669,482 | 52,647,397 |
 
 Sizes are bytes. Every compressed master decoded without errors and independently probed as stereo 48 kHz with the expected codec and duration.

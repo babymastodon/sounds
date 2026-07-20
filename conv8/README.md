@@ -111,24 +111,24 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Last completed run (superseded tuning)
+## Full-run audit
 
-The focused `sparse-hashed-additive-v5` run finished on 2026-07-19 before the scale changed from Bohlen–Pierce to 13-EDO. Its measurements below describe the last completed outputs, not the pending 13-EDO generation. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Rendering, built-in verification, and release compilation took 1:07.63 with 1,216,656 KiB peak resident memory. A second independent decode and metadata verification took 13.14 seconds with 504,032 KiB peak resident memory.
+The `sparse-hashed-13edo-instruments-v7` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Rendering, built-in verification, and release compilation took 1:15.64 with 1,208,812 KiB peak resident memory. A second independent decode and deterministic-metadata verification took 16.58 seconds with 503,108 KiB peak resident memory.
 
-The chord and gesture columns have the same SHA-256 signature in both metrics tables. All 13 chords occur 35–58 times per approach. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 plucks, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3.
+The chord, gesture, and instrument columns have the same SHA-256 signature in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to saturated saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 plucks, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3.
 
 | Approach | Preprocess correlation, minimum | Processed-minus-dry range | Output RMS range dBFS | Maximum peak | Maximum L/R RMS delta | Stereo-difference range dBFS |
 |---|---:|---:|---:|---:|---:|---:|
-| Long additive | 0.9118 | −18.18 to −7.54 dB | −21.18 to −20.07 | 0.886 | 0.537 dB | −26.57 to −16.28 |
-| Short additive | 0.8568 | −17.36 to −5.43 dB | −20.59 to −20.07 | 0.883 | 0.343 dB | −26.50 to −16.47 |
+| Long additive | 0.9111 | −18.19 to −7.50 dB | −20.73 to −20.07 | 0.884 | 0.255 dB | −26.59 to −16.28 |
+| Short additive | 0.8546 | −17.36 to −5.36 dB | −20.85 to −20.07 | 0.883 | 0.424 dB | −26.55 to −15.51 |
 
-Every matrix passed finite-sample, clipping, peak, RMS, DC-offset, exact-length, matrix-membership, chord, gesture, sparse-count, and distinct-stereo checks.
+Every matrix passed finite-sample, clipping, peak, RMS, DC-offset, exact-length, matrix-membership, chord, gesture, instrument, sparse-count, and distinct-stereo checks.
 
-Both final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so the timelines remain sample-aligned. Forced assembly, eight parallel-within-approach encodes, and end-to-end decode checks took 5:42.82 with 116,612 KiB peak resident memory.
+Both final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so the timelines remain sample-aligned. Forced assembly, eight parallel-within-approach encodes, probes, and full parallel decode checks took 7:57.02 with 116,048 KiB peak resident memory.
 
 | Approach | RF64 | FLAC | AAC/M4A | Opus 128k | Opus 32k |
 |---|---:|---:|---:|---:|---:|
-| Long additive | 2,785,149,776 | 886,377,682 | 350,869,773 | 222,670,001 | 55,806,178 |
-| Short additive | 2,785,149,776 | 877,768,136 | 350,869,653 | 222,978,117 | 55,153,548 |
+| Long additive | 2,785,149,776 | 901,293,877 | 350,869,605 | 223,156,235 | 55,883,832 |
+| Short additive | 2,785,149,776 | 903,931,980 | 350,869,857 | 221,515,478 | 54,546,497 |
 
 Sizes are bytes. Every compressed master decoded without errors and independently probed as stereo 48 kHz with the expected codec and duration.

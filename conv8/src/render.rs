@@ -52,8 +52,7 @@ struct PairMetrics {
     chord_frequencies_hz: String,
     pitch_algorithm_version: String,
     processed_role: String,
-    parallel_wet_mix_percent: Option<f32>,
-    additive_note_db_below_local: Option<f32>,
+    additive_note_db_below_local: f32,
     preprocess_dry_correlation: f32,
     preprocess_difference_rms_db_relative: f32,
     path: String,
@@ -88,8 +87,7 @@ struct VerificationReport {
     chord_hash: &'static str,
     pitch_algorithm_version: &'static str,
     processed_role: &'static str,
-    parallel_wet_mix_percent: Option<f32>,
-    additive_note_db_below_local: Option<f32>,
+    additive_note_db_below_local: f32,
     minimum_preprocess_dry_correlation: f32,
     minimum_preprocess_difference_rms_db_relative: f32,
     maximum_preprocess_difference_rms_db_relative: f32,
@@ -173,8 +171,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         } else {
                             &clips[job.left].samples
                         };
-                    let preprocessing =
-                        preprocess(preprocessing_input, selected_chord, options.approach);
+                    let preprocessing = preprocess(preprocessing_input, selected_chord);
                     let path = pair_path(&options.output_dir, &clips, job);
                     let metrics = if path.exists() && cache_matches {
                         let metrics = measure_wav(&path)?;
@@ -338,7 +335,6 @@ fn verify_loaded(
         chord_hash: "FNV-1a-64 over prepared WAV bytes, then domain-separated ordered pair modulo 13",
         pitch_algorithm_version: ALGORITHM_VERSION,
         processed_role: approach.processed_role(),
-        parallel_wet_mix_percent: approach.parallel_wet_mix().map(|mix| mix * 100.0),
         additive_note_db_below_local: approach.additive_note_db_below_local(),
         minimum_preprocess_dry_correlation: pitch_audit.minimum_correlation,
         minimum_preprocess_difference_rms_db_relative: pitch_audit.minimum_difference_db,
@@ -434,7 +430,6 @@ fn pair_metrics(
             .join(";"),
         pitch_algorithm_version: ALGORITHM_VERSION.to_owned(),
         processed_role: approach.processed_role().to_owned(),
-        parallel_wet_mix_percent: preprocessing.parallel_wet_mix_percent,
         additive_note_db_below_local: preprocessing.additive_note_db_below_local,
         preprocess_dry_correlation: preprocessing.dry_correlation,
         preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
@@ -510,17 +505,12 @@ fn verify_metric_assignments(
             || row.chord_index != expected_chord
             || row.pitch_algorithm_version != ALGORITHM_VERSION
             || row.processed_role != approach.processed_role()
-            || row.parallel_wet_mix_percent != approach.parallel_wet_mix().map(|mix| mix * 100.0)
             || row.additive_note_db_below_local != approach.additive_note_db_below_local()
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
-        let (minimum_correlation, maximum_difference_db) =
-            if approach == PitchApproach::LongAdditiveSynth {
-                (0.95, -10.0)
-            } else {
-                (0.98, -18.0)
-            };
+        let minimum_correlation = 0.95;
+        let maximum_difference_db = -10.0;
         if row.preprocess_dry_correlation < minimum_correlation
             || !row.preprocess_difference_rms_db_relative.is_finite()
             || row.preprocess_difference_rms_db_relative > maximum_difference_db
@@ -616,7 +606,7 @@ mod tests {
     fn pair_metrics_is_a_flat_csv_record() {
         let metrics = PairMetrics {
             pair: "01-02".into(),
-            approach: "pure_convolution".into(),
+            approach: "short_additive_synth".into(),
             left: "left".into(),
             right: "right".into(),
             short_fingerprint: "0000000000000001".into(),
@@ -626,10 +616,9 @@ mod tests {
             chord_frequencies_hz: "198.0;110.0;154.0".into(),
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
             processed_role: "short".into(),
-            parallel_wet_mix_percent: Some(3.0),
-            additive_note_db_below_local: None,
-            preprocess_dry_correlation: 0.999,
-            preprocess_difference_rms_db_relative: -24.0,
+            additive_note_db_below_local: 6.0,
+            preprocess_dry_correlation: 0.97,
+            preprocess_difference_rms_db_relative: -13.0,
             path: "wav/left__right.wav".into(),
             channels: 2,
             trim_frames: 21,
@@ -656,7 +645,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,parallel_wet_mix_percent,additive_note_db_below_local,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,additive_note_db_below_local,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

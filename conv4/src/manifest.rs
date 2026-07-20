@@ -98,6 +98,20 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
                 entry.id
             );
         }
+        let expected_license_url = match entry.license.as_str() {
+            "CC0 1.0" => "https://creativecommons.org/publicdomain/zero/1.0/",
+            "CC BY 3.0" => "https://creativecommons.org/licenses/by/3.0/",
+            "CC BY 4.0" => "https://creativecommons.org/licenses/by/4.0/",
+            "CC BY-SA 3.0" => "https://creativecommons.org/licenses/by-sa/3.0/",
+            _ => bail!("{} does not declare an approved open license", entry.id),
+        };
+        if entry.license_url != expected_license_url {
+            bail!(
+                "{} has a license URL that does not match {}",
+                entry.id,
+                entry.license
+            );
+        }
         for (label, url) in [
             ("license", entry.license_url.as_str()),
             ("source", entry.source_page.as_str()),

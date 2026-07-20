@@ -16,7 +16,8 @@ use crate::convolution::{CUT_FADE_MILLISECONDS, TRIM_FRACTION_OF_SHORTER};
 use crate::convolution::{PairJob, convolve_stereo_spectra, group_jobs, make_jobs, prepare_group};
 use crate::manifest::{SourceEntry, is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{
-    Chord, PitchApproach, chord, chord_index, fingerprint_bytes, fingerprint_hex, preprocess,
+    ALGORITHM_VERSION, PitchApproach, PreprocessedClip, chord, chord_index, fingerprint_bytes,
+    fingerprint_hex, preprocess,
 };
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,12 @@ struct PairMetrics {
     chord_index: usize,
     chord_steps: String,
     chord_frequencies_hz: String,
+    pitch_algorithm_version: String,
+    processed_role: String,
+    parallel_wet_mix_percent: Option<f32>,
+    additive_note_db_below_local: Option<f32>,
+    preprocess_dry_correlation: f32,
+    preprocess_difference_rms_db_relative: f32,
     path: String,
     channels: u16,
     trim_frames: usize,
@@ -79,6 +86,13 @@ struct VerificationReport {
     pitch_scale: &'static str,
     chord_count: usize,
     chord_hash: &'static str,
+    pitch_algorithm_version: &'static str,
+    processed_role: &'static str,
+    parallel_wet_mix_percent: Option<f32>,
+    additive_note_db_below_local: Option<f32>,
+    minimum_preprocess_dry_correlation: f32,
+    minimum_preprocess_difference_rms_db_relative: f32,
+    maximum_preprocess_difference_rms_db_relative: f32,
     source_count: usize,
     category_count: usize,
     sources_per_category: usize,
@@ -110,6 +124,13 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     let sources = load_manifest(&options.manifest)?;
     let (clips, fingerprints) = load_clips(&sources, &options.input_dir)?;
     fs::create_dir_all(options.output_dir.join("wav"))?;
+    let version_path = options.output_dir.join("pitch_algorithm.txt");
+    let cache_matches = !options.force
+        && fs::read_to_string(&version_path)
+            .is_ok_and(|version| version.trim() == ALGORITHM_VERSION);
+    if !cache_matches && version_path.exists() {
+        fs::remove_file(&version_path)?;
+    }
     let thread_approach = options.approach;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.jobs)
@@ -146,8 +167,16 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                     let selected_chord_index =
                         chord_index(fingerprints[job.left], fingerprints[job.right]);
                     let selected_chord = chord(selected_chord_index);
+                    let preprocessing_input =
+                        if options.approach == PitchApproach::LongAdditiveSynth {
+                            &clips[job.right].samples
+                        } else {
+                            &clips[job.left].samples
+                        };
+                    let preprocessing =
+                        preprocess(preprocessing_input, selected_chord, options.approach);
                     let path = pair_path(&options.output_dir, &clips, job);
-                    let metrics = if path.exists() && !options.force {
+                    let metrics = if path.exists() && cache_matches {
                         let metrics = measure_wav(&path)?;
                         validate_stereo_metrics(
                             &metrics,
@@ -156,9 +185,14 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         )?;
                         metrics
                     } else {
-                        let track_1 =
-                            preprocess(&clips[job.left].samples, selected_chord, options.approach);
-                        let mut output = convolve_stereo_spectra(&group, job, &clips, &track_1)?;
+                        let (track_1, track_2) =
+                            if options.approach == PitchApproach::LongAdditiveSynth {
+                                (None, Some(preprocessing.samples.as_slice()))
+                            } else {
+                                (Some(preprocessing.samples.as_slice()), None)
+                            };
+                        let mut output =
+                            convolve_stereo_spectra(&group, job, &clips, track_1, track_2)?;
                         let metrics = condition_stereo_output(&mut output)?;
                         write_pcm16_stereo(&path, &output)?;
                         metrics
@@ -173,7 +207,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         &fingerprints,
                         job,
                         options.approach,
-                        selected_chord,
+                        &preprocessing,
                         metrics,
                     ))
                 })
@@ -185,6 +219,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     all_metrics.sort_by(|a, b| a.pair.cmp(&b.pair));
     write_metrics(&options.output_dir, &all_metrics)?;
     write_matrix(&options.output_dir, &clips, &short_indices, &long_indices)?;
+    fs::write(&version_path, format!("{ALGORITHM_VERSION}\n"))?;
     eprintln!("render completed in {:.1?}", started.elapsed());
 
     verify_loaded(
@@ -245,6 +280,16 @@ fn verify_loaded(
 ) -> Result<()> {
     let (short_indices, long_indices) = duration_indices(sources);
     let jobs = make_jobs(clips, &short_indices, &long_indices);
+    let version_path = output_dir.join("pitch_algorithm.txt");
+    let version = fs::read_to_string(&version_path)
+        .with_context(|| format!("read pitch algorithm marker {}", version_path.display()))?;
+    if version.trim() != ALGORITHM_VERSION {
+        bail!(
+            "{} contains pitch algorithm {:?}, expected {ALGORITHM_VERSION}",
+            output_dir.display(),
+            version.trim()
+        );
+    }
     let metrics = pool.install(|| {
         jobs.par_iter()
             .map(|job| {
@@ -263,7 +308,7 @@ fn verify_loaded(
     if actual_wavs != jobs.len() {
         bail!("found {actual_wavs} WAVs, expected exactly {}", jobs.len());
     }
-    verify_metric_assignments(output_dir, clips, fingerprints, &jobs, approach)?;
+    let pitch_audit = verify_metric_assignments(output_dir, clips, fingerprints, &jobs, approach)?;
 
     let stereo_difference = metrics
         .iter()
@@ -291,6 +336,13 @@ fn verify_loaded(
         pitch_scale: "13-EDT Bohlen-Pierce; 3:1 tritave; chord steps [root, root+6, root+10]",
         chord_count: 13,
         chord_hash: "FNV-1a-64 over prepared WAV bytes, then domain-separated ordered pair modulo 13",
+        pitch_algorithm_version: ALGORITHM_VERSION,
+        processed_role: approach.processed_role(),
+        parallel_wet_mix_percent: approach.parallel_wet_mix().map(|mix| mix * 100.0),
+        additive_note_db_below_local: approach.additive_note_db_below_local(),
+        minimum_preprocess_dry_correlation: pitch_audit.minimum_correlation,
+        minimum_preprocess_difference_rms_db_relative: pitch_audit.minimum_difference_db,
+        maximum_preprocess_difference_rms_db_relative: pitch_audit.maximum_difference_db,
         source_count: sources.len(),
         category_count: crate::manifest::REQUIRED_DOMAINS.len(),
         sources_per_category: 2,
@@ -362,10 +414,11 @@ fn pair_metrics(
     fingerprints: &[u64],
     job: &PairJob,
     approach: PitchApproach,
-    chord: Chord,
+    preprocessing: &PreprocessedClip,
     audio: StereoMetrics,
 ) -> PairMetrics {
     let path = pair_path(output_dir, clips, job);
+    let chord = chord(chord_index(fingerprints[job.left], fingerprints[job.right]));
     PairMetrics {
         pair: format!("{:02}-{:02}", job.left + 1, job.right + 1),
         approach: approach.slug().to_owned(),
@@ -379,6 +432,12 @@ fn pair_metrics(
             .frequencies_hz
             .map(|frequency| format!("{frequency:.6}"))
             .join(";"),
+        pitch_algorithm_version: ALGORITHM_VERSION.to_owned(),
+        processed_role: approach.processed_role().to_owned(),
+        parallel_wet_mix_percent: preprocessing.parallel_wet_mix_percent,
+        additive_note_db_below_local: preprocessing.additive_note_db_below_local,
+        preprocess_dry_correlation: preprocessing.dry_correlation,
+        preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
         path: path
             .strip_prefix(output_dir)
             .unwrap_or(&path)
@@ -406,13 +465,19 @@ fn pair_metrics(
     }
 }
 
+struct PitchMetadataAudit {
+    minimum_correlation: f32,
+    minimum_difference_db: f32,
+    maximum_difference_db: f32,
+}
+
 fn verify_metric_assignments(
     output_dir: &Path,
     clips: &[AudioClip],
     fingerprints: &[u64],
     jobs: &[PairJob],
     approach: PitchApproach,
-) -> Result<()> {
+) -> Result<PitchMetadataAudit> {
     let path = output_dir.join("metrics.csv");
     let mut reader = csv::Reader::from_path(&path)?;
     let rows = reader
@@ -443,11 +508,43 @@ fn verify_metric_assignments(
             || row.short_fingerprint != fingerprint_hex(fingerprints[job.left])
             || row.long_fingerprint != fingerprint_hex(fingerprints[job.right])
             || row.chord_index != expected_chord
+            || row.pitch_algorithm_version != ALGORITHM_VERSION
+            || row.processed_role != approach.processed_role()
+            || row.parallel_wet_mix_percent != approach.parallel_wet_mix().map(|mix| mix * 100.0)
+            || row.additive_note_db_below_local != approach.additive_note_db_below_local()
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
+        let (minimum_correlation, difference_range) =
+            if approach == PitchApproach::LongAdditiveSynth {
+                (0.95, -30.0..=-10.0)
+            } else {
+                (0.98, -40.0..=-18.0)
+            };
+        if row.preprocess_dry_correlation < minimum_correlation
+            || !difference_range.contains(&row.preprocess_difference_rms_db_relative)
+        {
+            bail!(
+                "pair {pair} pitch preprocessing is not subtle: correlation={}, difference={} dB",
+                row.preprocess_dry_correlation,
+                row.preprocess_difference_rms_db_relative
+            );
+        }
     }
-    Ok(())
+    Ok(PitchMetadataAudit {
+        minimum_correlation: rows
+            .values()
+            .map(|row| row.preprocess_dry_correlation)
+            .fold(f32::INFINITY, f32::min),
+        minimum_difference_db: rows
+            .values()
+            .map(|row| row.preprocess_difference_rms_db_relative)
+            .fold(f32::INFINITY, f32::min),
+        maximum_difference_db: rows
+            .values()
+            .map(|row| row.preprocess_difference_rms_db_relative)
+            .fold(f32::NEG_INFINITY, f32::max),
+    })
 }
 
 fn write_metrics(output_dir: &Path, metrics: &[PairMetrics]) -> Result<()> {
@@ -526,6 +623,12 @@ mod tests {
             chord_index: 7,
             chord_steps: "7;0;4".into(),
             chord_frequencies_hz: "198.0;110.0;154.0".into(),
+            pitch_algorithm_version: ALGORITHM_VERSION.into(),
+            processed_role: "short".into(),
+            parallel_wet_mix_percent: Some(3.0),
+            additive_note_db_below_local: None,
+            preprocess_dry_correlation: 0.999,
+            preprocess_difference_rms_db_relative: -24.0,
             path: "wav/left__right.wav".into(),
             channels: 2,
             trim_frames: 21,
@@ -552,7 +655,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,parallel_wet_mix_percent,additive_note_db_below_local,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Render all three pitch approaches over the 24x24 bipartite matrix.
+    /// Render all four pitch approaches over the 24x24 bipartite matrix.
     Render {
         #[arg(long, default_value = "sources.tsv")]
         manifest: PathBuf,
@@ -32,7 +32,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Exhaustively validate all three 24x24 matrix outputs.
+    /// Exhaustively validate all four 24x24 matrix outputs.
     Verify {
         #[arg(long, default_value = "sources.tsv")]
         manifest: PathBuf,

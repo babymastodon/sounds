@@ -1,25 +1,25 @@
 # conv8
 
-conv8 is a pitch-and-rhythm playground built from conv7. It reuses the same 48 open-licensed inputs, 24×24 short-to-long matrix, complementary stereo trims, convolution-only outputs, ten-second final crossfades, verification gates, and FLAC/AAC/Opus encoders. Its experimental variable is the preprocessing applied to the short input before each convolution.
+conv8 is a pitch-and-rhythm playground built from conv7. It reuses the same 48 open-licensed inputs, 24×24 short-to-long matrix, complementary stereo trims, convolution-only outputs, ten-second final crossfades, verification gates, and FLAC/AAC/Opus encoders. Its experimental variable is subtle chord-related preprocessing applied before each convolution.
 
-## Controlled three-way comparison
+## Controlled four-way comparison
 
-Every short/long pair is rendered three times:
+Every short/long pair is rendered four times. The first three treatments preserve the short recording as the dominant signal by RMS-matching an effect branch, mixing it quietly in parallel, fading the boundaries, and matching the combined RMS back to the input:
 
-1. **Pure convolution** applies the entire chord simultaneously with a bank of three two-pole resonators. Each resonator is an IIR realization of convolution by an exponentially decaying sinusoidal impulse response:
+1. **Pure convolution** mixes 3% of a three-note, 0.18-second two-pole resonator bank into 97% of the short input. Each resonator is an IIR realization of convolution by an exponentially decaying sinusoidal impulse response:
 
    ~~~text
    H_i(z) = (1-r) / (1 - 2r cos(ω_i)z^-1 + r²z^-2)
-   decay = 0.72 seconds
+   decay = 0.18 seconds
    ~~~
 
-2. **Sequenced convolution** divides the short input into 50%-overlapped Hann grains on a 96 BPM eighth-note grid. Each grain passes through a single-note 0.24-second resonator, follows chord-tone pattern `0,1,2,1,0,2,0,1`, and receives repeating accents `1.00,0.72,0.86,0.68,1.00,0.76,0.90,0.70`. Overlap-add produces an arpeggiated, explicitly rhythmic preprocessing signal.
+2. **Sequenced convolution** mixes 4% of a rhythmic effect into 96% of the short input. The effect divides the recording into 50%-overlapped Hann grains on a 96 BPM eighth-note grid. Each grain passes through a single-note 0.12-second resonator, follows chord-tone pattern `0,1,2,1,0,2,0,1`, and receives repeating accents `1.00,0.72,0.86,0.68,1.00,0.76,0.90,0.70`.
 
-3. **Hybrid spectral** multiplies the short input by three cosine carriers at the chord frequencies, with phases spaced by 120 degrees, creating sum-and-difference spectral translations. A three-note 0.32-second resonator bank then reinforces the selected chord. Time multiplication is frequency-domain convolution, so this approach can create spectral energy that an LTI filter alone cannot.
+3. **Hybrid spectral** mixes 2.5% of a modulated effect into 97.5% of the short input. The effect multiplies the recording by three cosine carriers at the chord frequencies, then passes it through a three-note 0.10-second resonator bank. Time multiplication creates sum-and-difference spectral translations that an LTI filter alone cannot.
 
-Every preprocessor preserves the exact short-input frame count, RMS-matches its result to the conditioned short input, and applies 20 ms boundary fades. No unprocessed short or long source is mixed into the output.
+4. **Long additive synth** leaves the short input unchanged and adds 250 ms muted-kalimba-like notes to the long input every 1.25 seconds. The deterministic note sequence draws from the same selected chord. Each four-partial note is independently scaled to 6 dB below the surrounding long-input RMS, using a local half-interval window, before the augmented long input is RMS-matched to the original.
 
-The preprocessed short clip `P(A)` replaces `A` in the inherited stereo convolution:
+Every treatment preserves the processed input's exact frame count and applies 20 ms boundary fades. There is no post-convolution dry-source mix: both output channels remain convolution products. For the first three approaches, `P(A)` is the subtly processed short clip and `B` is unchanged:
 
 ~~~text
 D = round(0.5 × min(length(A), length(B)))
@@ -31,7 +31,17 @@ right = linear_convolution(P_short, B)
 frames_per_channel = length(A) + length(B) - D - 1
 ~~~
 
-Consequently all approaches use identical source pairs, trim lengths, output lengths, channel roles, conditioning, ordering, and final encoding settings.
+For the fourth, `A` is unchanged and `Q(B)` is the augmented long clip:
+
+~~~text
+Q_short = Q(B) without its final D frames
+A_short = A without its initial D frames
+
+left  = linear_convolution(A,       Q_short)
+right = linear_convolution(A_short, Q(B))
+~~~
+
+All approaches use identical source pairs, trim lengths, output lengths, channel roles, conditioning, ordering, and final encoding settings. Verification requires the first three processed clips to correlate at least 0.98 with the dry short input and the fourth to correlate at least 0.95 with the dry long input.
 
 ## Thirteen-chord scale and deterministic assignment
 
@@ -54,12 +64,13 @@ The domain tags and byte order are fixed in `src/pitch.rs`. The ordered short→
 
 ## Corpus and matrix
 
-The [sources.tsv](sources.tsv) manifest is inherited unchanged from conv7: one 5–15 second and one 25–35 second recording in each of 24 themes. Only short→long pairs exist, producing 576 WAVs per approach and 1,728 total. Each output directory contains its own 24×24 `matrix.csv`, detailed metrics, and verification report:
+The [sources.tsv](sources.tsv) manifest is inherited unchanged from conv7: one 5–15 second and one 25–35 second recording in each of 24 themes. Only short→long pairs exist, producing 576 WAVs per approach and 2,304 total. Each output directory contains its own 24×24 `matrix.csv`, detailed metrics, algorithm-version marker, and verification report:
 
 ~~~text
 outputs/pure_convolution/
 outputs/sequenced_convolution/
 outputs/hybrid_spectral/
+outputs/long_additive_synth/
 ~~~
 
 ## Run the complete pipeline
@@ -79,7 +90,7 @@ cargo run --release -- verify
 cargo run --release -- concat
 ~~~
 
-render, verify, and concat process the approaches in the fixed order pure, sequenced, hybrid. `DOWNLOAD_JOBS` controls download concurrency, while `CONV_JOBS` or `--jobs` controls FFT rendering and verification. Existing valid stages are reused unless `--force` is supplied.
+render, verify, and concat process the approaches in the fixed order pure, sequenced, hybrid, additive. `DOWNLOAD_JOBS` controls download concurrency, while `CONV_JOBS` or `--jobs` controls FFT rendering and verification. Render reuse requires a matching pitch-algorithm marker; `--force` rebuilds every file.
 
 ## Final masters
 
@@ -89,30 +100,11 @@ Each approach is independently concatenated in pair order with crossfades of up 
 outputs/final/pure_convolution/
 outputs/final/sequenced_convolution/
 outputs/final/hybrid_spectral/
+outputs/final/long_additive_synth/
 ~~~
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
 ## Full-run audit
 
-The first complete run finished on 2026-07-19 with eight logical CPU cores, reusing the exact 48 prepared WAVs and unchanged source manifest from `conv7`. All 576 pairs selected their chord from the prepared-file byte hashes. The chord-assignment columns in the three metrics tables have the same SHA-256 signature, and all 13 chords occur in each approach, from 35 to 58 pairs per chord.
-
-Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; the combined playground contains 1,728 WAVs and 11,667,525,120 bytes. Pure convolution rendered in 14.4 seconds, sequenced convolution in 20.0 seconds, and hybrid spectral in 20.3 seconds. Release compilation, all renders, and their built-in exhaustive verification took 1:39.61 with 1,228,104 KiB peak resident memory. A second independent verification of all 1,728 files and deterministic metadata took 27.67 seconds with 509,252 KiB peak resident memory.
-
-| Approach | RMS range dBFS | Maximum peak | Maximum L/R RMS delta | Stereo-difference range dBFS |
-|---|---:|---:|---:|---:|
-| Pure convolution | −20.86 to −20.07 | 0.836 | 0.555 dB | −26.60 to −15.87 |
-| Sequenced convolution | −22.02 to −20.07 | 0.857 | 0.670 dB | −26.39 to −14.59 |
-| Hybrid spectral | −21.21 to −20.09 | 0.869 | 1.057 dB | −22.74 to −15.02 |
-
-Every approach passed all finite-sample, clipping, peak, RMS, DC-offset, exact-length, matrix-membership, chord-metadata, and distinct-stereo checks.
-
-All three final programs contain 696,287,424 frames (4:01:45.988). Every one of their 575 transitions receives the full ten-second crossfade, so their timelines remain sample-aligned. Assembly, twelve parallel-within-approach encodes, and end-to-end decode checks took 7:36.23.
-
-| Approach | RF64 | FLAC | AAC/M4A | Opus 128k | Opus 32k |
-|---|---:|---:|---:|---:|---:|
-| Pure convolution | 2,785,149,776 | 420,904,133 | 350,867,229 | 224,887,484 | 62,143,438 |
-| Sequenced convolution | 2,785,149,776 | 422,378,380 | 350,867,301 | 223,160,765 | 61,312,296 |
-| Hybrid spectral | 2,785,149,776 | 419,983,165 | 350,867,181 | 220,475,120 | 59,297,809 |
-
-Sizes are bytes. Every compressed master decoded without errors and independently probed as stereo 48 kHz with the expected codec and duration.
+The earlier fully wet three-way run was superseded because its pitched treatments masked the source material. The `subtle-parallel-v2` four-way matrices and masters are being rebuilt from scratch; this section will record their measured verification and encoding results after completion.

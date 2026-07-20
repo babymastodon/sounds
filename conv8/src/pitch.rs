@@ -10,19 +10,28 @@ const CHORD_INTERVALS: [usize; 3] = [0, 6, 10];
 const SEQUENCE_PATTERN: [usize; 8] = [0, 1, 2, 1, 0, 2, 0, 1];
 const SEQUENCE_ACCENTS: [f32; 8] = [1.0, 0.72, 0.86, 0.68, 1.0, 0.76, 0.9, 0.7];
 const SEQUENCE_BPM: f32 = 96.0;
+const PURE_WET_MIX: f32 = 0.03;
+const SEQUENCED_WET_MIX: f32 = 0.04;
+const HYBRID_WET_MIX: f32 = 0.025;
+const ADDITIVE_NOTE_DB_BELOW_LOCAL: f32 = 6.0;
+const ADDITIVE_NOTE_SECONDS: f32 = 0.25;
+const ADDITIVE_INTERVAL_SECONDS: f32 = 1.25;
+pub const ALGORITHM_VERSION: &str = "subtle-parallel-v2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
     PureConvolution,
     SequencedConvolution,
     HybridSpectral,
+    LongAdditiveSynth,
 }
 
 impl PitchApproach {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::PureConvolution,
         Self::SequencedConvolution,
         Self::HybridSpectral,
+        Self::LongAdditiveSynth,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -30,18 +39,45 @@ impl PitchApproach {
             Self::PureConvolution => "pure_convolution",
             Self::SequencedConvolution => "sequenced_convolution",
             Self::HybridSpectral => "hybrid_spectral",
+            Self::LongAdditiveSynth => "long_additive_synth",
         }
     }
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::PureConvolution => "whole-clip three-note IIR convolutional resonator",
+            Self::PureConvolution => "subtle parallel three-note IIR convolutional resonator",
             Self::SequencedConvolution => {
-                "96 BPM overlap-add grains through arpeggiated single-note resonators"
+                "subtle parallel 96 BPM grains through arpeggiated single-note resonators"
             }
             Self::HybridSpectral => {
-                "three-note ring modulation followed by a convolutional resonator bank"
+                "subtle parallel ring modulation followed by a convolutional resonator bank"
             }
+            Self::LongAdditiveSynth => {
+                "locally leveled short additive notes mixed into the unfiltered long input"
+            }
+        }
+    }
+
+    pub const fn parallel_wet_mix(self) -> Option<f32> {
+        match self {
+            Self::PureConvolution => Some(PURE_WET_MIX),
+            Self::SequencedConvolution => Some(SEQUENCED_WET_MIX),
+            Self::HybridSpectral => Some(HYBRID_WET_MIX),
+            Self::LongAdditiveSynth => None,
+        }
+    }
+
+    pub const fn additive_note_db_below_local(self) -> Option<f32> {
+        match self {
+            Self::LongAdditiveSynth => Some(ADDITIVE_NOTE_DB_BELOW_LOCAL),
+            _ => None,
+        }
+    }
+
+    pub const fn processed_role(self) -> &'static str {
+        match self {
+            Self::LongAdditiveSynth => "long",
+            _ => "short",
         }
     }
 }
@@ -51,6 +87,15 @@ pub struct Chord {
     pub index: usize,
     pub steps: [usize; 3],
     pub frequencies_hz: [f32; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct PreprocessedClip {
+    pub samples: Vec<f32>,
+    pub parallel_wet_mix_percent: Option<f32>,
+    pub additive_note_db_below_local: Option<f32>,
+    pub dry_correlation: f32,
+    pub difference_rms_db_relative: f32,
 }
 
 pub fn fingerprint_bytes(bytes: &[u8]) -> u64 {
@@ -84,14 +129,92 @@ pub fn chord(index: usize) -> Chord {
     }
 }
 
-pub fn preprocess(input: &[f32], chord: Chord, approach: PitchApproach) -> Vec<f32> {
-    let mut output = match approach {
-        PitchApproach::PureConvolution => resonator_bank(input, &chord.frequencies_hz, 0.72),
+pub fn preprocess(input: &[f32], chord: Chord, approach: PitchApproach) -> PreprocessedClip {
+    if approach == PitchApproach::LongAdditiveSynth {
+        return additive_synth_voice(input, chord);
+    }
+    let mut effect = match approach {
+        PitchApproach::PureConvolution => resonator_bank(input, &chord.frequencies_hz, 0.18),
         PitchApproach::SequencedConvolution => sequenced_voice(input, chord),
         PitchApproach::HybridSpectral => hybrid_voice(input, chord),
+        PitchApproach::LongAdditiveSynth => unreachable!(),
     };
-    match_rms_and_fade(input, &mut output);
-    output
+    match_rms(input, &mut effect);
+
+    let wet = approach.parallel_wet_mix().unwrap_or(0.0);
+    let dry = 1.0 - wet;
+    let mut samples = input
+        .iter()
+        .zip(effect)
+        .map(|(&input, effect)| dry.mul_add(input, wet * effect))
+        .collect::<Vec<_>>();
+    apply_edge_fade(&mut samples);
+    match_rms(input, &mut samples);
+
+    let dry_correlation = correlation(input, &samples);
+    let difference_rms_db_relative = relative_difference_db(input, &samples);
+    PreprocessedClip {
+        samples,
+        parallel_wet_mix_percent: Some(wet * 100.0),
+        additive_note_db_below_local: None,
+        dry_correlation,
+        difference_rms_db_relative,
+    }
+}
+
+fn additive_synth_voice(input: &[f32], chord: Chord) -> PreprocessedClip {
+    let mut samples = input.to_vec();
+    let interval_frames = (ADDITIVE_INTERVAL_SECONDS * SAMPLE_RATE as f32).round() as usize;
+    let note_frames = (ADDITIVE_NOTE_SECONDS * SAMPLE_RATE as f32).round() as usize;
+    let first_onset = interval_frames / 2;
+    for (note_index, onset) in (first_onset..input.len())
+        .step_by(interval_frames)
+        .enumerate()
+    {
+        let end = (onset + note_frames).min(input.len());
+        let frames = end - onset;
+        let frequency = chord.frequencies_hz[SEQUENCE_PATTERN[note_index % SEQUENCE_PATTERN.len()]];
+        let mut note = (0..frames)
+            .map(|frame| {
+                let time = frame as f32 / SAMPLE_RATE as f32;
+                let attack = (time / 0.008).min(1.0);
+                let decay = (-5.0 * time / ADDITIVE_NOTE_SECONDS).exp();
+                let envelope = attack * attack * decay;
+                let partials = (2.0 * PI * frequency * time).sin()
+                    + 0.28 * (2.0 * PI * frequency * 2.01 * time + 0.3).sin()
+                    + 0.11 * (2.0 * PI * frequency * 3.93 * time + 0.8).sin()
+                    + 0.04 * (2.0 * PI * frequency * 6.79 * time + 1.1).sin();
+                partials * envelope
+            })
+            .collect::<Vec<_>>();
+
+        let local_start = onset.saturating_sub(interval_frames / 4);
+        let local_end = (onset + interval_frames / 4).min(input.len());
+        let local_rms = rms(&input[local_start..local_end]);
+        let target_rms = local_rms * 10.0_f32.powf(-ADDITIVE_NOTE_DB_BELOW_LOCAL / 20.0);
+        let note_gain = target_rms / rms(&note).max(1.0e-12);
+        for (output, note) in samples[onset..end].iter_mut().zip(note.drain(..)) {
+            *output += note * note_gain;
+        }
+    }
+    apply_edge_fade(&mut samples);
+    match_rms(input, &mut samples);
+    PreprocessedClip {
+        dry_correlation: correlation(input, &samples),
+        difference_rms_db_relative: relative_difference_db(input, &samples),
+        samples,
+        parallel_wet_mix_percent: None,
+        additive_note_db_below_local: Some(ADDITIVE_NOTE_DB_BELOW_LOCAL),
+    }
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    (samples
+        .iter()
+        .map(|&sample| f64::from(sample) * f64::from(sample))
+        .sum::<f64>()
+        / samples.len().max(1) as f64)
+        .sqrt() as f32
 }
 
 fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
@@ -148,7 +271,7 @@ fn sequenced_voice(input: &[f32], chord: Chord) -> Vec<f32> {
         let source = &input[start..end];
         let note = SEQUENCE_PATTERN[grain_index % SEQUENCE_PATTERN.len()];
         let accent = SEQUENCE_ACCENTS[grain_index % SEQUENCE_ACCENTS.len()];
-        let voice = resonator(source, chord.frequencies_hz[note], 0.24);
+        let voice = resonator(source, chord.frequencies_hz[note], 0.12);
         let denominator = voice.len().saturating_sub(1).max(1) as f32;
         for (offset, voice) in voice.into_iter().enumerate() {
             let window = 0.5 - 0.5 * (2.0 * PI * offset as f32 / denominator).cos();
@@ -182,10 +305,10 @@ fn hybrid_voice(input: &[f32], chord: Chord) -> Vec<f32> {
             sample * carrier
         })
         .collect::<Vec<_>>();
-    resonator_bank(&modulated, &chord.frequencies_hz, 0.32)
+    resonator_bank(&modulated, &chord.frequencies_hz, 0.10)
 }
 
-fn match_rms_and_fade(input: &[f32], output: &mut [f32]) {
+fn match_rms(input: &[f32], output: &mut [f32]) {
     let input_energy = input
         .iter()
         .map(|&sample| f64::from(sample) * f64::from(sample))
@@ -198,7 +321,9 @@ fn match_rms_and_fade(input: &[f32], output: &mut [f32]) {
     for sample in output.iter_mut() {
         *sample *= gain.min(100.0);
     }
+}
 
+fn apply_edge_fade(output: &mut [f32]) {
     let fade_frames = (SAMPLE_RATE as usize / 50).min(output.len() / 2);
     for index in 0..fade_frames {
         let gain = index as f32 / fade_frames.max(1) as f32;
@@ -206,6 +331,40 @@ fn match_rms_and_fade(input: &[f32], output: &mut [f32]) {
         let tail = output.len() - 1 - index;
         output[tail] *= gain;
     }
+}
+
+fn correlation(left: &[f32], right: &[f32]) -> f32 {
+    let (dot, left_energy, right_energy) = left.iter().zip(right).fold(
+        (0.0_f64, 0.0_f64, 0.0_f64),
+        |(dot, left_energy, right_energy), (&left, &right)| {
+            let left = f64::from(left);
+            let right = f64::from(right);
+            (
+                dot + left * right,
+                left_energy + left * left,
+                right_energy + right * right,
+            )
+        },
+    );
+    (dot / (left_energy * right_energy).sqrt().max(1.0e-24)) as f32
+}
+
+fn relative_difference_db(input: &[f32], output: &[f32]) -> f32 {
+    let (difference_energy, input_energy) = input.iter().zip(output).fold(
+        (0.0_f64, 0.0_f64),
+        |(difference_energy, input_energy), (&input, &output)| {
+            let input = f64::from(input);
+            let difference = f64::from(output) - input;
+            (
+                difference_energy + difference * difference,
+                input_energy + input * input,
+            )
+        },
+    );
+    (10.0
+        * (difference_energy / input_energy.max(1.0e-24))
+            .max(1.0e-24)
+            .log10()) as f32
 }
 
 #[cfg(test)]
@@ -253,12 +412,20 @@ mod tests {
         let chord = chord(7);
         let outputs = PitchApproach::ALL.map(|approach| preprocess(&input, chord, approach));
         for output in &outputs {
-            assert_eq!(output.len(), input.len());
-            assert!(output.iter().all(|sample| sample.is_finite()));
-            assert!(output.iter().any(|sample| sample.abs() > 1.0e-5));
+            assert_eq!(output.samples.len(), input.len());
+            assert!(output.samples.iter().all(|sample| sample.is_finite()));
+            assert!(output.samples.iter().any(|sample| sample.abs() > 1.0e-5));
+            let (minimum_correlation, difference_range) =
+                if output.additive_note_db_below_local.is_some() {
+                    (0.95, -30.0..=-10.0)
+                } else {
+                    (0.98, -40.0..=-18.0)
+                };
+            assert!(output.dry_correlation >= minimum_correlation);
+            assert!(difference_range.contains(&output.difference_rms_db_relative));
         }
-        assert_ne!(outputs[0], outputs[1]);
-        assert_ne!(outputs[1], outputs[2]);
-        assert_ne!(outputs[0], outputs[2]);
+        assert_ne!(outputs[0].samples, outputs[1].samples);
+        assert_ne!(outputs[1].samples, outputs[2].samples);
+        assert_ne!(outputs[0].samples, outputs[2].samples);
     }
 }

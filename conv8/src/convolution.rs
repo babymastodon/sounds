@@ -98,22 +98,39 @@ pub fn convolve_stereo_spectra(
     group: &SpectralGroup,
     job: &PairJob,
     clips: &[AudioClip],
-    preprocessed_track_1: &[f32],
+    preprocessed_track_1: Option<&[f32]>,
+    preprocessed_track_2: Option<&[f32]>,
 ) -> Result<StereoAudio> {
-    if preprocessed_track_1.len() != clips[job.left].samples.len() {
+    let track_1_samples = preprocessed_track_1.unwrap_or(&clips[job.left].samples);
+    let track_2_samples = preprocessed_track_2.unwrap_or(&clips[job.right].samples);
+    if track_1_samples.len() != clips[job.left].samples.len() {
         anyhow::bail!("preprocessed track 1 changed length");
     }
-    let track_1 = forward_transform(&*group.forward, group.fft_len, preprocessed_track_1)
+    if track_2_samples.len() != clips[job.right].samples.len() {
+        anyhow::bail!("preprocessed track 2 changed length");
+    }
+    let owned_track_1 = preprocessed_track_1
+        .map(|samples| forward_transform(&*group.forward, group.fft_len, samples))
+        .transpose()
         .with_context(|| format!("preprocessed FFT for {}", clips[job.left].id))?;
-    let track_2 = &group.spectra[&job.right];
+    let track_1 = owned_track_1
+        .as_deref()
+        .unwrap_or(&group.spectra[&job.left]);
+    let owned_track_2 = preprocessed_track_2
+        .map(|samples| forward_transform(&*group.forward, group.fft_len, samples))
+        .transpose()
+        .with_context(|| format!("preprocessed FFT for {}", clips[job.right].id))?;
+    let track_2 = owned_track_2
+        .as_deref()
+        .unwrap_or(&group.spectra[&job.right]);
 
-    let shortened_track_2 = trim_final(&clips[job.right].samples, job.trim_frames);
+    let shortened_track_2 = trim_final(track_2_samples, job.trim_frames);
     let shortened_track_2_spectrum =
         forward_transform(&*group.forward, group.fft_len, &shortened_track_2)
             .with_context(|| format!("shortened FFT for {}", clips[job.right].id))?;
-    let left_channel = inverse_channel(group, job, &track_1, &shortened_track_2_spectrum)?;
+    let left_channel = inverse_channel(group, job, track_1, &shortened_track_2_spectrum)?;
 
-    let shortened_track_1 = trim_start(preprocessed_track_1, job.trim_frames);
+    let shortened_track_1 = trim_start(track_1_samples, job.trim_frames);
     let shortened_track_1_spectrum =
         forward_transform(&*group.forward, group.fft_len, &shortened_track_1)
             .with_context(|| format!("shortened FFT for {}", clips[job.left].id))?;
@@ -236,11 +253,45 @@ mod tests {
         assert_eq!(job.trim_frames, 2);
         assert_eq!(job.output_frames, 4);
         let group = prepare_group(job.fft_len, vec![job.clone()], &clips).unwrap();
-        let actual = convolve_stereo_spectra(&group, &job, &clips, &clips[0].samples).unwrap();
+        let actual = convolve_stereo_spectra(&group, &job, &clips, None, None).unwrap();
         let expected_left =
             direct_convolution(&clips[0].samples, &trim_final(&clips[1].samples, 2));
         let expected_right =
             direct_convolution(&trim_start(&clips[0].samples, 2), &clips[1].samples);
+        for (actual, expected) in actual.left.iter().zip(expected_left) {
+            assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
+        }
+        for (actual, expected) in actual.right.iter().zip(expected_right) {
+            assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn preprocessed_long_clip_is_used_in_both_channels() {
+        let clips = vec![
+            AudioClip {
+                id: "short".into(),
+                samples: vec![0.25, -0.5, 1.0, 0.125],
+            },
+            AudioClip {
+                id: "long".into(),
+                samples: vec![0.3, 0.2, -0.1],
+            },
+        ];
+        let processed_long = vec![-0.7, 0.4, 0.9];
+        let job = make_jobs(&clips, &[0], &[1]).remove(0);
+        let group = prepare_group(job.fft_len, vec![job.clone()], &clips).unwrap();
+        let actual =
+            convolve_stereo_spectra(&group, &job, &clips, None, Some(&processed_long)).unwrap();
+        let expected_left = direct_convolution(
+            &clips[0].samples,
+            &trim_final(&processed_long, job.trim_frames),
+        );
+        let expected_right = direct_convolution(
+            &trim_start(&clips[0].samples, job.trim_frames),
+            &processed_long,
+        );
+
         for (actual, expected) in actual.left.iter().zip(expected_left) {
             assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
         }
@@ -291,7 +342,7 @@ mod tests {
         ];
         let job = make_jobs(&clips, &[0], &[1]).remove(0);
         let group = prepare_group(job.fft_len, vec![job.clone()], &clips).unwrap();
-        let output = convolve_stereo_spectra(&group, &job, &clips, &clips[0].samples).unwrap();
+        let output = convolve_stereo_spectra(&group, &job, &clips, None, None).unwrap();
 
         assert!(
             output

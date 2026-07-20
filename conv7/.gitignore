@@ -1,0 +1,5 @@
+/target/
+/samples/raw/
+/samples/prepared/
+/outputs/
+*.wav.part

@@ -1,0 +1,20 @@
+[package]
+name = "conv7"
+version = "0.1.0"
+edition = "2024"
+description = "Bipartite stereo FFT convolution over short and long open audio clips"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+csv = "1.3"
+hound = "3.5"
+rayon = "1.11"
+realfft = "3.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

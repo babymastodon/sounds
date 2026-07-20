@@ -57,4 +57,8 @@ Verification checks all 1,176 files for stereo 48 kHz PCM16 encoding, exact leng
 
 ## Full-run audit
 
-The checked-in implementation and manifest tests pass. Render, matrix, and final-master measurements will be recorded here after the complete corpus run.
+The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs. The corpus contains 26 CC0 and 22 CC BY sources, and its download URLs have no overlap with any earlier corpus.
+
+The run produced 1,176 canonical stereo WAVs totaling 13,520,495,040 bytes for all 2,304 matrix cells. Rendering took 57.8 seconds; release compilation, rendering, and exhaustive verification took 106.89 seconds with peak resident memory of 2,062,156 KiB. Overall RMS ranged from −20.53 to −20.11 dBFS, maximum peak was 0.879, and maximum left/right RMS imbalance was 0.583 dB. Every pair, including all 48 self-pairs, had a verified stereo difference from −21.71 to −15.66 dBFS.
+
+The final master contains 3,098,110,824 frames (17:55:43.976), with all 1,175 transitions receiving the complete five-second crossfade. RF64 assembly, four parallel encoders, and end-to-end decode checks took 831.41 seconds with peak resident memory of 304,816 KiB. Outputs are a 12,392,443,376-byte stereo RF64, 3,950,456,279-byte FLAC, 1,561,176,005-byte AAC/M4A, 985,842,455-byte 128 kbit/s Opus, and 243,836,026-byte 32 kbit/s Opus. Every compressed master decoded without errors.

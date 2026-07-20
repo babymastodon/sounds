@@ -638,11 +638,17 @@ fn verify_metric_assignments(
         if tone_values.iter().any(|value| !value.is_finite())
             || (row.target_convolved_tone_rms_db_relative - TARGET_CONVOLVED_TONE_DB_RELATIVE).abs()
                 > 1.0e-4
-            || (row.scaled_convolved_tone_rms_db_relative - TARGET_CONVOLVED_TONE_DB_RELATIVE).abs()
-                > 1.0e-3
+            || row.tone_gain_db < 0.0
+            || row.scaled_convolved_tone_rms_db_relative
+                < TARGET_CONVOLVED_TONE_DB_RELATIVE - 1.0e-3
             || (row.unscaled_convolved_tone_rms_db_relative + row.tone_gain_db
                 - row.scaled_convolved_tone_rms_db_relative)
                 .abs()
+                > 1.0e-3
+            || (row.tone_gain_db
+                - (TARGET_CONVOLVED_TONE_DB_RELATIVE - row.unscaled_convolved_tone_rms_db_relative)
+                    .max(0.0))
+            .abs()
                 > 1.0e-3
         {
             bail!("pair {pair} has invalid convolved-tone calibration metadata");

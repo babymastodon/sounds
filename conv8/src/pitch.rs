@@ -13,7 +13,7 @@ pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-audible-ruined-v9";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-audible-floor-v10";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {

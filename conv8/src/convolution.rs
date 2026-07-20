@@ -173,7 +173,7 @@ pub fn convolve_stereo_with_tone(
     }
 
     let unscaled_db_relative = 20.0 * (tone_rms / dry_rms).log10();
-    let gain_db = target_db_relative - unscaled_db_relative;
+    let gain_db = (target_db_relative - unscaled_db_relative).max(0.0);
     let gain = 10.0_f32.powf(gain_db / 20.0);
     if !gain.is_finite() {
         anyhow::bail!("tone calibration produced a non-finite gain");
@@ -405,6 +405,27 @@ mod tests {
         assert!((measured_db - (-1.5)).abs() < 1.0e-4);
         assert!((calibration.scaled_db_relative - (-1.5)).abs() < 1.0e-4);
         assert!((calibration.gain_db - (-1.5 - calibration.unscaled_db_relative)).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn tone_calibration_never_attenuates_an_already_strong_stem() {
+        let clips = vec![
+            AudioClip {
+                id: "short".into(),
+                samples: vec![0.25, -0.5, 1.0, 0.125],
+            },
+            AudioClip {
+                id: "long".into(),
+                samples: vec![0.3, 0.2, -0.1],
+            },
+        ];
+        let tone = [0.0, 0.2, -0.1];
+        let job = make_jobs(&clips, &[0], &[1]).remove(0);
+        let group = prepare_group(job.fft_len, vec![job.clone()], &clips).unwrap();
+        let (_, calibration) =
+            convolve_stereo_with_tone(&group, &job, &clips, None, Some(&tone), -100.0).unwrap();
+        assert_eq!(calibration.gain_db, 0.0);
+        assert!((calibration.scaled_db_relative - calibration.unscaled_db_relative).abs() < 1.0e-5);
     }
 
     #[test]

@@ -27,15 +27,15 @@ Consequently a loud note is short and a quiet note rings longer, while `relative
 
 The synthesized stem retains the input's exact frame count. Its initial local levels preserve the amplitude/duration variation above, but those levels alone proved too easy to mask: in the superseded v8 render the base processed-minus-dry contribution had medians of −11.16 dB for long-input augmentation and −8.94 dB for short-input augmentation, with worst cases near −18 dB.
 
-v9 therefore calibrates audibility after convolution. For each pair and stereo trim layout it separately computes the unaugmented convolution `C_dry` and the tone-only convolution `C_tone`, then selects a gain that puts the stereo RMS of the tone contribution exactly 1.5 dB below the unaugmented convolution:
+v10 therefore calibrates audibility after convolution. For each pair and stereo trim layout it separately computes the unaugmented convolution `C_dry` and the tone-only convolution `C_tone`, then applies only the positive gain needed to put the stereo RMS of the tone contribution at least 1.5 dB below the unaugmented convolution. An already-strong stem is never attenuated:
 
 ~~~text
 unscaled_dB = 20 log10(rms(C_tone) / rms(C_dry))
-gain_dB     = −1.5 − unscaled_dB
+gain_dB     = max(0, −1.5 − unscaled_dB)
 C_output    = C_dry + 10^(gain_dB/20) C_tone
 ~~~
 
-By linearity this is exactly the convolution of the partner with `input + gain × tone_stem`; it is not a post-convolution dry-source mix. The tone component is therefore close enough to the underlying convolution to remain foreground-audible even when a particular partner spectrum strongly masks its base level. Verification checks the base stem, exact gain identity, and −1.5 dB target for every pair. Every gesture hash, instrument, exact intensity parameters, base pitch level, duration, envelope, scheduled count, unscaled level, and applied gain is recorded in `metrics.csv`.
+By linearity this is exactly the convolution of the partner with `input + gain × tone_stem`; it is not a post-convolution dry-source mix. The tone component is therefore close enough to the underlying convolution to remain foreground-audible even when a particular partner spectrum strongly masks its base level. Verification checks the base stem, exact gain identity, and −1.5 dB minimum for every pair. Every gesture hash, instrument, exact intensity parameters, base pitch level, duration, envelope, scheduled count, unscaled level, and applied gain is recorded in `metrics.csv`.
 
 There is no post-convolution dry-source mix: both output channels are convolution products. Let `A` be the short input, `B` the long input, `D` half the shorter duration, `P(A)` the augmented short input, and `Q(B)` the augmented long input.
 
@@ -89,7 +89,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-audible-ruined-v9` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-audible-floor-v10` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -123,7 +123,7 @@ Every compressed master is decoded end to end after encoding. Downloaded inputs,
 
 ## Previous full-run baseline
 
-The superseded `sparse-hashed-13edo-ruined-v8` run finished on 2026-07-19 with eight logical CPU cores. Its measurements remain below as a baseline while the convolution-calibrated v9 output is regenerated. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering, built-in verification, and release compilation took 1:13.54 with 1,238,580 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 15.10 seconds with 503,040 KiB peak resident memory.
+The superseded `sparse-hashed-13edo-ruined-v8` run finished on 2026-07-19 with eight logical CPU cores. Its measurements remain below as a baseline while the convolution-calibrated v10 output is regenerated. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering, built-in verification, and release compilation took 1:13.54 with 1,238,580 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 15.10 seconds with 503,040 KiB peak resident memory.
 
 The chord, gesture, instrument, and exact instrument-parameter columns have the same SHA-256 signature, `aac9608e1e1545cd20d4a0764ef1a7e6fac38b3bc99b78880d7fbdaa6897e19a`, in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to saturated saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 plucks, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3.
 

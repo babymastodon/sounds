@@ -9,7 +9,7 @@ use hound::{SampleFormat, WavReader};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{CHANNELS, SAMPLE_RATE, StereoAudio};
-use crate::manifest::load_manifest;
+use crate::manifest::{is_long_duration, is_short_duration, load_manifest};
 
 const FLAC_NAME: &str = "final_mix.flac";
 const AAC_NAME: &str = "final_mix.m4a";
@@ -32,6 +32,8 @@ pub struct ConcatOptions {
 #[derive(Clone, Debug, Deserialize)]
 struct MetricsRow {
     pair: String,
+    left: String,
+    right: String,
     path: String,
     frames: usize,
 }
@@ -95,15 +97,19 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     }
 
     let sources = load_manifest(&options.manifest)?;
-    let expected_pairs = sources.len() * (sources.len() + 1) / 2;
+    let short_ids = sources
+        .iter()
+        .filter(|source| is_short_duration(source.seconds))
+        .map(|source| source.id.as_str())
+        .collect::<HashSet<_>>();
+    let long_ids = sources
+        .iter()
+        .filter(|source| is_long_duration(source.seconds))
+        .map(|source| source.id.as_str())
+        .collect::<HashSet<_>>();
     let mut rows = read_metrics(&options.metrics)?;
     rows.sort_by(|left, right| left.pair.cmp(&right.pair));
-    if rows.len() != expected_pairs {
-        bail!(
-            "metrics contain {} files, expected {expected_pairs}",
-            rows.len()
-        );
-    }
+    validate_bipartite_rows(&rows, &short_ids, &long_ids)?;
     let unique_paths = rows
         .iter()
         .map(|row| row.path.as_str())
@@ -219,6 +225,38 @@ fn read_metrics(path: &Path) -> Result<Vec<MetricsRow>> {
         .deserialize()
         .map(|row| row.context("parse metrics row"))
         .collect()
+}
+
+fn validate_bipartite_rows(
+    rows: &[MetricsRow],
+    short_ids: &HashSet<&str>,
+    long_ids: &HashSet<&str>,
+) -> Result<()> {
+    let expected_pairs = short_ids.len() * long_ids.len();
+    if rows.len() != expected_pairs {
+        bail!(
+            "metrics contain {} files, expected {expected_pairs}",
+            rows.len()
+        );
+    }
+    for row in rows {
+        if !short_ids.contains(row.left.as_str()) || !long_ids.contains(row.right.as_str()) {
+            bail!(
+                "metrics pair {} is not a short-to-long convolution: {} -> {}",
+                row.pair,
+                row.left,
+                row.right
+            );
+        }
+    }
+    let pairs = rows
+        .iter()
+        .map(|row| (row.left.as_str(), row.right.as_str()))
+        .collect::<HashSet<_>>();
+    if pairs.len() != expected_pairs {
+        bail!("metrics do not contain every short-to-long pair exactly once");
+    }
+    Ok(())
 }
 
 fn sequence_layout(
@@ -718,9 +756,11 @@ fn probe_encoding(
 mod tests {
     use super::*;
 
-    fn row(pair: &str, frames: usize) -> MetricsRow {
+    fn row(pair: &str, left: &str, right: &str, frames: usize) -> MetricsRow {
         MetricsRow {
             pair: pair.into(),
+            left: left.into(),
+            right: right.into(),
             path: format!("wav/{pair}.wav"),
             frames,
         }
@@ -728,12 +768,38 @@ mod tests {
 
     #[test]
     fn layout_uses_full_fades_after_the_master_is_long_enough() {
-        let rows = vec![row("01-01", 2), row("01-02", 3), row("01-03", 20)];
+        let rows = vec![
+            row("01-02", "short", "long_1", 2),
+            row("01-04", "short", "long_2", 3),
+            row("01-06", "short", "long_3", 20),
+        ];
         let (transitions, starts, frames) = sequence_layout(&rows, 5).unwrap();
 
         assert_eq!(transitions, vec![2, 3]);
         assert_eq!(starts, vec![0, 0, 0]);
         assert_eq!(frames, 20);
+    }
+
+    #[test]
+    fn metrics_must_be_a_complete_short_to_long_matrix() {
+        let short_ids = HashSet::from(["short_1", "short_2"]);
+        let long_ids = HashSet::from(["long_1", "long_2"]);
+        let valid = vec![
+            row("01-02", "short_1", "long_1", 10),
+            row("01-04", "short_1", "long_2", 10),
+            row("03-02", "short_2", "long_1", 10),
+            row("03-04", "short_2", "long_2", 10),
+        ];
+        assert!(validate_bipartite_rows(&valid, &short_ids, &long_ids).is_ok());
+
+        let mut wrong_role = valid.clone();
+        wrong_role[3].left = "long_1".into();
+        assert!(validate_bipartite_rows(&wrong_role, &short_ids, &long_ids).is_err());
+
+        let mut duplicate = valid;
+        duplicate[3].left = "short_1".into();
+        duplicate[3].right = "long_1".into();
+        assert!(validate_bipartite_rows(&duplicate, &short_ids, &long_ids).is_err());
     }
 
     #[test]

@@ -15,21 +15,34 @@ The ordered pair of track names deterministically selects one of three aggressiv
 2. **Inharmonic FM/PM** runs three carriers spread `±28–48` cents, each driven by non-integer modulators at `sqrt(2)` and `2.731` times its frequency. Its index now falls from `6–9` to `2.5–4`, self feedback is `0.35–0.55`, cross-feedback is only 8% of the feedback term, and the former sample-held phase jumps are replaced by smooth 0.08-radian drift. The final voice is 45% clean detuned carrier, 40% raw FM, and 15% parallel 10-bit folded ruin, keeping metallic grit around an audible pitch center.
 3. **Destroyed saw cluster** runs seven voices across `±55–85` cents with `±12–24` cents of independent drift. It blends `60–80%` deliberately aliased signal with `45–70%` hard-sync discontinuities, holds oscillator samples for two to four frames, adds digital dust, clips at `7–10×` drive, wavefolds three or four times, and finally crushes to 5–7 bits. This is intentionally the grittiest family.
 
-Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count, rotates chord-tone pattern `0,1,2,1,0,2,0,1`, and jitters each onset within an evenly distributed slot, so gestures span the clip without becoming a beat grid.
+Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count and rotates chord-tone pattern `0,1,2,1,0,2,0,1`. v14 schedules the long notes by their centers in two alternating lanes, applies restrained deterministic jitter, and reserves room for every later note in its lane. Notes in one lane never overlap, limiting the additive layer to two simultaneous voices without piling later notes at the end of a short clip.
 
-The ordered pair of input names hashes to a three-entry gesture profile, one entry per chord tone. Levels range from 1.5 dB above to 4.25 dB below the surrounding 1.5-second local RMS window. Duration varies inversely from 0.4 to about 1.504 seconds:
+The ordered pair of input names hashes to a three-entry gesture profile, one entry per chord tone. Let `u` be its existing normalized level hash and let `T_ref` be the superseded v13 duration. v14 maps the same hash to a 3–7 second long-input duration and exactly half that duration for short-input augmentation:
 
 ~~~text
-duration = 0.4 × 10^((dB_below_local + 1.5) / 10)
+reference_dB = −1.5 + 5.75u
+T_ref        = 0.4 × 10^((reference_dB + 1.5) / 10)
+T_long       = 3 + 4u
+T_short      = T_long / 2
+realized_dB  = reference_dB + 10 log10(T_role / T_ref)
 ~~~
 
-Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four controlled envelopes: a bitten sustain with a 12 ms attack, a gradual decay to 60%, a long hold, and a 25% cosine release; a quadratic swell with a slower collapse; a power-2.5 reverse rise with a broader decay; or a softly gated three-cycle tremolo arc with a 20% floor. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
+This gain compensation preserves the exact v13 relative-power × duration product for a fixed local reference while spreading it across a much longer interval. Realized long-input levels are 7.251–10.930 dB below the surrounding 1.5-second RMS window; short-input levels are 4.240–7.920 dB below it. The window is centered on each gradual note rather than its nearly silent onset.
 
-The bitten sustain replaces the percussive v12 pluck, which put roughly 91% of a one-second note's energy into its first 150 ms after oscillator interaction. The replacement envelope has a `1.555×` normalized peak, remains above 12% amplitude for 92.6% of its duration, and places only 33.4% of its own one-second energy in the first 150 ms. All four shapes still start and finish at zero.
+The same pair hash independently assigns each pitch one of four gradual envelopes. Every transition uses quintic smootherstep, which has zero slope and curvature at its endpoints. There are no exponential collapses, hard gates, or rapid tremolo:
 
-Regression tests render every instrument/envelope combination and require a detectable period around the intended pitch. At 151 Hz the v13 autocorrelation scores are `0.721–0.807` for modal, `0.190–0.367` for FM, and `0.401–0.439` for destroyed saw; the diagnosed modal and FM designs were previously about `0.01–0.11`. These tests specifically prevent a future grit change from turning either generator back into an unpitched impact.
+| Envelope | Long-input segments | Short-input segments |
+|---|---|---|
+| Soft drone | 0.75–1.75 s rise; 0.60–1.40 s settle; 0.75–1.75 s hold; 0.90–2.10 s release | 0.375–0.875 s rise; 0.30–0.70 s settle; 0.375–0.875 s hold; 0.45–1.05 s release |
+| Broad swell | 1.35–3.15 s rise; 0.45–1.05 s crest; 1.20–2.80 s fall | 0.675–1.575 s rise; 0.225–0.525 s crest; 0.60–1.40 s fall |
+| Late bloom | 1.80–4.20 s rise; 0.30–0.70 s crest; 0.90–2.10 s release | 0.90–2.10 s rise; 0.15–0.35 s crest; 0.45–1.05 s release |
+| Breathing drone | 0.75–1.75 s fade-in; 1.50–3.50 s shallow body; 0.75–1.75 s fade-out | 0.375–0.875 s fade-in; 0.75–1.75 s shallow body; 0.375–0.875 s fade-out |
 
-Each complete oscillator-plus-envelope note is normalized to unit RMS before its hashed local-RMS target is applied. Thus added grit and envelope changes redistribute samples in time and spectrum without changing the note's average power. Combined with the inverse level/duration equation above, this also preserves the intended nearly constant total energy across differently shaped gestures.
+The breathing body makes one smooth cosine movement over a 75% amplitude floor. All four shapes begin and finish exactly at zero. At the minimum 1.5-second short duration, tests limit the envelope change between adjacent 48 kHz samples to `0.00011` and the first 150 ms to less than 2% of total envelope energy.
+
+Regression tests render every instrument/envelope combination and require a detectable period around the intended pitch. At 151 Hz the v14 autocorrelation scores are `0.706–0.746` for modal, `0.361–0.372` for FM, and `0.421–0.436` for destroyed saw; the diagnosed modal and FM designs were previously about `0.01–0.11`. These tests specifically prevent a future grit or envelope change from turning either generator back into an unpitched impact.
+
+Each complete oscillator-plus-envelope note is normalized to unit RMS before its role-specific, energy-compensated local-RMS target is applied. Thus instrument and envelope changes redistribute samples in time and spectrum, while the formula above keeps each gesture's normalized energy factor equal to its v13 reference.
 
 The synthesized stem retains the input's exact frame count. Its initial local levels preserve the amplitude/duration variation above, but those levels alone proved too easy to mask: in the superseded v8 render the base processed-minus-dry contribution had medians of −11.16 dB for long-input augmentation and −8.94 dB for short-input augmentation, with worst cases near −18 dB.
 
@@ -95,7 +108,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-pitched-grit-v13` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-gradual-drones-v14` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -127,7 +140,7 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Full-run audit
+## Superseded v13 full-run audit
 
 The `sparse-hashed-13edo-pitched-grit-v13` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 1:30.29 with 1,275,936 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 16.40 seconds with 513,872 KiB peak resident memory.
 

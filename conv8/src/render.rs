@@ -18,10 +18,11 @@ use crate::convolution::{
 };
 use crate::manifest::{SourceEntry, is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{
-    ALGORITHM_VERSION, GestureProfile, MAXIMUM_NOTE_DB_BELOW_LOCAL, MAXIMUM_NOTE_SECONDS,
-    MINIMUM_NOTE_DB_BELOW_LOCAL, MINIMUM_NOTE_SECONDS, PitchApproach, PreprocessedClip,
+    ALGORITHM_VERSION, GestureProfile, PitchApproach, PreprocessedClip,
     TARGET_CONVOLVED_TONE_DB_RELATIVE, chord, chord_index, fingerprint_bytes, fingerprint_hex,
-    gesture_profile, preprocess, scheduled_note_count,
+    gesture_profile, maximum_note_db_below_local, maximum_note_seconds,
+    minimum_note_db_below_local, minimum_note_seconds, note_db_below_local, note_duration_seconds,
+    preprocess, scheduled_note_count,
 };
 
 #[derive(Clone, Debug)]
@@ -386,10 +387,10 @@ fn verify_loaded(
         modal_noise_resonator_pairs: pitch_audit.modal_noise_resonator_pairs,
         inharmonic_fm_pairs: pitch_audit.inharmonic_fm_pairs,
         saturated_saw_cluster_pairs: pitch_audit.saturated_saw_cluster_pairs,
-        minimum_note_db_below_local: MINIMUM_NOTE_DB_BELOW_LOCAL,
-        maximum_note_db_below_local: MAXIMUM_NOTE_DB_BELOW_LOCAL,
-        minimum_note_seconds: MINIMUM_NOTE_SECONDS,
-        maximum_note_seconds: MAXIMUM_NOTE_SECONDS,
+        minimum_note_db_below_local: minimum_note_db_below_local(approach),
+        maximum_note_db_below_local: maximum_note_db_below_local(approach),
+        minimum_note_seconds: minimum_note_seconds(approach),
+        maximum_note_seconds: maximum_note_seconds(approach),
         minimum_scheduled_note_count: pitch_audit.minimum_note_count,
         maximum_scheduled_note_count: pitch_audit.maximum_note_count,
         minimum_preprocess_dry_correlation: pitch_audit.minimum_correlation,
@@ -504,8 +505,8 @@ fn pair_metrics(
         pitch_algorithm_version: ALGORITHM_VERSION.to_owned(),
         processed_role: approach.processed_role().to_owned(),
         gesture_fingerprint: format!("{:016x}", preprocessing.gesture_profile.fingerprint),
-        note_levels_db_below_local: gesture_levels(preprocessing.gesture_profile),
-        note_durations_seconds: gesture_durations(preprocessing.gesture_profile),
+        note_levels_db_below_local: gesture_levels(preprocessing.gesture_profile, approach),
+        note_durations_seconds: gesture_durations(preprocessing.gesture_profile, approach),
         note_envelopes: gesture_envelopes(preprocessing.gesture_profile),
         instrument: preprocessing.instrument_profile.kind.slug().to_owned(),
         instrument_parameters: preprocessing.instrument_profile.parameters(),
@@ -560,17 +561,17 @@ struct PitchMetadataAudit {
     saturated_saw_cluster_pairs: usize,
 }
 
-fn gesture_levels(profile: GestureProfile) -> String {
+fn gesture_levels(profile: GestureProfile, approach: PitchApproach) -> String {
     profile
         .notes
-        .map(|note| format!("{:.6}", note.db_below_local))
+        .map(|note| format!("{:.6}", note_db_below_local(note, approach)))
         .join(";")
 }
 
-fn gesture_durations(profile: GestureProfile) -> String {
+fn gesture_durations(profile: GestureProfile, approach: PitchApproach) -> String {
     profile
         .notes
-        .map(|note| format!("{:.6}", note.duration_seconds))
+        .map(|note| format!("{:.6}", note_duration_seconds(note, approach)))
         .join(";")
 }
 
@@ -620,8 +621,8 @@ fn verify_metric_assignments(
             || row.pitch_algorithm_version != ALGORITHM_VERSION
             || row.processed_role != approach.processed_role()
             || row.gesture_fingerprint != format!("{:016x}", expected_profile.fingerprint)
-            || row.note_levels_db_below_local != gesture_levels(expected_profile)
-            || row.note_durations_seconds != gesture_durations(expected_profile)
+            || row.note_levels_db_below_local != gesture_levels(expected_profile, approach)
+            || row.note_durations_seconds != gesture_durations(expected_profile, approach)
             || row.note_envelopes != gesture_envelopes(expected_profile)
             || row.instrument != expected_instrument.kind.slug()
             || row.instrument_parameters != expected_instrument.parameters()
@@ -807,9 +808,9 @@ mod tests {
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
             processed_role: "short".into(),
             gesture_fingerprint: "0000000000000003".into(),
-            note_levels_db_below_local: "-1.500000;1.000000;4.250000".into(),
-            note_durations_seconds: "0.400000;0.711413;1.503361".into(),
-            note_envelopes: "pluck;swell;tremolo_arc".into(),
+            note_levels_db_below_local: "4.240613;6.000000;7.930500".into(),
+            note_durations_seconds: "1.500000;2.500000;3.500000".into(),
+            note_envelopes: "soft_drone;broad_swell;breathing_drone".into(),
             instrument: "modal_noise_resonator".into(),
             instrument_parameters: "detune_cents=46.500;mode_disorder_percent=9.500;sustained_noise_percent=37.000;drive=5.250;folds=2".into(),
             scheduled_note_count: 3,

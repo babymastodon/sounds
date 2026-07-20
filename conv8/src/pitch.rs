@@ -10,10 +10,13 @@ const CHORD_INTERVALS: [usize; 3] = [0, 4, 8];
 const NOTE_PATTERN: [usize; 8] = [0, 1, 2, 1, 0, 2, 0, 1];
 pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
 pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
-pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
-pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
+const MINIMUM_REFERENCE_NOTE_SECONDS: f32 = 0.4;
+pub const MINIMUM_LONG_NOTE_SECONDS: f32 = 3.0;
+pub const MAXIMUM_LONG_NOTE_SECONDS: f32 = 7.0;
+pub const MINIMUM_SHORT_NOTE_SECONDS: f32 = MINIMUM_LONG_NOTE_SECONDS / 2.0;
+pub const MAXIMUM_SHORT_NOTE_SECONDS: f32 = MAXIMUM_LONG_NOTE_SECONDS / 2.0;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-pitched-grit-v13";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-gradual-drones-v14";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -34,10 +37,10 @@ impl PitchApproach {
     pub const fn description(self) -> &'static str {
         match self {
             Self::LongAdditiveSynth => {
-                "locally leveled short additive notes mixed into the unfiltered long input"
+                "locally leveled 3-7 second additive drones mixed into the unfiltered long input"
             }
             Self::ShortAdditiveSynth => {
-                "locally leveled short additive notes mixed into the unfiltered short input"
+                "locally leveled 1.5-3.5 second additive drones mixed into the unfiltered short input"
             }
         }
     }
@@ -59,26 +62,29 @@ pub struct Chord {
 
 #[derive(Clone, Copy, Debug)]
 pub struct NoteGesture {
+    /// v13 level retained as the reference for the fixed integrated-energy calculation.
     pub db_below_local: f32,
+    /// Long-input duration; short-input augmentation uses exactly half this value.
     pub duration_seconds: f32,
+    pub reference_duration_seconds: f32,
     pub envelope: EnvelopeKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvelopeKind {
-    BittenSustain,
-    Swell,
-    ReversePluck,
-    TremoloArc,
+    SoftDrone,
+    BroadSwell,
+    LateBloom,
+    BreathingDrone,
 }
 
 impl EnvelopeKind {
     pub const fn slug(self) -> &'static str {
         match self {
-            Self::BittenSustain => "bitten_sustain",
-            Self::Swell => "swell",
-            Self::ReversePluck => "reverse_pluck",
-            Self::TremoloArc => "tremolo_arc",
+            Self::SoftDrone => "soft_drone",
+            Self::BroadSwell => "broad_swell",
+            Self::LateBloom => "late_bloom",
+            Self::BreathingDrone => "breathing_drone",
         }
     }
 }
@@ -214,16 +220,19 @@ pub fn gesture_profile(short_name: &str, long_name: &str) -> GestureProfile {
         let unit = unit_interval(hash);
         let db_below_local = MINIMUM_NOTE_DB_BELOW_LOCAL
             + unit * (MAXIMUM_NOTE_DB_BELOW_LOCAL - MINIMUM_NOTE_DB_BELOW_LOCAL);
-        let duration_seconds = MINIMUM_NOTE_SECONDS
+        let reference_duration_seconds = MINIMUM_REFERENCE_NOTE_SECONDS
             * 10.0_f32.powf((db_below_local - MINIMUM_NOTE_DB_BELOW_LOCAL) / 10.0);
+        let duration_seconds = MINIMUM_LONG_NOTE_SECONDS
+            + unit * (MAXIMUM_LONG_NOTE_SECONDS - MINIMUM_LONG_NOTE_SECONDS);
         NoteGesture {
             db_below_local,
             duration_seconds,
+            reference_duration_seconds,
             envelope: match (hash >> 32) % 4 {
-                0 => EnvelopeKind::BittenSustain,
-                1 => EnvelopeKind::Swell,
-                2 => EnvelopeKind::ReversePluck,
-                _ => EnvelopeKind::TremoloArc,
+                0 => EnvelopeKind::SoftDrone,
+                1 => EnvelopeKind::BroadSwell,
+                2 => EnvelopeKind::LateBloom,
+                _ => EnvelopeKind::BreathingDrone,
             },
         }
     });
@@ -237,6 +246,53 @@ pub fn scheduled_note_count(profile: GestureProfile, approach: PitchApproach) ->
     };
     let hash = derived_hash(profile.fingerprint, b"schedule-count", approach as u64);
     minimum + hash as usize % possibilities
+}
+
+pub const fn minimum_note_seconds(approach: PitchApproach) -> f32 {
+    match approach {
+        PitchApproach::LongAdditiveSynth => MINIMUM_LONG_NOTE_SECONDS,
+        PitchApproach::ShortAdditiveSynth => MINIMUM_SHORT_NOTE_SECONDS,
+    }
+}
+
+pub const fn maximum_note_seconds(approach: PitchApproach) -> f32 {
+    match approach {
+        PitchApproach::LongAdditiveSynth => MAXIMUM_LONG_NOTE_SECONDS,
+        PitchApproach::ShortAdditiveSynth => MAXIMUM_SHORT_NOTE_SECONDS,
+    }
+}
+
+pub fn note_duration_seconds(gesture: NoteGesture, approach: PitchApproach) -> f32 {
+    match approach {
+        PitchApproach::LongAdditiveSynth => gesture.duration_seconds,
+        PitchApproach::ShortAdditiveSynth => gesture.duration_seconds / 2.0,
+    }
+}
+
+pub fn note_db_below_local(gesture: NoteGesture, approach: PitchApproach) -> f32 {
+    let duration = note_duration_seconds(gesture, approach);
+    gesture.db_below_local + 10.0 * (duration / gesture.reference_duration_seconds).log10()
+}
+
+pub fn minimum_note_db_below_local(approach: PitchApproach) -> f32 {
+    note_db_below_local(gesture_at_unit(0.0), approach)
+}
+
+pub fn maximum_note_db_below_local(approach: PitchApproach) -> f32 {
+    note_db_below_local(gesture_at_unit(1.0), approach)
+}
+
+fn gesture_at_unit(unit: f32) -> NoteGesture {
+    let db_below_local = MINIMUM_NOTE_DB_BELOW_LOCAL
+        + unit * (MAXIMUM_NOTE_DB_BELOW_LOCAL - MINIMUM_NOTE_DB_BELOW_LOCAL);
+    NoteGesture {
+        db_below_local,
+        duration_seconds: MINIMUM_LONG_NOTE_SECONDS
+            + unit * (MAXIMUM_LONG_NOTE_SECONDS - MINIMUM_LONG_NOTE_SECONDS),
+        reference_duration_seconds: MINIMUM_REFERENCE_NOTE_SECONDS
+            * 10.0_f32.powf((db_below_local - MINIMUM_NOTE_DB_BELOW_LOCAL) / 10.0),
+        envelope: EnvelopeKind::SoftDrone,
+    }
 }
 
 pub fn instrument_profile(profile: GestureProfile) -> InstrumentProfile {
@@ -302,6 +358,72 @@ pub fn preprocess(
     additive_synth_voice(input, chord, profile, approach)
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ScheduledNote {
+    note_index: usize,
+    pitch_index: usize,
+    onset: usize,
+    frames: usize,
+    duration_seconds: f32,
+}
+
+fn schedule_notes(
+    input_frames: usize,
+    profile: GestureProfile,
+    approach: PitchApproach,
+) -> Vec<ScheduledNote> {
+    let note_count = scheduled_note_count(profile, approach);
+    let pattern_offset = derived_hash(
+        profile.fingerprint,
+        b"pitch-pattern-offset",
+        approach as u64,
+    ) as usize
+        % NOTE_PATTERN.len();
+    let notes = (0..note_count)
+        .map(|note_index| {
+            let pitch_index = NOTE_PATTERN[(pattern_offset + note_index) % NOTE_PATTERN.len()];
+            let duration_seconds = note_duration_seconds(profile.notes[pitch_index], approach);
+            let frames = (duration_seconds * SAMPLE_RATE as f32).round() as usize;
+            (pitch_index, duration_seconds, frames)
+        })
+        .collect::<Vec<_>>();
+    let spacing = input_frames as f32 / (note_count + 1) as f32;
+    let mut lane_end = [0_usize; 2];
+    let mut schedule = Vec::with_capacity(note_count);
+    for (note_index, &(pitch_index, duration_seconds, frames)) in notes.iter().enumerate() {
+        let lane = note_index % 2;
+        let placement_hash = derived_hash(
+            profile.fingerprint,
+            b"note-placement-v14",
+            ((approach as u64) << 32) | note_index as u64,
+        );
+        let jitter = (unit_interval(placement_hash) - 0.5) * 0.24 * spacing;
+        let nominal_center = (note_index + 1) as f32 * spacing + jitter;
+        let proposed_onset = (nominal_center - frames as f32 / 2.0).max(0.0).round() as usize;
+        let remaining_lane_frames = notes
+            .iter()
+            .skip(note_index + 2)
+            .step_by(2)
+            .map(|note| note.2)
+            .sum::<usize>();
+        let latest_onset = input_frames.saturating_sub(frames + remaining_lane_frames);
+        assert!(
+            lane_end[lane] <= latest_onset,
+            "scheduled gradual drones do not fit input"
+        );
+        let onset = proposed_onset.clamp(lane_end[lane], latest_onset);
+        lane_end[lane] = onset + frames;
+        schedule.push(ScheduledNote {
+            note_index,
+            pitch_index,
+            onset,
+            frames,
+            duration_seconds,
+        });
+    }
+    schedule
+}
+
 fn additive_synth_voice(
     input: &[f32],
     chord: Chord,
@@ -311,49 +433,35 @@ fn additive_synth_voice(
     let mut tone_stem = vec![0.0; input.len()];
     let scheduled_note_count = scheduled_note_count(profile, approach);
     let instrument_profile = instrument_profile(profile);
-    let spacing = input.len() as f32 / (scheduled_note_count + 1) as f32;
-    let pattern_offset = derived_hash(
-        profile.fingerprint,
-        b"pitch-pattern-offset",
-        approach as u64,
-    ) as usize
-        % NOTE_PATTERN.len();
-    for note_index in 0..scheduled_note_count {
-        let pitch_index = NOTE_PATTERN[(pattern_offset + note_index) % NOTE_PATTERN.len()];
-        let gesture = profile.notes[pitch_index];
-        let note_frames = (gesture.duration_seconds * SAMPLE_RATE as f32).round() as usize;
-        let placement_hash = derived_hash(
-            profile.fingerprint,
-            b"note-placement",
-            ((approach as u64) << 32) | note_index as u64,
-        );
-        let jitter = (unit_interval(placement_hash) - 0.5) * 0.4 * spacing;
-        let nominal_onset = ((note_index + 1) as f32 * spacing + jitter).round() as usize;
-        let onset = nominal_onset.min(input.len().saturating_sub(note_frames));
-        let end = (onset + note_frames).min(input.len());
-        let frames = end - onset;
-        let frequency = chord.frequencies_hz[pitch_index];
+    for scheduled in schedule_notes(input.len(), profile, approach) {
+        let gesture = profile.notes[scheduled.pitch_index];
+        let end = scheduled.onset + scheduled.frames;
+        let frequency = chord.frequencies_hz[scheduled.pitch_index];
         let note_seed = derived_hash(
             profile.fingerprint,
             b"instrument-note",
-            ((approach as u64) << 32) | note_index as u64,
+            ((approach as u64) << 32) | scheduled.note_index as u64,
         );
         let mut note = synthesize_note(
             instrument_profile,
             frequency,
-            frames,
-            gesture.duration_seconds,
+            scheduled.frames,
+            scheduled.duration_seconds,
             gesture.envelope,
             note_seed,
         );
 
         let local_radius = (SAMPLE_RATE as usize * 3) / 4;
-        let local_start = onset.saturating_sub(local_radius);
-        let local_end = (onset + local_radius).min(input.len());
+        let note_center = scheduled.onset + scheduled.frames / 2;
+        let local_start = note_center.saturating_sub(local_radius);
+        let local_end = (note_center + local_radius).min(input.len());
         let local_rms = rms(&input[local_start..local_end]);
-        let target_rms = local_rms * 10.0_f32.powf(-gesture.db_below_local / 20.0);
+        let target_rms = local_rms * 10.0_f32.powf(-note_db_below_local(gesture, approach) / 20.0);
         let note_gain = target_rms / rms(&note).max(1.0e-12);
-        for (output, note) in tone_stem[onset..end].iter_mut().zip(note.drain(..)) {
+        for (output, note) in tone_stem[scheduled.onset..end]
+            .iter_mut()
+            .zip(note.drain(..))
+        {
             *output += note * note_gain;
         }
     }
@@ -721,42 +829,53 @@ fn hashed_range(profile: GestureProfile, tag: &[u8], minimum: f32, maximum: f32)
 fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
     let phase = (time / duration).clamp(0.0, 1.0);
     match kind {
-        EnvelopeKind::BittenSustain => {
-            let attack = (time / 0.012).min(1.0).powf(0.70);
-            let bite = 1.0 - 0.40 * smoothstep(0.08, 0.30, phase);
-            attack * bite * cosine_release(phase, 0.25)
-        }
-        EnvelopeKind::Swell => {
-            if phase < 0.68 {
-                (phase / 0.68).powf(2.0)
+        EnvelopeKind::SoftDrone => {
+            if phase < 0.25 {
+                smootherstep(0.0, 0.25, phase)
+            } else if phase < 0.45 {
+                1.0 - 0.25 * smootherstep(0.25, 0.45, phase)
+            } else if phase < 0.70 {
+                0.75
             } else {
-                (-7.0 * (phase - 0.68) / 0.32).exp() * cosine_release(phase, 0.05)
+                0.75 * (1.0 - smootherstep(0.70, 1.0, phase))
             }
         }
-        EnvelopeKind::ReversePluck => {
-            if phase < 0.72 {
-                (phase / 0.72).powf(2.5)
+        EnvelopeKind::BroadSwell => {
+            if phase < 0.45 {
+                smootherstep(0.0, 0.45, phase)
+            } else if phase < 0.60 {
+                1.0
             } else {
-                (-8.0 * (phase - 0.72) / 0.28).exp() * cosine_release(phase, 0.04)
+                1.0 - smootherstep(0.60, 1.0, phase)
             }
         }
-        EnvelopeKind::TremoloArc => {
-            let arc = (PI * phase).sin().max(0.0).powf(0.85);
-            let pulse = (3.0 * (2.0 * PI * (3.0 * phase + 0.08)).sin()).tanh();
-            let gate = 0.20 + 0.80 * (0.5 + 0.5 * pulse).powf(1.2);
-            arc * gate
+        EnvelopeKind::LateBloom => {
+            if phase < 0.65 {
+                smootherstep(0.0, 0.65, phase)
+            } else if phase < 0.75 {
+                1.0
+            } else {
+                1.0 - smootherstep(0.75, 1.0, phase)
+            }
+        }
+        EnvelopeKind::BreathingDrone => {
+            let fade = if phase < 0.25 {
+                smootherstep(0.0, 0.25, phase)
+            } else if phase > 0.75 {
+                1.0 - smootherstep(0.75, 1.0, phase)
+            } else {
+                1.0
+            };
+            let body_position = ((phase - 0.25) / 0.50).clamp(0.0, 1.0);
+            let shallow_breath = 0.75 + 0.25 * (0.5 - 0.5 * (2.0 * PI * body_position).cos());
+            fade * shallow_breath
         }
     }
 }
 
-fn cosine_release(phase: f32, release_fraction: f32) -> f32 {
-    let position = ((1.0 - phase) / release_fraction).clamp(0.0, 1.0);
-    0.5 - 0.5 * (PI * position).cos()
-}
-
-fn smoothstep(edge_0: f32, edge_1: f32, value: f32) -> f32 {
+fn smootherstep(edge_0: f32, edge_1: f32, value: f32) -> f32 {
     let position = ((value - edge_0) / (edge_1 - edge_0)).clamp(0.0, 1.0);
-    position * position * (3.0 - 2.0 * position)
+    position * position * position * (position * (position * 6.0 - 15.0) + 10.0)
 }
 
 fn step_frequency_hz(step: usize) -> f32 {
@@ -884,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn hashed_gestures_trade_amplitude_for_duration_at_nearly_constant_energy() {
+    fn gradual_durations_are_role_dependent_and_preserve_reference_energy() {
         let profile = gesture_profile("short-name", "long-name");
         assert_eq!(
             profile.fingerprint,
@@ -899,12 +1018,43 @@ mod tests {
                 (MINIMUM_NOTE_DB_BELOW_LOCAL..=MAXIMUM_NOTE_DB_BELOW_LOCAL)
                     .contains(&note.db_below_local)
             );
-            assert!((MINIMUM_NOTE_SECONDS..=MAXIMUM_NOTE_SECONDS).contains(&note.duration_seconds));
+            assert!(
+                (MINIMUM_LONG_NOTE_SECONDS..=MAXIMUM_LONG_NOTE_SECONDS)
+                    .contains(&note.duration_seconds)
+            );
+            assert!(
+                (MINIMUM_REFERENCE_NOTE_SECONDS..=1.504).contains(&note.reference_duration_seconds)
+            );
             assert!(!note.envelope.slug().is_empty());
-            let relative_energy =
-                10.0_f32.powf(-note.db_below_local / 10.0) * note.duration_seconds;
-            assert!((relative_energy - 0.565_0).abs() < 1.0e-4);
+            let reference_energy =
+                10.0_f32.powf(-note.db_below_local / 10.0) * note.reference_duration_seconds;
+            for approach in PitchApproach::ALL {
+                let duration = note_duration_seconds(note, approach);
+                let realized_energy =
+                    10.0_f32.powf(-note_db_below_local(note, approach) / 10.0) * duration;
+                assert!((realized_energy - reference_energy).abs() < 1.0e-5);
+            }
+            assert_eq!(
+                note_duration_seconds(note, PitchApproach::LongAdditiveSynth),
+                2.0 * note_duration_seconds(note, PitchApproach::ShortAdditiveSynth)
+            );
         }
+        assert!(
+            (minimum_note_db_below_local(PitchApproach::LongAdditiveSynth) - 7.250_613).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (maximum_note_db_below_local(PitchApproach::LongAdditiveSynth) - 10.930_38).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (minimum_note_db_below_local(PitchApproach::ShortAdditiveSynth) - 4.240_313).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (maximum_note_db_below_local(PitchApproach::ShortAdditiveSynth) - 7.920_081).abs()
+                < 1.0e-5
+        );
     }
 
     #[test]
@@ -951,7 +1101,7 @@ mod tests {
                 151.0,
                 4_800,
                 0.5,
-                EnvelopeKind::Swell,
+                EnvelopeKind::BroadSwell,
                 42,
             )
         });
@@ -972,10 +1122,10 @@ mod tests {
             profiles[profile.kind as usize] = Some(profile);
         }
         let envelopes = [
-            EnvelopeKind::BittenSustain,
-            EnvelopeKind::Swell,
-            EnvelopeKind::ReversePluck,
-            EnvelopeKind::TremoloArc,
+            EnvelopeKind::SoftDrone,
+            EnvelopeKind::BroadSwell,
+            EnvelopeKind::LateBloom,
+            EnvelopeKind::BreathingDrone,
         ];
         for profile in profiles {
             for envelope in envelopes {
@@ -998,12 +1148,12 @@ mod tests {
     }
 
     #[test]
-    fn envelopes_have_controlled_crest_duration_and_silent_edges() {
+    fn gradual_envelopes_have_controlled_crest_and_silent_edges() {
         for envelope_kind in [
-            EnvelopeKind::BittenSustain,
-            EnvelopeKind::Swell,
-            EnvelopeKind::ReversePluck,
-            EnvelopeKind::TremoloArc,
+            EnvelopeKind::SoftDrone,
+            EnvelopeKind::BroadSwell,
+            EnvelopeKind::LateBloom,
+            EnvelopeKind::BreathingDrone,
         ] {
             let values = (0..=1_000)
                 .map(|index| envelope(envelope_kind, index as f32 / 1_000.0, 1.0))
@@ -1013,29 +1163,75 @@ mod tests {
             assert!(values.iter().copied().fold(0.0_f32, f32::max) > 0.9);
             let envelope_rms = rms(&values);
             let normalized_peak = values.iter().copied().fold(0.0_f32, f32::max) / envelope_rms;
-            assert!((1.5..3.4).contains(&normalized_peak));
+            assert!((1.2..2.2).contains(&normalized_peak));
             assert!(values.iter().filter(|&&value| value >= 0.12).count() > 250);
         }
     }
 
     #[test]
-    fn bitten_sustain_does_not_concentrate_energy_at_the_onset() {
-        let values = (0..SAMPLE_RATE as usize)
-            .map(|frame| {
-                envelope(
-                    EnvelopeKind::BittenSustain,
-                    frame as f32 / SAMPLE_RATE as f32,
-                    1.0,
-                )
-            })
-            .collect::<Vec<_>>();
-        let total_energy = values.iter().map(|&sample| sample * sample).sum::<f32>();
-        let early_energy = values[..SAMPLE_RATE as usize * 150 / 1_000]
-            .iter()
-            .map(|&sample| sample * sample)
-            .sum::<f32>();
-        let early_fraction = early_energy / total_energy;
-        assert!(early_fraction < 0.35, "early fraction={early_fraction}");
+    fn gradual_envelopes_have_no_fast_edges_or_onset_concentration() {
+        let duration = MINIMUM_SHORT_NOTE_SECONDS;
+        let frames = (duration * SAMPLE_RATE as f32).round() as usize;
+        for envelope_kind in [
+            EnvelopeKind::SoftDrone,
+            EnvelopeKind::BroadSwell,
+            EnvelopeKind::LateBloom,
+            EnvelopeKind::BreathingDrone,
+        ] {
+            let values = (0..=frames)
+                .map(|frame| envelope(envelope_kind, frame as f32 / SAMPLE_RATE as f32, duration))
+                .collect::<Vec<_>>();
+            let maximum_step = values
+                .windows(2)
+                .map(|window| (window[1] - window[0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum_step < 1.1e-4,
+                "{} step={maximum_step}",
+                envelope_kind.slug()
+            );
+            let total_energy = values.iter().map(|&sample| sample * sample).sum::<f32>();
+            let early_energy = values[..SAMPLE_RATE as usize * 150 / 1_000]
+                .iter()
+                .map(|&sample| sample * sample)
+                .sum::<f32>();
+            let early_fraction = early_energy / total_energy;
+            assert!(
+                early_fraction < 0.02,
+                "{} early={early_fraction}",
+                envelope_kind.slug()
+            );
+        }
+    }
+
+    #[test]
+    fn two_lane_scheduler_fits_notes_and_limits_polyphony() {
+        for index in 0..100 {
+            let profile = gesture_profile(&format!("short-{index}"), "long");
+            for (approach, input_seconds) in [
+                (PitchApproach::ShortAdditiveSynth, 8.0),
+                (PitchApproach::LongAdditiveSynth, 25.0),
+            ] {
+                let input_frames = (input_seconds * SAMPLE_RATE as f32) as usize;
+                let schedule = schedule_notes(input_frames, profile, approach);
+                assert_eq!(schedule.len(), scheduled_note_count(profile, approach));
+                assert!(
+                    schedule
+                        .iter()
+                        .all(|note| note.onset + note.frames <= input_frames)
+                );
+                for left in 0..schedule.len() {
+                    for right in left + 2..schedule.len() {
+                        if left % 2 == right % 2 {
+                            assert!(
+                                schedule[left].onset + schedule[left].frames
+                                    <= schedule[right].onset
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1069,10 +1265,10 @@ mod tests {
         for profile in profiles {
             let profile = profile.expect("all instrument families should be selected");
             for envelope_kind in [
-                EnvelopeKind::BittenSustain,
-                EnvelopeKind::Swell,
-                EnvelopeKind::ReversePluck,
-                EnvelopeKind::TremoloArc,
+                EnvelopeKind::SoftDrone,
+                EnvelopeKind::BroadSwell,
+                EnvelopeKind::LateBloom,
+                EnvelopeKind::BreathingDrone,
             ] {
                 let note =
                     synthesize_note(profile, 151.0, SAMPLE_RATE as usize, 1.0, envelope_kind, 42);

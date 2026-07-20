@@ -13,7 +13,7 @@ pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-aggressive-grit-v11";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-broader-envelopes-v12";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -690,29 +690,30 @@ fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
     let phase = (time / duration).clamp(0.0, 1.0);
     match kind {
         EnvelopeKind::Pluck => {
-            let attack = (time / 0.002).min(1.0).powf(0.3);
-            let amplitude_cliff = if phase < 0.14 { 1.0 } else { 0.32 };
-            let release = cosine_release(phase, 0.025);
-            attack * amplitude_cliff * (-6.5 * phase).exp() * release
+            let attack = (time / 0.004).min(1.0).powf(0.55);
+            let transition = smoothstep(0.12, 0.20, phase);
+            let softened_drop = 1.0 - 0.55 * transition;
+            let release = cosine_release(phase, 0.05);
+            attack * softened_drop * (-4.5 * phase).exp() * release
         }
         EnvelopeKind::Swell => {
             if phase < 0.68 {
-                (phase / 0.68).powf(3.4)
+                (phase / 0.68).powf(2.0)
             } else {
-                (-14.0 * (phase - 0.68) / 0.32).exp() * cosine_release(phase, 0.025)
+                (-7.0 * (phase - 0.68) / 0.32).exp() * cosine_release(phase, 0.05)
             }
         }
         EnvelopeKind::ReversePluck => {
-            if phase < 0.74 {
-                (phase / 0.74).powf(4.5)
+            if phase < 0.72 {
+                (phase / 0.72).powf(2.5)
             } else {
-                (-18.0 * (phase - 0.74) / 0.26).exp() * cosine_release(phase, 0.02)
+                (-8.0 * (phase - 0.72) / 0.28).exp() * cosine_release(phase, 0.04)
             }
         }
         EnvelopeKind::TremoloArc => {
-            let arc = (PI * phase).sin().max(0.0).powf(1.15);
-            let square = (8.0 * (2.0 * PI * (5.0 * phase + 0.08)).sin()).tanh();
-            let gate = 0.06 + 0.94 * (0.5 + 0.5 * square).powf(1.8);
+            let arc = (PI * phase).sin().max(0.0).powf(0.85);
+            let pulse = (3.0 * (2.0 * PI * (3.0 * phase + 0.08)).sin()).tanh();
+            let gate = 0.20 + 0.80 * (0.5 + 0.5 * pulse).powf(1.2);
             arc * gate
         }
     }
@@ -721,6 +722,11 @@ fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
 fn cosine_release(phase: f32, release_fraction: f32) -> f32 {
     let position = ((1.0 - phase) / release_fraction).clamp(0.0, 1.0);
     0.5 - 0.5 * (PI * position).cos()
+}
+
+fn smoothstep(edge_0: f32, edge_1: f32, value: f32) -> f32 {
+    let position = ((value - edge_0) / (edge_1 - edge_0)).clamp(0.0, 1.0);
+    position * position * (3.0 - 2.0 * position)
 }
 
 fn step_frequency_hz(step: usize) -> f32 {
@@ -937,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_envelopes_have_hard_contrast_and_silent_edges() {
+    fn broader_envelopes_have_controlled_crest_and_silent_edges() {
         for envelope_kind in [
             EnvelopeKind::Pluck,
             EnvelopeKind::Swell,
@@ -950,7 +956,10 @@ mod tests {
             assert!(values[0].abs() < 1.0e-6);
             assert!(values[1_000].abs() < 1.0e-6);
             assert!(values.iter().copied().fold(0.0_f32, f32::max) > 0.9);
-            assert!(values.iter().filter(|&&value| value < 0.12).count() > 300);
+            let envelope_rms = rms(&values);
+            let normalized_peak = values.iter().copied().fold(0.0_f32, f32::max) / envelope_rms;
+            assert!((1.5..3.4).contains(&normalized_peak));
+            assert!(values.iter().filter(|&&value| value >= 0.12).count() > 250);
         }
     }
 

@@ -23,9 +23,11 @@ The ordered pair of input names hashes to a three-entry gesture profile, one ent
 duration = 0.4 × 10^((dB_below_local + 1.5) / 10)
 ~~~
 
-Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four aggressive envelopes: a 2 ms pluck with a hard amplitude cliff, a steep shark-fin swell with a fast collapse, a fourth-power reverse rise with a snapped decay, or a deeply gated five-cycle tremolo arc. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
+Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four controlled envelopes: a 4 ms pluck whose early drop is spread over 8% of the note, a quadratic swell with a slower collapse, a power-2.5 reverse rise with a broader decay, or a softly gated three-cycle tremolo arc with a 20% floor. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
 
-Each complete oscillator-plus-envelope note is normalized to unit RMS before its hashed local-RMS target is applied. Thus added grit and sharper envelope crest factors redistribute samples in time and spectrum without changing the note's average power. Combined with the inverse level/duration equation above, this also preserves the intended nearly constant total energy across differently shaped gestures.
+Compared with v11, envelope-only normalized peaks fall from `3.83×` to `3.32×` RMS for pluck, `3.18×` to `2.51×` for swell, `3.51×` to `2.70×` for reverse pluck, and `2.11×` to `1.94×` for tremolo. The portion above 12% amplitude expands from about 15% to 29% for pluck, 36% to 54% for swell, 31% to 49% for reverse pluck, and 44% to 81% for tremolo. The result retains articulation without concentrating the fixed power into such extreme peaks.
+
+Each complete oscillator-plus-envelope note is normalized to unit RMS before its hashed local-RMS target is applied. Thus added grit and envelope changes redistribute samples in time and spectrum without changing the note's average power. Combined with the inverse level/duration equation above, this also preserves the intended nearly constant total energy across differently shaped gestures.
 
 The synthesized stem retains the input's exact frame count. Its initial local levels preserve the amplitude/duration variation above, but those levels alone proved too easy to mask: in the superseded v8 render the base processed-minus-dry contribution had medians of −11.16 dB for long-input augmentation and −8.94 dB for short-input augmentation, with worst cases near −18 dB.
 
@@ -91,7 +93,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-aggressive-grit-v11` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-broader-envelopes-v12` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -123,9 +125,9 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Full-run audit
+## Previous full-run baseline
 
-The `sparse-hashed-13edo-aggressive-grit-v11` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 1:12.51 with 1,306,648 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 14.44 seconds with 514,464 KiB peak resident memory.
+The superseded `sparse-hashed-13edo-aggressive-grit-v11` run finished on 2026-07-19 with eight logical CPU cores. Its measurements remain below as a baseline while the broader-envelope v12 output is regenerated. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Forced rendering and built-in verification took 1:12.51 with 1,306,648 KiB peak resident memory. A second independent full-file decode and deterministic-metadata verification took 14.44 seconds with 514,464 KiB peak resident memory.
 
 The chord, gesture, instrument, and exact instrument-parameter columns have the same SHA-256 signature, `eacaadb3b8107caaa2b5cf9cd87f23d3c16ac15284c4f271f58e168c194d2740`, in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to destroyed saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 plucks, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized base pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3. Tests confirm identical unit RMS and integrated energy across all twelve instrument/envelope combinations before the unchanged hashed target gain.
 

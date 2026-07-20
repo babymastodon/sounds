@@ -8,11 +8,11 @@ const CHORD_COUNT: usize = 13;
 const BASE_FREQUENCY_HZ: f32 = 110.0;
 const CHORD_INTERVALS: [usize; 3] = [0, 6, 10];
 const NOTE_PATTERN: [usize; 8] = [0, 1, 2, 1, 0, 2, 0, 1];
-pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = 0.5;
-pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 6.25;
+pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
+pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-additive-v4";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-additive-v5";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -439,7 +439,7 @@ mod tests {
             assert!(!note.envelope.slug().is_empty());
             let relative_energy =
                 10.0_f32.powf(-note.db_below_local / 10.0) * note.duration_seconds;
-            assert!((relative_energy - 0.356_5).abs() < 1.0e-4);
+            assert!((relative_energy - 0.565_0).abs() < 1.0e-4);
         }
     }
 

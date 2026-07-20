@@ -11,10 +11,10 @@ Every short/long pair is rendered twice:
 
 Both use the same resonant, mallet-like additive instrument. Its partial frequency ratios are `1`, `2.01`, `3.93`, and `6.79`, with amplitudes `1`, `0.28`, `0.11`, and `0.04`. Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count, rotates chord-tone pattern `0,1,2,1,0,2,0,1`, and jitters each onset within an evenly distributed slot, so gestures span the clip without becoming a beat grid.
 
-The ordered pair of input names hashes to a three-entry gesture profile, one entry per chord tone. Levels range from 0.5 to 6.25 dB below the surrounding 1.5-second local RMS window. Duration varies inversely from 0.4 to about 1.504 seconds:
+The ordered pair of input names hashes to a three-entry gesture profile, one entry per chord tone. Levels range from 1.5 dB above to 4.25 dB below the surrounding 1.5-second local RMS window. Duration varies inversely from 0.4 to about 1.504 seconds:
 
 ~~~text
-duration = 0.4 × 10^((dB_below_local - 0.5) / 10)
+duration = 0.4 × 10^((dB_below_local + 1.5) / 10)
 ~~~
 
 Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four envelopes: a fast pluck, smooth swell, reverse-pluck bloom, or tremolo arc. The profile is approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
@@ -73,7 +73,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-additive-v4` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-additive-v5` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -107,4 +107,4 @@ Every compressed master is decoded end to end after encoding. Downloaded inputs,
 
 ## Full-run audit
 
-The focused `sparse-hashed-additive-v4` matrices and masters are being rebuilt from scratch. This section will record their measured verification and encoding results after completion.
+The focused `sparse-hashed-additive-v5` matrices and masters are being rebuilt from scratch. This section will record their measured verification and encoding results after completion.

@@ -57,4 +57,8 @@ Verification requires exactly 576 WAVs and checks their bipartite membership, st
 
 ## Full-run audit
 
-Pending the first complete render.
+The complete pipeline was downloaded, rendered, verified, concatenated, and encoded on 2026-07-19 with eight logical CPU cores. All 48 Openverse media URLs worked and produced exact-length prepared inputs. The corpus has 29 CC0 and 19 CC BY sources, no duplicate URLs, and no URL overlap with `conv1`, `conv4`, `conv5`, or `conv6`. Parallel download and preparation took 10:55.51 with 71,316 KiB peak resident memory; most of that wall time was one large carnival source recording.
+
+The run produced exactly 576 short-to-long stereo WAVs totaling 3,889,175,040 bytes. `matrix.csv` is exactly 24 rows × 24 columns, and every metric row has a short input in track-1 position and a long input in track-2 position. FFT rendering itself took 10.7 seconds; release compilation, rendering, and exhaustive built-in verification took 36.26 seconds with peak resident memory of 997,908 KiB. A second independent verification pass took 5.71 seconds. Overall RMS ranged from −20.64 to −20.07 dBFS, maximum peak was 0.887, maximum left/right RMS imbalance was 0.388 dB, and stereo difference ranged from −26.62 to −16.20 dBFS. Every pair had distinct stereo channels.
+
+The final master contains 834,287,424 frames (4:49:40.988), with all 575 transitions receiving the complete five-second crossfade. RF64 assembly, four parallel encoders, and end-to-end decode checks took 3:27.74 with peak resident memory of 703,788 KiB. Outputs are a 3,337,149,776-byte stereo RF64, 1,069,371,470-byte FLAC, 420,409,421-byte AAC/M4A, 266,718,120-byte 128 kbit/s Opus, and 67,494,812-byte 32 kbit/s Opus. Every compressed master decoded without errors.

@@ -1,6 +1,6 @@
 # sounds
 
-Offline FFT-convolution experiments over the same license-tracked set of 48 ambient recordings. Each experiment is an independent Rust codebase with its own manifest, downloader, renderer, exhaustive verifier, 48×48 matrix, crossfaded RF64 master, and parallel FLAC/AAC/Opus encoders.
+Offline FFT-convolution experiments over license-tracked sets of 48 recordings. Each experiment is an independent Rust codebase with its own manifest, downloader, renderer, exhaustive verifier, 48×48 matrix, crossfaded RF64 master, and parallel FLAC/AAC/Opus encoders.
 
 ## Experiment lineage
 

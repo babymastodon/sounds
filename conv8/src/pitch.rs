@@ -13,7 +13,7 @@ pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-audible-floor-v10";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-aggressive-grit-v11";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -110,6 +110,8 @@ pub struct InstrumentProfile {
     pub drift_cents: f32,
     pub alias_mix: f32,
     pub bit_depth: u8,
+    pub hard_sync_mix: f32,
+    pub sample_hold_frames: u8,
 }
 
 impl InstrumentProfile {
@@ -133,13 +135,15 @@ impl InstrumentProfile {
                 self.fold_count
             ),
             InstrumentKind::SaturatedSawCluster => format!(
-                "detune_cents={:.3};drift_cents={:.3};drive={:.3};folds={};alias_percent={:.3};bits={}",
+                "detune_cents={:.3};drift_cents={:.3};drive={:.3};folds={};alias_percent={:.3};bits={};hard_sync_percent={:.3};sample_hold_frames={}",
                 self.detune_spread_cents,
                 self.drift_cents,
                 self.drive,
                 self.fold_count,
                 self.alias_mix * 100.0,
-                self.bit_depth
+                self.bit_depth,
+                self.hard_sync_mix * 100.0,
+                self.sample_hold_frames
             ),
         }
     }
@@ -253,30 +257,36 @@ pub fn instrument_profile(profile: GestureProfile) -> InstrumentProfile {
         drift_cents: 0.0,
         alias_mix: 0.0,
         bit_depth: 0,
+        hard_sync_mix: 0.0,
+        sample_hold_frames: 0,
     };
     match kind {
         InstrumentKind::ModalNoiseResonator => {
-            result.detune_spread_cents = hashed_range(profile, b"modal-detune", 30.0, 42.0);
-            result.modal_disorder = hashed_range(profile, b"modal-disorder", 0.03, 0.05);
-            result.sustained_noise_mix = hashed_range(profile, b"modal-noise", 0.18, 0.28);
-            result.drive = hashed_range(profile, b"modal-drive", 3.0, 4.0);
-            result.fold_count = 1;
+            result.detune_spread_cents = hashed_range(profile, b"modal-detune", 38.0, 55.0);
+            result.modal_disorder = hashed_range(profile, b"modal-disorder", 0.07, 0.12);
+            result.sustained_noise_mix = hashed_range(profile, b"modal-noise", 0.30, 0.44);
+            result.drive = hashed_range(profile, b"modal-drive", 4.5, 6.0);
+            result.fold_count =
+                2 + (derived_hash(profile.fingerprint, b"modal-folds", 0) % 2) as u8;
         }
         InstrumentKind::InharmonicFm => {
-            result.detune_spread_cents = hashed_range(profile, b"fm-detune", 20.0, 35.0);
-            result.fm_feedback = hashed_range(profile, b"fm-feedback", 0.45, 0.65);
-            result.fm_index_start = hashed_range(profile, b"fm-index-start", 7.0, 9.0);
-            result.fm_index_end = hashed_range(profile, b"fm-index-end", 2.5, 3.5);
-            result.drive = hashed_range(profile, b"fm-drive", 1.6, 2.0);
-            result.fold_count = 1 + (derived_hash(profile.fingerprint, b"fm-folds", 0) % 2) as u8;
+            result.detune_spread_cents = hashed_range(profile, b"fm-detune", 28.0, 48.0);
+            result.fm_feedback = hashed_range(profile, b"fm-feedback", 0.72, 0.92);
+            result.fm_index_start = hashed_range(profile, b"fm-index-start", 10.0, 14.0);
+            result.fm_index_end = hashed_range(profile, b"fm-index-end", 4.0, 6.0);
+            result.drive = hashed_range(profile, b"fm-drive", 2.3, 3.2);
+            result.fold_count = 2 + (derived_hash(profile.fingerprint, b"fm-folds", 0) % 2) as u8;
         }
         InstrumentKind::SaturatedSawCluster => {
-            result.detune_spread_cents = hashed_range(profile, b"saw-detune", 30.0, 42.0);
-            result.drift_cents = hashed_range(profile, b"saw-drift", 5.0, 9.0);
-            result.drive = hashed_range(profile, b"saw-drive", 3.2, 4.2);
-            result.fold_count = 1 + (derived_hash(profile.fingerprint, b"saw-folds", 0) % 2) as u8;
-            result.alias_mix = hashed_range(profile, b"saw-alias", 0.20, 0.30);
-            result.bit_depth = 9 + (derived_hash(profile.fingerprint, b"saw-bits", 0) % 3) as u8;
+            result.detune_spread_cents = hashed_range(profile, b"saw-detune", 55.0, 85.0);
+            result.drift_cents = hashed_range(profile, b"saw-drift", 12.0, 24.0);
+            result.drive = hashed_range(profile, b"saw-drive", 7.0, 10.0);
+            result.fold_count = 3 + (derived_hash(profile.fingerprint, b"saw-folds", 0) % 2) as u8;
+            result.alias_mix = hashed_range(profile, b"saw-alias", 0.60, 0.80);
+            result.bit_depth = 5 + (derived_hash(profile.fingerprint, b"saw-bits", 0) % 3) as u8;
+            result.hard_sync_mix = hashed_range(profile, b"saw-hard-sync", 0.45, 0.70);
+            result.sample_hold_frames =
+                2 + (derived_hash(profile.fingerprint, b"saw-sample-hold", 0) % 3) as u8;
         }
     }
     result
@@ -369,7 +379,7 @@ fn synthesize_note(
     envelope_kind: EnvelopeKind,
     seed: u64,
 ) -> Vec<f32> {
-    match instrument.kind {
+    let mut output = match instrument.kind {
         InstrumentKind::ModalNoiseResonator => {
             modal_noise_note(instrument, frequency, frames, duration, envelope_kind, seed)
         }
@@ -379,7 +389,9 @@ fn synthesize_note(
         InstrumentKind::SaturatedSawCluster => {
             saturated_saw_note(instrument, frequency, frames, duration, envelope_kind, seed)
         }
-    }
+    };
+    normalize_rms(&mut output, 1.0);
+    output
 }
 
 fn modal_noise_note(
@@ -435,13 +447,18 @@ fn modal_noise_note(
                 .sum::<f32>()
                 / 3.0;
             let attack_noise = noise_sample(seed, frame) * (-time / 0.022).exp() * 0.42;
-            let sustained_noise =
-                noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame) * instrument.sustained_noise_mix;
-            let raw =
-                modes * (1.0 - instrument.sustained_noise_mix) + attack_noise + sustained_noise;
+            let scrape_noise = 0.62 * noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame)
+                + 0.38 * noise_sample(seed ^ 0x7135_91c7_4a2d_8b60, frame / 4);
+            let scrape_gate = 0.55 + 0.45 * (2.0 * PI * frequency * 1.731 * time).sin().abs();
+            let sustained_noise = scrape_noise * scrape_gate * instrument.sustained_noise_mix;
+            let ring = 0.70 + 0.30 * (2.0 * PI * frequency * 0.731 * time).sin();
+            let raw = modes * ring * (1.0 - instrument.sustained_noise_mix)
+                + 1.25 * attack_noise
+                + sustained_noise;
             let clipped = asymmetric_clip(raw, instrument.drive);
-            let folded = fold_signal(clipped * 1.35, instrument.fold_count);
-            (0.2 * raw + 0.8 * folded) * envelope(envelope_kind, time, duration)
+            let folded = fold_signal(clipped * 1.75, instrument.fold_count);
+            let quantized = (folded * 511.0).round() / 511.0;
+            (0.06 * raw + 0.94 * quantized) * envelope(envelope_kind, time, duration)
         })
         .collect()
 }
@@ -479,6 +496,7 @@ fn inharmonic_fm_note(
             .fm_index_start
             .mul_add(1.0 - progress, instrument.fm_index_end * progress);
         let mut carriers = 0.0;
+        let prior = previous;
         for carrier in 0..3 {
             let carrier_frequency = frequencies[carrier];
             let carrier_phase = 2.0 * PI * carrier_frequency * time;
@@ -486,17 +504,22 @@ fn inharmonic_fm_note(
                 (2.0 * PI * carrier_frequency * SQRT_2 * time + phases[carrier][0]).sin();
             let modulator_2 =
                 (2.0 * PI * carrier_frequency * 2.731 * time + phases[carrier][1]).sin();
+            let phase_jitter =
+                0.55 * noise_sample(seed ^ 0x6c8e_9cf5_d812_4b37, frame / (9 + carrier * 3));
             let value = (carrier_phase
                 + index * modulator_1
-                + 1.4 * modulator_2
-                + PI * instrument.fm_feedback * previous[carrier])
+                + 2.2 * modulator_2
+                + PI * instrument.fm_feedback
+                    * (0.78 * prior[carrier] + 0.36 * prior[(carrier + 1) % 3])
+                + phase_jitter)
                 .sin();
             previous[carrier] = value;
             carriers += value;
         }
-        let raw = 0.88 * carriers / 3.0 + 0.12 * (2.0 * PI * frequency * time).sin();
+        let raw = 0.97 * carriers / 3.0 + 0.03 * (2.0 * PI * frequency * time).sin();
         let folded = fold_signal(raw * instrument.drive, instrument.fold_count);
-        output.push(folded * envelope(envelope_kind, time, duration));
+        let quantized = (folded * 1_023.0).round() / 1_023.0;
+        output.push(quantized * envelope(envelope_kind, time, duration));
     }
     output
 }
@@ -526,31 +549,51 @@ fn saturated_saw_note(
     (0..frames)
         .map(|frame| {
             let time = frame as f32 / SAMPLE_RATE as f32;
+            let held_frame = frame / usize::from(instrument.sample_hold_frames)
+                * usize::from(instrument.sample_hold_frames);
+            let held_time = held_frame as f32 / SAMPLE_RATE as f32;
             let (clean, aliased) = frequencies
                 .iter()
                 .zip(phases)
                 .zip(drift_frequencies)
                 .zip(drift_phases)
-                .map(|(((&frequency, phase), drift_frequency), drift_phase)| {
-                    let fractional_drift = 2.0_f32.powf(instrument.drift_cents / 1_200.0) - 1.0;
-                    let drift_depth = frequency * fractional_drift / (2.0 * PI * drift_frequency);
-                    let phase = (frequency * time
-                        + phase
-                        + drift_depth * (2.0 * PI * drift_frequency * time + drift_phase).sin())
-                    .fract();
-                    (
-                        poly_blep_saw_phase(phase, frequency / SAMPLE_RATE as f32),
-                        2.0 * phase - 1.0,
-                    )
-                })
+                .enumerate()
+                .map(
+                    |(index, (((&frequency, phase), drift_frequency), drift_phase))| {
+                        let fractional_drift = 2.0_f32.powf(instrument.drift_cents / 1_200.0) - 1.0;
+                        let drift_depth =
+                            frequency * fractional_drift / (2.0 * PI * drift_frequency);
+                        let phase = (frequency * held_time
+                            + phase
+                            + drift_depth
+                                * (2.0 * PI * drift_frequency * held_time + drift_phase).sin())
+                        .rem_euclid(1.0);
+                        let naive = 2.0 * phase - 1.0;
+                        let sync_ratio = 1.37 + index as f32 * 0.11;
+                        let sync_phase = (phase * sync_ratio).fract();
+                        let hard_sync = 2.0 * sync_phase - 1.0;
+                        let ruined = naive.mul_add(
+                            1.0 - instrument.hard_sync_mix,
+                            hard_sync * instrument.hard_sync_mix,
+                        );
+                        (
+                            poly_blep_saw_phase(phase, frequency / SAMPLE_RATE as f32),
+                            ruined,
+                        )
+                    },
+                )
                 .fold((0.0_f32, 0.0_f32), |(clean, aliased), (voice, naive)| {
                     (clean + voice, aliased + naive)
                 });
             let clean = clean / 7.0;
             let aliased = aliased / 7.0;
-            let raw = clean.mul_add(1.0 - instrument.alias_mix, aliased * instrument.alias_mix);
+            let digital_dust = 0.08 * noise_sample(seed ^ 0xf87c_2ab4_9d61_035e, held_frame);
+            let raw = clean.mul_add(
+                1.0 - instrument.alias_mix,
+                aliased * instrument.alias_mix + digital_dust,
+            );
             let clipped = asymmetric_clip(raw, instrument.drive);
-            let folded = fold_signal(clipped * 1.5, instrument.fold_count);
+            let folded = fold_signal(clipped * 1.9, instrument.fold_count);
             let quantized = (folded * levels).round() / levels;
             quantized * envelope(envelope_kind, time, duration)
         })
@@ -611,6 +654,13 @@ fn rms(samples: &[f32]) -> f32 {
         .sqrt() as f32
 }
 
+fn normalize_rms(samples: &mut [f32], target_rms: f32) {
+    let gain = target_rms / rms(samples).max(1.0e-12);
+    for sample in samples {
+        *sample *= gain;
+    }
+}
+
 fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
     for &byte in bytes {
         *hash ^= u64::from(byte);
@@ -640,22 +690,30 @@ fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
     let phase = (time / duration).clamp(0.0, 1.0);
     match kind {
         EnvelopeKind::Pluck => {
-            let attack = (time / 0.012).min(1.0);
-            let release = cosine_release(phase, 0.08);
-            attack * attack * (-4.0 * phase).exp() * release
+            let attack = (time / 0.002).min(1.0).powf(0.3);
+            let amplitude_cliff = if phase < 0.14 { 1.0 } else { 0.32 };
+            let release = cosine_release(phase, 0.025);
+            attack * amplitude_cliff * (-6.5 * phase).exp() * release
         }
-        EnvelopeKind::Swell => (PI * phase).sin().max(0.0).powf(0.72),
-        EnvelopeKind::ReversePluck => {
-            if phase < 0.62 {
-                (phase / 0.62).powi(2)
+        EnvelopeKind::Swell => {
+            if phase < 0.68 {
+                (phase / 0.68).powf(3.4)
             } else {
-                (-5.0 * (phase - 0.62) / 0.38).exp() * cosine_release(phase, 0.06)
+                (-14.0 * (phase - 0.68) / 0.32).exp() * cosine_release(phase, 0.025)
+            }
+        }
+        EnvelopeKind::ReversePluck => {
+            if phase < 0.74 {
+                (phase / 0.74).powf(4.5)
+            } else {
+                (-18.0 * (phase - 0.74) / 0.26).exp() * cosine_release(phase, 0.02)
             }
         }
         EnvelopeKind::TremoloArc => {
-            let arc = (PI * phase).sin().max(0.0).powf(0.65);
-            let pulse = 0.68 + 0.32 * (2.0 * PI * (3.0 * phase + 0.15)).sin();
-            arc * pulse
+            let arc = (PI * phase).sin().max(0.0).powf(1.15);
+            let square = (8.0 * (2.0 * PI * (5.0 * phase + 0.08)).sin()).tanh();
+            let gate = 0.06 + 0.94 * (0.5 + 0.5 * square).powf(1.8);
+            arc * gate
         }
     }
 }
@@ -838,11 +896,79 @@ mod tests {
         });
         for output in &outputs {
             assert!(output.iter().all(|sample| sample.is_finite()));
-            assert!(rms(output) > 0.01);
+            assert!((rms(output) - 1.0).abs() < 1.0e-5);
         }
         assert_ne!(outputs[0], outputs[1]);
         assert_ne!(outputs[1], outputs[2]);
         assert_ne!(outputs[0], outputs[2]);
+    }
+
+    #[test]
+    fn note_power_is_invariant_across_instruments_and_envelopes() {
+        let mut profiles = [None; 3];
+        for index in 0..100 {
+            let profile = instrument_profile(gesture_profile(&format!("short-{index}"), "long"));
+            profiles[profile.kind as usize] = Some(profile);
+        }
+        let envelopes = [
+            EnvelopeKind::Pluck,
+            EnvelopeKind::Swell,
+            EnvelopeKind::ReversePluck,
+            EnvelopeKind::TremoloArc,
+        ];
+        for profile in profiles {
+            for envelope in envelopes {
+                let note = synthesize_note(
+                    profile.expect("all instrument families should be selected"),
+                    151.0,
+                    24_000,
+                    0.5,
+                    envelope,
+                    42,
+                );
+                assert!((rms(&note) - 1.0).abs() < 1.0e-5);
+                let total_energy = note
+                    .iter()
+                    .map(|&sample| f64::from(sample) * f64::from(sample))
+                    .sum::<f64>();
+                assert!((total_energy - note.len() as f64).abs() < 0.2);
+            }
+        }
+    }
+
+    #[test]
+    fn aggressive_envelopes_have_hard_contrast_and_silent_edges() {
+        for envelope_kind in [
+            EnvelopeKind::Pluck,
+            EnvelopeKind::Swell,
+            EnvelopeKind::ReversePluck,
+            EnvelopeKind::TremoloArc,
+        ] {
+            let values = (0..=1_000)
+                .map(|index| envelope(envelope_kind, index as f32 / 1_000.0, 1.0))
+                .collect::<Vec<_>>();
+            assert!(values[0].abs() < 1.0e-6);
+            assert!(values[1_000].abs() < 1.0e-6);
+            assert!(values.iter().copied().fold(0.0_f32, f32::max) > 0.9);
+            assert!(values.iter().filter(|&&value| value < 0.12).count() > 300);
+        }
+    }
+
+    #[test]
+    fn saw_profiles_use_extreme_ruin_parameters() {
+        for index in 0..100 {
+            let profile = instrument_profile(gesture_profile(&format!("short-{index}"), "long"));
+            if profile.kind == InstrumentKind::SaturatedSawCluster {
+                assert!((55.0..=85.0).contains(&profile.detune_spread_cents));
+                assert!((12.0..=24.0).contains(&profile.drift_cents));
+                assert!((7.0..=10.0).contains(&profile.drive));
+                assert!((3..=4).contains(&profile.fold_count));
+                assert!((0.60..=0.80).contains(&profile.alias_mix));
+                assert!((5..=7).contains(&profile.bit_depth));
+                assert!((0.45..=0.70).contains(&profile.hard_sync_mix));
+                assert!((2..=4).contains(&profile.sample_hold_frames));
+            }
+        }
     }
 
     #[test]

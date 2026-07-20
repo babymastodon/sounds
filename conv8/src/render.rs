@@ -811,7 +811,7 @@ mod tests {
             note_durations_seconds: "0.400000;0.711413;1.503361".into(),
             note_envelopes: "pluck;swell;tremolo_arc".into(),
             instrument: "modal_noise_resonator".into(),
-            instrument_parameters: "detune_cents=36.000;mode_disorder_percent=4.000;sustained_noise_percent=23.000;drive=3.500;folds=1".into(),
+            instrument_parameters: "detune_cents=46.500;mode_disorder_percent=9.500;sustained_noise_percent=37.000;drive=5.250;folds=2".into(),
             scheduled_note_count: 3,
             preprocess_dry_correlation: 0.90,
             preprocess_difference_rms_db_relative: -7.0,

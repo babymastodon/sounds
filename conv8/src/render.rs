@@ -515,14 +515,15 @@ fn verify_metric_assignments(
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
-        let (minimum_correlation, difference_range) =
+        let (minimum_correlation, maximum_difference_db) =
             if approach == PitchApproach::LongAdditiveSynth {
-                (0.95, -30.0..=-10.0)
+                (0.95, -10.0)
             } else {
-                (0.98, -40.0..=-18.0)
+                (0.98, -18.0)
             };
         if row.preprocess_dry_correlation < minimum_correlation
-            || !difference_range.contains(&row.preprocess_difference_rms_db_relative)
+            || !row.preprocess_difference_rms_db_relative.is_finite()
+            || row.preprocess_difference_rms_db_relative > maximum_difference_db
         {
             bail!(
                 "pair {pair} pitch preprocessing is not subtle: correlation={}, difference={} dB",

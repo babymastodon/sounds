@@ -29,6 +29,13 @@ pub struct SpectralGroup {
     pub inverse: Arc<dyn ComplexToReal<f32>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ToneCalibration {
+    pub unscaled_db_relative: f32,
+    pub gain_db: f32,
+    pub scaled_db_relative: f32,
+}
+
 pub fn make_jobs(
     clips: &[AudioClip],
     short_indices: &[usize],
@@ -140,6 +147,68 @@ pub fn convolve_stereo_spectra(
         left: left_channel,
         right: right_channel,
     })
+}
+
+pub fn convolve_stereo_with_tone(
+    group: &SpectralGroup,
+    job: &PairJob,
+    clips: &[AudioClip],
+    tone_track_1: Option<&[f32]>,
+    tone_track_2: Option<&[f32]>,
+    target_db_relative: f32,
+) -> Result<(StereoAudio, ToneCalibration)> {
+    if tone_track_1.is_some() == tone_track_2.is_some() {
+        anyhow::bail!("exactly one tone stem must be provided");
+    }
+    if !target_db_relative.is_finite() {
+        anyhow::bail!("tone target must be finite");
+    }
+
+    let dry = convolve_stereo_spectra(group, job, clips, None, None)?;
+    let tone = convolve_stereo_spectra(group, job, clips, tone_track_1, tone_track_2)?;
+    let dry_rms = stereo_rms(&dry);
+    let tone_rms = stereo_rms(&tone);
+    if dry_rms < 1.0e-12 || tone_rms < 1.0e-12 {
+        anyhow::bail!("cannot calibrate silent convolution component");
+    }
+
+    let unscaled_db_relative = 20.0 * (tone_rms / dry_rms).log10();
+    let gain_db = target_db_relative - unscaled_db_relative;
+    let gain = 10.0_f32.powf(gain_db / 20.0);
+    if !gain.is_finite() {
+        anyhow::bail!("tone calibration produced a non-finite gain");
+    }
+    let scaled_db_relative = 20.0 * (tone_rms * gain / dry_rms).log10();
+    let left = dry
+        .left
+        .iter()
+        .zip(&tone.left)
+        .map(|(&dry, &tone)| tone.mul_add(gain, dry))
+        .collect();
+    let right = dry
+        .right
+        .iter()
+        .zip(&tone.right)
+        .map(|(&dry, &tone)| tone.mul_add(gain, dry))
+        .collect();
+    Ok((
+        StereoAudio { left, right },
+        ToneCalibration {
+            unscaled_db_relative,
+            gain_db,
+            scaled_db_relative,
+        },
+    ))
+}
+
+fn stereo_rms(audio: &StereoAudio) -> f32 {
+    let sum_squares = audio
+        .left
+        .iter()
+        .chain(&audio.right)
+        .map(|&sample| f64::from(sample) * f64::from(sample))
+        .sum::<f64>();
+    (sum_squares / (audio.left.len().max(1) * 2) as f64).sqrt() as f32
 }
 
 fn trim_final(input: &[f32], trim_frames: usize) -> Vec<f32> {
@@ -298,6 +367,44 @@ mod tests {
         for (actual, expected) in actual.right.iter().zip(expected_right) {
             assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
         }
+    }
+
+    #[test]
+    fn tone_convolution_is_calibrated_relative_to_dry_convolution() {
+        let clips = vec![
+            AudioClip {
+                id: "short".into(),
+                samples: vec![0.25, -0.5, 1.0, 0.125],
+            },
+            AudioClip {
+                id: "long".into(),
+                samples: vec![0.3, 0.2, -0.1],
+            },
+        ];
+        let tone = [0.0, 0.2, -0.1];
+        let job = make_jobs(&clips, &[0], &[1]).remove(0);
+        let group = prepare_group(job.fft_len, vec![job.clone()], &clips).unwrap();
+        let (mixed, calibration) =
+            convolve_stereo_with_tone(&group, &job, &clips, None, Some(&tone), -1.5).unwrap();
+        let dry = convolve_stereo_spectra(&group, &job, &clips, None, None).unwrap();
+        let effect = StereoAudio {
+            left: mixed
+                .left
+                .iter()
+                .zip(&dry.left)
+                .map(|(&mixed, &dry)| mixed - dry)
+                .collect(),
+            right: mixed
+                .right
+                .iter()
+                .zip(&dry.right)
+                .map(|(&mixed, &dry)| mixed - dry)
+                .collect(),
+        };
+        let measured_db = 20.0 * (stereo_rms(&effect) / stereo_rms(&dry)).log10();
+        assert!((measured_db - (-1.5)).abs() < 1.0e-4);
+        assert!((calibration.scaled_db_relative - (-1.5)).abs() < 1.0e-4);
+        assert!((calibration.gain_db - (-1.5 - calibration.unscaled_db_relative)).abs() < 1.0e-5);
     }
 
     #[test]

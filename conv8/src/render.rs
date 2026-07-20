@@ -13,13 +13,15 @@ use crate::audio::{
     validate_stereo_metrics, write_pcm16_stereo,
 };
 use crate::convolution::{CUT_FADE_MILLISECONDS, TRIM_FRACTION_OF_SHORTER};
-use crate::convolution::{PairJob, convolve_stereo_spectra, group_jobs, make_jobs, prepare_group};
+use crate::convolution::{
+    PairJob, ToneCalibration, convolve_stereo_with_tone, group_jobs, make_jobs, prepare_group,
+};
 use crate::manifest::{SourceEntry, is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{
     ALGORITHM_VERSION, GestureProfile, MAXIMUM_NOTE_DB_BELOW_LOCAL, MAXIMUM_NOTE_SECONDS,
-    MINIMUM_NOTE_DB_BELOW_LOCAL, MINIMUM_NOTE_SECONDS, PitchApproach, PreprocessedClip, chord,
-    chord_index, fingerprint_bytes, fingerprint_hex, gesture_profile, preprocess,
-    scheduled_note_count,
+    MINIMUM_NOTE_DB_BELOW_LOCAL, MINIMUM_NOTE_SECONDS, PitchApproach, PreprocessedClip,
+    TARGET_CONVOLVED_TONE_DB_RELATIVE, chord, chord_index, fingerprint_bytes, fingerprint_hex,
+    gesture_profile, preprocess, scheduled_note_count,
 };
 
 #[derive(Clone, Debug)]
@@ -63,6 +65,10 @@ struct PairMetrics {
     scheduled_note_count: usize,
     preprocess_dry_correlation: f32,
     preprocess_difference_rms_db_relative: f32,
+    unscaled_convolved_tone_rms_db_relative: f32,
+    tone_gain_db: f32,
+    target_convolved_tone_rms_db_relative: f32,
+    scaled_convolved_tone_rms_db_relative: f32,
     path: String,
     channels: u16,
     trim_frames: usize,
@@ -109,6 +115,13 @@ struct VerificationReport {
     minimum_preprocess_dry_correlation: f32,
     minimum_preprocess_difference_rms_db_relative: f32,
     maximum_preprocess_difference_rms_db_relative: f32,
+    minimum_unscaled_convolved_tone_rms_db_relative: f32,
+    maximum_unscaled_convolved_tone_rms_db_relative: f32,
+    minimum_tone_gain_db: f32,
+    maximum_tone_gain_db: f32,
+    target_convolved_tone_rms_db_relative: f32,
+    minimum_scaled_convolved_tone_rms_db_relative: f32,
+    maximum_scaled_convolved_tone_rms_db_relative: f32,
     source_count: usize,
     category_count: usize,
     sources_per_category: usize,
@@ -197,6 +210,20 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         options.approach,
                     );
                     let path = pair_path(&options.output_dir, &clips, job);
+                    let (tone_track_1, tone_track_2) =
+                        if options.approach == PitchApproach::LongAdditiveSynth {
+                            (None, Some(preprocessing.tone_stem.as_slice()))
+                        } else {
+                            (Some(preprocessing.tone_stem.as_slice()), None)
+                        };
+                    let (mut output, tone_calibration) = convolve_stereo_with_tone(
+                        &group,
+                        job,
+                        &clips,
+                        tone_track_1,
+                        tone_track_2,
+                        TARGET_CONVOLVED_TONE_DB_RELATIVE,
+                    )?;
                     let metrics = if path.exists() && cache_matches {
                         let metrics = measure_wav(&path)?;
                         validate_stereo_metrics(
@@ -206,14 +233,6 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         )?;
                         metrics
                     } else {
-                        let (track_1, track_2) =
-                            if options.approach == PitchApproach::LongAdditiveSynth {
-                                (None, Some(preprocessing.samples.as_slice()))
-                            } else {
-                                (Some(preprocessing.samples.as_slice()), None)
-                            };
-                        let mut output =
-                            convolve_stereo_spectra(&group, job, &clips, track_1, track_2)?;
                         let metrics = condition_stereo_output(&mut output)?;
                         write_pcm16_stereo(&path, &output)?;
                         metrics
@@ -227,8 +246,11 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         &clips,
                         &fingerprints,
                         job,
-                        options.approach,
-                        &preprocessing,
+                        PitchRenderMetadata {
+                            approach: options.approach,
+                            preprocessing: &preprocessing,
+                            tone_calibration,
+                        },
                         metrics,
                     ))
                 })
@@ -373,6 +395,13 @@ fn verify_loaded(
         minimum_preprocess_dry_correlation: pitch_audit.minimum_correlation,
         minimum_preprocess_difference_rms_db_relative: pitch_audit.minimum_difference_db,
         maximum_preprocess_difference_rms_db_relative: pitch_audit.maximum_difference_db,
+        minimum_unscaled_convolved_tone_rms_db_relative: pitch_audit.minimum_unscaled_tone_db,
+        maximum_unscaled_convolved_tone_rms_db_relative: pitch_audit.maximum_unscaled_tone_db,
+        minimum_tone_gain_db: pitch_audit.minimum_tone_gain_db,
+        maximum_tone_gain_db: pitch_audit.maximum_tone_gain_db,
+        target_convolved_tone_rms_db_relative: TARGET_CONVOLVED_TONE_DB_RELATIVE,
+        minimum_scaled_convolved_tone_rms_db_relative: pitch_audit.minimum_scaled_tone_db,
+        maximum_scaled_convolved_tone_rms_db_relative: pitch_audit.maximum_scaled_tone_db,
         source_count: sources.len(),
         category_count: crate::manifest::REQUIRED_DOMAINS.len(),
         sources_per_category: 2,
@@ -438,15 +467,25 @@ fn pair_path(output_dir: &Path, clips: &[AudioClip], job: &PairJob) -> PathBuf {
     ))
 }
 
+struct PitchRenderMetadata<'a> {
+    approach: PitchApproach,
+    preprocessing: &'a PreprocessedClip,
+    tone_calibration: ToneCalibration,
+}
+
 fn pair_metrics(
     output_dir: &Path,
     clips: &[AudioClip],
     fingerprints: &[u64],
     job: &PairJob,
-    approach: PitchApproach,
-    preprocessing: &PreprocessedClip,
+    pitch: PitchRenderMetadata<'_>,
     audio: StereoMetrics,
 ) -> PairMetrics {
+    let PitchRenderMetadata {
+        approach,
+        preprocessing,
+        tone_calibration,
+    } = pitch;
     let path = pair_path(output_dir, clips, job);
     let chord = chord(chord_index(fingerprints[job.left], fingerprints[job.right]));
     PairMetrics {
@@ -473,6 +512,10 @@ fn pair_metrics(
         scheduled_note_count: preprocessing.scheduled_note_count,
         preprocess_dry_correlation: preprocessing.dry_correlation,
         preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
+        unscaled_convolved_tone_rms_db_relative: tone_calibration.unscaled_db_relative,
+        tone_gain_db: tone_calibration.gain_db,
+        target_convolved_tone_rms_db_relative: TARGET_CONVOLVED_TONE_DB_RELATIVE,
+        scaled_convolved_tone_rms_db_relative: tone_calibration.scaled_db_relative,
         path: path
             .strip_prefix(output_dir)
             .unwrap_or(&path)
@@ -504,6 +547,12 @@ struct PitchMetadataAudit {
     minimum_correlation: f32,
     minimum_difference_db: f32,
     maximum_difference_db: f32,
+    minimum_unscaled_tone_db: f32,
+    maximum_unscaled_tone_db: f32,
+    minimum_tone_gain_db: f32,
+    maximum_tone_gain_db: f32,
+    minimum_scaled_tone_db: f32,
+    maximum_scaled_tone_db: f32,
     minimum_note_count: usize,
     maximum_note_count: usize,
     modal_noise_resonator_pairs: usize,
@@ -580,6 +629,24 @@ fn verify_metric_assignments(
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
+        let tone_values = [
+            row.unscaled_convolved_tone_rms_db_relative,
+            row.tone_gain_db,
+            row.target_convolved_tone_rms_db_relative,
+            row.scaled_convolved_tone_rms_db_relative,
+        ];
+        if tone_values.iter().any(|value| !value.is_finite())
+            || (row.target_convolved_tone_rms_db_relative - TARGET_CONVOLVED_TONE_DB_RELATIVE).abs()
+                > 1.0e-4
+            || (row.scaled_convolved_tone_rms_db_relative - TARGET_CONVOLVED_TONE_DB_RELATIVE).abs()
+                > 1.0e-3
+            || (row.unscaled_convolved_tone_rms_db_relative + row.tone_gain_db
+                - row.scaled_convolved_tone_rms_db_relative)
+                .abs()
+                > 1.0e-3
+        {
+            bail!("pair {pair} has invalid convolved-tone calibration metadata");
+        }
         let minimum_correlation = 0.80;
         let maximum_difference_db = -4.0;
         if row.preprocess_dry_correlation < minimum_correlation
@@ -605,6 +672,30 @@ fn verify_metric_assignments(
         maximum_difference_db: rows
             .values()
             .map(|row| row.preprocess_difference_rms_db_relative)
+            .fold(f32::NEG_INFINITY, f32::max),
+        minimum_unscaled_tone_db: rows
+            .values()
+            .map(|row| row.unscaled_convolved_tone_rms_db_relative)
+            .fold(f32::INFINITY, f32::min),
+        maximum_unscaled_tone_db: rows
+            .values()
+            .map(|row| row.unscaled_convolved_tone_rms_db_relative)
+            .fold(f32::NEG_INFINITY, f32::max),
+        minimum_tone_gain_db: rows
+            .values()
+            .map(|row| row.tone_gain_db)
+            .fold(f32::INFINITY, f32::min),
+        maximum_tone_gain_db: rows
+            .values()
+            .map(|row| row.tone_gain_db)
+            .fold(f32::NEG_INFINITY, f32::max),
+        minimum_scaled_tone_db: rows
+            .values()
+            .map(|row| row.scaled_convolved_tone_rms_db_relative)
+            .fold(f32::INFINITY, f32::min),
+        maximum_scaled_tone_db: rows
+            .values()
+            .map(|row| row.scaled_convolved_tone_rms_db_relative)
             .fold(f32::NEG_INFINITY, f32::max),
         minimum_note_count: rows
             .values()
@@ -718,6 +809,10 @@ mod tests {
             scheduled_note_count: 3,
             preprocess_dry_correlation: 0.90,
             preprocess_difference_rms_db_relative: -7.0,
+            unscaled_convolved_tone_rms_db_relative: -11.0,
+            tone_gain_db: 9.5,
+            target_convolved_tone_rms_db_relative: -1.5,
+            scaled_convolved_tone_rms_db_relative: -1.5,
             path: "wav/left__right.wav".into(),
             channels: 2,
             trim_frames: 21,
@@ -744,7 +839,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,instrument_parameters,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,instrument_parameters,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,unscaled_convolved_tone_rms_db_relative,tone_gain_db,target_convolved_tone_rms_db_relative,scaled_convolved_tone_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

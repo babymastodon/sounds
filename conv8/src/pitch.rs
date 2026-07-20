@@ -12,7 +12,8 @@ pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
 pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-ruined-v8";
+pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-audible-ruined-v9";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -156,7 +157,7 @@ impl InstrumentKind {
 
 #[derive(Clone, Debug)]
 pub struct PreprocessedClip {
-    pub samples: Vec<f32>,
+    pub tone_stem: Vec<f32>,
     pub gesture_profile: GestureProfile,
     pub instrument_profile: InstrumentProfile,
     pub scheduled_note_count: usize,
@@ -296,7 +297,7 @@ fn additive_synth_voice(
     profile: GestureProfile,
     approach: PitchApproach,
 ) -> PreprocessedClip {
-    let mut samples = input.to_vec();
+    let mut tone_stem = vec![0.0; input.len()];
     let scheduled_note_count = scheduled_note_count(profile, approach);
     let instrument_profile = instrument_profile(profile);
     let spacing = input.len() as f32 / (scheduled_note_count + 1) as f32;
@@ -341,16 +342,19 @@ fn additive_synth_voice(
         let local_rms = rms(&input[local_start..local_end]);
         let target_rms = local_rms * 10.0_f32.powf(-gesture.db_below_local / 20.0);
         let note_gain = target_rms / rms(&note).max(1.0e-12);
-        for (output, note) in samples[onset..end].iter_mut().zip(note.drain(..)) {
+        for (output, note) in tone_stem[onset..end].iter_mut().zip(note.drain(..)) {
             *output += note * note_gain;
         }
     }
-    apply_edge_fade(&mut samples);
-    match_rms(input, &mut samples);
+    let samples = input
+        .iter()
+        .zip(&tone_stem)
+        .map(|(&input, &tone)| input + tone)
+        .collect::<Vec<_>>();
     PreprocessedClip {
         dry_correlation: correlation(input, &samples),
         difference_rms_db_relative: relative_difference_db(input, &samples),
-        samples,
+        tone_stem,
         gesture_profile: profile,
         instrument_profile,
         scheduled_note_count,
@@ -665,31 +669,6 @@ fn step_frequency_hz(step: usize) -> f32 {
     BASE_FREQUENCY_HZ * 2.0_f32.powf(step as f32 / CHORD_COUNT as f32)
 }
 
-fn match_rms(input: &[f32], output: &mut [f32]) {
-    let input_energy = input
-        .iter()
-        .map(|&sample| f64::from(sample) * f64::from(sample))
-        .sum::<f64>();
-    let output_energy = output
-        .iter()
-        .map(|&sample| f64::from(sample) * f64::from(sample))
-        .sum::<f64>();
-    let gain = (input_energy / output_energy.max(1.0e-24)).sqrt() as f32;
-    for sample in output.iter_mut() {
-        *sample *= gain.min(100.0);
-    }
-}
-
-fn apply_edge_fade(output: &mut [f32]) {
-    let fade_frames = (SAMPLE_RATE as usize / 50).min(output.len() / 2);
-    for index in 0..fade_frames {
-        let gain = index as f32 / fade_frames.max(1) as f32;
-        output[index] *= gain;
-        let tail = output.len() - 1 - index;
-        output[tail] *= gain;
-    }
-}
-
 fn correlation(left: &[f32], right: &[f32]) -> f32 {
     let (dot, left_energy, right_energy) = left.iter().zip(right).fold(
         (0.0_f64, 0.0_f64, 0.0_f64),
@@ -768,9 +747,9 @@ mod tests {
         let input = test_signal();
         let profile = gesture_profile("short-name", "long-name");
         let output = preprocess(&input, chord(7), profile, PitchApproach::ShortAdditiveSynth);
-        assert_eq!(output.samples.len(), input.len());
-        assert!(output.samples.iter().all(|sample| sample.is_finite()));
-        assert!(output.samples.iter().any(|sample| sample.abs() > 1.0e-5));
+        assert_eq!(output.tone_stem.len(), input.len());
+        assert!(output.tone_stem.iter().all(|sample| sample.is_finite()));
+        assert!(output.tone_stem.iter().any(|sample| sample.abs() > 1.0e-5));
         assert_eq!(output.scheduled_note_count, 2);
         assert!(
             output.dry_correlation >= 0.80,

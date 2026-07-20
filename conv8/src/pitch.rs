@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::f32::consts::{PI, SQRT_2};
 
 use crate::audio::SAMPLE_RATE;
 
@@ -6,13 +6,13 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const CHORD_COUNT: usize = 13;
 const BASE_FREQUENCY_HZ: f32 = 110.0;
-const CHORD_INTERVALS: [usize; 3] = [0, 6, 10];
+const CHORD_INTERVALS: [usize; 3] = [0, 4, 8];
 const NOTE_PATTERN: [usize; 8] = [0, 1, 2, 1, 0, 2, 0, 1];
 pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
 pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-additive-v5";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-instruments-v7";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -88,10 +88,35 @@ pub struct GestureProfile {
     pub notes: [NoteGesture; 3],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstrumentKind {
+    ModalNoiseResonator,
+    InharmonicFm,
+    SaturatedSawCluster,
+}
+
+impl InstrumentKind {
+    #[cfg(test)]
+    pub const ALL: [Self; 3] = [
+        Self::ModalNoiseResonator,
+        Self::InharmonicFm,
+        Self::SaturatedSawCluster,
+    ];
+
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::ModalNoiseResonator => "modal_noise_resonator",
+            Self::InharmonicFm => "inharmonic_fm",
+            Self::SaturatedSawCluster => "saturated_saw_cluster",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PreprocessedClip {
     pub samples: Vec<f32>,
     pub gesture_profile: GestureProfile,
+    pub instrument: InstrumentKind,
     pub scheduled_note_count: usize,
     pub dry_correlation: f32,
     pub difference_rms_db_relative: f32,
@@ -107,6 +132,7 @@ pub fn fingerprint_bytes(bytes: &[u8]) -> u64 {
 
 pub fn chord_index(short_fingerprint: u64, long_fingerprint: u64) -> usize {
     let mut hash = FNV_OFFSET_BASIS;
+    // Keep the legacy domain tag so each prepared pair retains its comparable root index.
     hash_bytes(&mut hash, b"conv8-bohlen-pierce-pair-v1\0");
     hash_bytes(&mut hash, &short_fingerprint.to_le_bytes());
     hash_bytes(&mut hash, &long_fingerprint.to_le_bytes());
@@ -165,6 +191,14 @@ pub fn scheduled_note_count(profile: GestureProfile, approach: PitchApproach) ->
     minimum + hash as usize % possibilities
 }
 
+pub fn instrument_kind(profile: GestureProfile) -> InstrumentKind {
+    match derived_hash(profile.fingerprint, b"instrument-family", 0) % 3 {
+        0 => InstrumentKind::ModalNoiseResonator,
+        1 => InstrumentKind::InharmonicFm,
+        _ => InstrumentKind::SaturatedSawCluster,
+    }
+}
+
 pub fn preprocess(
     input: &[f32],
     chord: Chord,
@@ -182,6 +216,7 @@ fn additive_synth_voice(
 ) -> PreprocessedClip {
     let mut samples = input.to_vec();
     let scheduled_note_count = scheduled_note_count(profile, approach);
+    let instrument = instrument_kind(profile);
     let spacing = input.len() as f32 / (scheduled_note_count + 1) as f32;
     let pattern_offset = derived_hash(
         profile.fingerprint,
@@ -204,17 +239,19 @@ fn additive_synth_voice(
         let end = (onset + note_frames).min(input.len());
         let frames = end - onset;
         let frequency = chord.frequencies_hz[pitch_index];
-        let mut note = (0..frames)
-            .map(|frame| {
-                let time = frame as f32 / SAMPLE_RATE as f32;
-                let envelope = envelope(gesture.envelope, time, gesture.duration_seconds);
-                let partials = (2.0 * PI * frequency * time).sin()
-                    + 0.28 * (2.0 * PI * frequency * 2.01 * time + 0.3).sin()
-                    + 0.11 * (2.0 * PI * frequency * 3.93 * time + 0.8).sin()
-                    + 0.04 * (2.0 * PI * frequency * 6.79 * time + 1.1).sin();
-                partials * envelope
-            })
-            .collect::<Vec<_>>();
+        let note_seed = derived_hash(
+            profile.fingerprint,
+            b"instrument-note",
+            ((approach as u64) << 32) | note_index as u64,
+        );
+        let mut note = synthesize_note(
+            instrument,
+            frequency,
+            frames,
+            gesture.duration_seconds,
+            gesture.envelope,
+            note_seed,
+        );
 
         let local_radius = (SAMPLE_RATE as usize * 3) / 4;
         let local_start = onset.saturating_sub(local_radius);
@@ -233,8 +270,142 @@ fn additive_synth_voice(
         difference_rms_db_relative: relative_difference_db(input, &samples),
         samples,
         gesture_profile: profile,
+        instrument,
         scheduled_note_count,
     }
+}
+
+fn synthesize_note(
+    instrument: InstrumentKind,
+    frequency: f32,
+    frames: usize,
+    duration: f32,
+    envelope_kind: EnvelopeKind,
+    seed: u64,
+) -> Vec<f32> {
+    match instrument {
+        InstrumentKind::ModalNoiseResonator => {
+            modal_noise_note(frequency, frames, duration, envelope_kind, seed)
+        }
+        InstrumentKind::InharmonicFm => {
+            inharmonic_fm_note(frequency, frames, duration, envelope_kind, seed)
+        }
+        InstrumentKind::SaturatedSawCluster => {
+            saturated_saw_note(frequency, frames, duration, envelope_kind, seed)
+        }
+    }
+}
+
+fn modal_noise_note(
+    frequency: f32,
+    frames: usize,
+    duration: f32,
+    envelope_kind: EnvelopeKind,
+    seed: u64,
+) -> Vec<f32> {
+    const RATIOS: [f32; 6] = [1.0, 1.41, 1.93, 2.58, 3.77, 5.12];
+    const AMPLITUDES: [f32; 6] = [1.0, 0.62, 0.38, 0.26, 0.15, 0.09];
+    let phases = std::array::from_fn::<_, 6, _>(|index| {
+        2.0 * PI * unit_interval(derived_hash(seed, b"modal-phase", index as u64))
+    });
+    let saturation = 1.6_f32.tanh();
+    (0..frames)
+        .map(|frame| {
+            let time = frame as f32 / SAMPLE_RATE as f32;
+            let progress = time / duration;
+            let modes = RATIOS
+                .iter()
+                .zip(AMPLITUDES)
+                .zip(phases)
+                .enumerate()
+                .map(|(index, ((&ratio, amplitude), phase))| {
+                    let modal_decay = (-(1.1 + index as f32 * 0.55) * progress).exp();
+                    amplitude * modal_decay * (2.0 * PI * frequency * ratio * time + phase).sin()
+                })
+                .sum::<f32>();
+            let attack_noise = noise_sample(seed, frame) * (-time / 0.022).exp() * 0.42;
+            let raw = modes + attack_noise;
+            (1.6 * raw).tanh() / saturation * envelope(envelope_kind, time, duration)
+        })
+        .collect()
+}
+
+fn inharmonic_fm_note(
+    frequency: f32,
+    frames: usize,
+    duration: f32,
+    envelope_kind: EnvelopeKind,
+    seed: u64,
+) -> Vec<f32> {
+    let phase_1 = 2.0 * PI * unit_interval(derived_hash(seed, b"fm-phase", 0));
+    let phase_2 = 2.0 * PI * unit_interval(derived_hash(seed, b"fm-phase", 1));
+    (0..frames)
+        .map(|frame| {
+            let time = frame as f32 / SAMPLE_RATE as f32;
+            let progress = (time / duration).clamp(0.0, 1.0);
+            let carrier = 2.0 * PI * frequency * time;
+            let modulator_1 = (2.0 * PI * frequency * SQRT_2 * time + phase_1).sin();
+            let modulator_2 = (2.0 * PI * frequency * 2.731 * time + phase_2).sin();
+            let index = 3.4 - 1.8 * progress;
+            let fm = (carrier + index * modulator_1 + 0.9 * modulator_2).sin();
+            let fundamental = carrier.sin();
+            (0.72 * fm + 0.28 * fundamental) * envelope(envelope_kind, time, duration)
+        })
+        .collect()
+}
+
+fn saturated_saw_note(
+    frequency: f32,
+    frames: usize,
+    duration: f32,
+    envelope_kind: EnvelopeKind,
+    seed: u64,
+) -> Vec<f32> {
+    let cents = [-7.0_f32, 0.0, 7.0];
+    let frequencies = cents.map(|cents| frequency * 2.0_f32.powf(cents / 1_200.0));
+    let phases = std::array::from_fn::<_, 3, _>(|index| {
+        unit_interval(derived_hash(seed, b"saw-phase", index as u64))
+    });
+    let saturation = 2.2_f32.tanh();
+    (0..frames)
+        .map(|frame| {
+            let time = frame as f32 / SAMPLE_RATE as f32;
+            let cluster = frequencies
+                .iter()
+                .zip(phases)
+                .map(|(&frequency, phase)| poly_blep_saw(frequency, time, phase))
+                .sum::<f32>()
+                / 3.0;
+            (2.2 * cluster).tanh() / saturation * envelope(envelope_kind, time, duration)
+        })
+        .collect()
+}
+
+fn poly_blep_saw(frequency: f32, time: f32, phase_offset: f32) -> f32 {
+    let phase = (frequency * time + phase_offset).fract();
+    let increment = frequency / SAMPLE_RATE as f32;
+    let naive = 2.0 * phase - 1.0;
+    naive - poly_blep(phase, increment)
+}
+
+fn poly_blep(phase: f32, increment: f32) -> f32 {
+    if phase < increment {
+        let normalized = phase / increment;
+        normalized + normalized - normalized * normalized - 1.0
+    } else if phase > 1.0 - increment {
+        let normalized = (phase - 1.0) / increment;
+        normalized * normalized + normalized + normalized + 1.0
+    } else {
+        0.0
+    }
+}
+
+fn noise_sample(seed: u64, frame: usize) -> f32 {
+    let mut value = seed.wrapping_add((frame as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+    ((value >> 40) as f32 / ((1_u32 << 24) - 1) as f32) * 2.0 - 1.0
 }
 
 fn rms(samples: &[f32]) -> f32 {
@@ -296,7 +467,7 @@ fn cosine_release(phase: f32, release_fraction: f32) -> f32 {
 }
 
 fn step_frequency_hz(step: usize) -> f32 {
-    BASE_FREQUENCY_HZ * 3.0_f32.powf(step as f32 / CHORD_COUNT as f32)
+    BASE_FREQUENCY_HZ * 2.0_f32.powf(step as f32 / CHORD_COUNT as f32)
 }
 
 fn match_rms(input: &[f32], output: &mut [f32]) {
@@ -374,16 +545,16 @@ mod tests {
     }
 
     #[test]
-    fn bohlen_pierce_catalog_has_thirteen_related_chords() {
+    fn thirteen_edo_catalog_has_thirteen_detuned_chords() {
         let chords = (0..CHORD_COUNT).map(chord).collect::<Vec<_>>();
         assert_eq!(chords.len(), 13);
-        assert_eq!(chords[0].steps, [0, 6, 10]);
-        assert_eq!(chords[12].steps, [12, 5, 9]);
+        assert_eq!(chords[0].steps, [0, 4, 8]);
+        assert_eq!(chords[12].steps, [12, 3, 7]);
         assert!(chords.iter().all(|chord| {
             chord
                 .frequencies_hz
                 .iter()
-                .all(|&frequency| (110.0..330.0).contains(&frequency))
+                .all(|&frequency| (110.0..220.0).contains(&frequency))
         }));
     }
 
@@ -456,6 +627,32 @@ mod tests {
                 PitchApproach::LongAdditiveSynth
             )));
         }
+    }
+
+    #[test]
+    fn instrument_selection_is_deterministic_and_uses_all_three_families() {
+        let mut observed = [false; 3];
+        for index in 0..100 {
+            let profile = gesture_profile(&format!("short-{index}"), "long");
+            let instrument = instrument_kind(profile);
+            assert_eq!(instrument, instrument_kind(profile));
+            observed[instrument as usize] = true;
+        }
+        assert!(observed.into_iter().all(|seen| seen));
+    }
+
+    #[test]
+    fn all_instruments_generate_distinct_finite_notes() {
+        let outputs = InstrumentKind::ALL.map(|instrument| {
+            synthesize_note(instrument, 151.0, 4_800, 0.5, EnvelopeKind::Swell, 42)
+        });
+        for output in &outputs {
+            assert!(output.iter().all(|sample| sample.is_finite()));
+            assert!(rms(output) > 0.01);
+        }
+        assert_ne!(outputs[0], outputs[1]);
+        assert_ne!(outputs[1], outputs[2]);
+        assert_ne!(outputs[0], outputs[2]);
     }
 
     #[test]

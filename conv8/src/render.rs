@@ -58,6 +58,7 @@ struct PairMetrics {
     note_levels_db_below_local: String,
     note_durations_seconds: String,
     note_envelopes: String,
+    instrument: String,
     scheduled_note_count: usize,
     preprocess_dry_correlation: f32,
     preprocess_difference_rms_db_relative: f32,
@@ -94,6 +95,10 @@ struct VerificationReport {
     pitch_algorithm_version: &'static str,
     processed_role: &'static str,
     gesture_hash: &'static str,
+    instrument_selection: &'static str,
+    modal_noise_resonator_pairs: usize,
+    inharmonic_fm_pairs: usize,
+    saturated_saw_cluster_pairs: usize,
     minimum_note_db_below_local: f32,
     maximum_note_db_below_local: f32,
     minimum_note_seconds: f32,
@@ -348,12 +353,16 @@ fn verify_loaded(
         status: "pass",
         pitch_approach: approach.slug(),
         pitch_description: approach.description(),
-        pitch_scale: "13-EDT Bohlen-Pierce; 3:1 tritave; chord steps [root, root+6, root+10]",
+        pitch_scale: "13-EDO; 2:1 octave; chord steps [root, root+4, root+8]",
         chord_count: 13,
         chord_hash: "FNV-1a-64 over prepared WAV bytes, then domain-separated ordered pair modulo 13",
         pitch_algorithm_version: ALGORITHM_VERSION,
         processed_role: approach.processed_role(),
         gesture_hash: "domain-separated FNV-1a-64 over ordered short and long input names",
+        instrument_selection: "ordered-name gesture hash modulo 3; approach-independent",
+        modal_noise_resonator_pairs: pitch_audit.modal_noise_resonator_pairs,
+        inharmonic_fm_pairs: pitch_audit.inharmonic_fm_pairs,
+        saturated_saw_cluster_pairs: pitch_audit.saturated_saw_cluster_pairs,
         minimum_note_db_below_local: MINIMUM_NOTE_DB_BELOW_LOCAL,
         maximum_note_db_below_local: MAXIMUM_NOTE_DB_BELOW_LOCAL,
         minimum_note_seconds: MINIMUM_NOTE_SECONDS,
@@ -458,6 +467,7 @@ fn pair_metrics(
         note_levels_db_below_local: gesture_levels(preprocessing.gesture_profile),
         note_durations_seconds: gesture_durations(preprocessing.gesture_profile),
         note_envelopes: gesture_envelopes(preprocessing.gesture_profile),
+        instrument: preprocessing.instrument.slug().to_owned(),
         scheduled_note_count: preprocessing.scheduled_note_count,
         preprocess_dry_correlation: preprocessing.dry_correlation,
         preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
@@ -494,6 +504,9 @@ struct PitchMetadataAudit {
     maximum_difference_db: f32,
     minimum_note_count: usize,
     maximum_note_count: usize,
+    modal_noise_resonator_pairs: usize,
+    inharmonic_fm_pairs: usize,
+    saturated_saw_cluster_pairs: usize,
 }
 
 fn gesture_levels(profile: GestureProfile) -> String {
@@ -558,6 +571,7 @@ fn verify_metric_assignments(
             || row.note_levels_db_below_local != gesture_levels(expected_profile)
             || row.note_durations_seconds != gesture_durations(expected_profile)
             || row.note_envelopes != gesture_envelopes(expected_profile)
+            || row.instrument != crate::pitch::instrument_kind(expected_profile).slug()
             || row.scheduled_note_count != scheduled_note_count(expected_profile, approach)
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
@@ -598,6 +612,18 @@ fn verify_metric_assignments(
             .map(|row| row.scheduled_note_count)
             .max()
             .unwrap_or(0),
+        modal_noise_resonator_pairs: rows
+            .values()
+            .filter(|row| row.instrument == "modal_noise_resonator")
+            .count(),
+        inharmonic_fm_pairs: rows
+            .values()
+            .filter(|row| row.instrument == "inharmonic_fm")
+            .count(),
+        saturated_saw_cluster_pairs: rows
+            .values()
+            .filter(|row| row.instrument == "saturated_saw_cluster")
+            .count(),
     })
 }
 
@@ -675,14 +701,15 @@ mod tests {
             short_fingerprint: "0000000000000001".into(),
             long_fingerprint: "0000000000000002".into(),
             chord_index: 7,
-            chord_steps: "7;0;4".into(),
-            chord_frequencies_hz: "198.0;110.0;154.0".into(),
+            chord_steps: "7;11;2".into(),
+            chord_frequencies_hz: "159.766514;197.747214;122.378462".into(),
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
             processed_role: "short".into(),
             gesture_fingerprint: "0000000000000003".into(),
-            note_levels_db_below_local: "0.500000;3.000000;6.250000".into(),
-            note_durations_seconds: "0.400000;0.700000;1.503000".into(),
+            note_levels_db_below_local: "-1.500000;1.000000;4.250000".into(),
+            note_durations_seconds: "0.400000;0.711413;1.503361".into(),
             note_envelopes: "pluck;swell;tremolo_arc".into(),
+            instrument: "modal_noise_resonator".into(),
             scheduled_note_count: 3,
             preprocess_dry_correlation: 0.90,
             preprocess_difference_rms_db_relative: -7.0,
@@ -712,7 +739,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

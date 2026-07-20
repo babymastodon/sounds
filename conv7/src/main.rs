@@ -50,7 +50,7 @@ enum Command {
         metrics: PathBuf,
         #[arg(long, default_value = "outputs/final")]
         output_dir: PathBuf,
-        #[arg(long, default_value_t = 5.0)]
+        #[arg(long, default_value_t = 10.0)]
         crossfade_seconds: f64,
         #[arg(long, default_value_t = 192)]
         aac_bitrate_kbps: u32,

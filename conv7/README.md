@@ -1,6 +1,6 @@
 # conv7
 
-`conv7` is an independent stereo FFT-convolution experiment built from `conv6`. It keeps the complementary start/end trimming, audio conditioning, exhaustive verification, five-second crossfaded master, and parallel FLAC/AAC/Opus encoders, but changes both the source durations and the matrix topology.
+`conv7` is an independent stereo FFT-convolution experiment built from `conv6`. It keeps the complementary start/end trimming, audio conditioning, exhaustive verification, crossfaded master, and parallel FLAC/AAC/Opus encoders, but changes both the source durations and the matrix topology.
 
 ## Corpus
 
@@ -53,7 +53,7 @@ cargo run --release -- concat
 
 Verification requires exactly 576 WAVs and checks their bipartite membership, stereo 48 kHz PCM16 encoding, exact convolution length, finite unclipped samples, RMS/peak/DC bounds, and distinct stereo channels. It writes `outputs/verification.json`, `outputs/metrics.csv`, and the 24×24 matrix lookup.
 
-`concat` streams all 576 WAVs into a seekable stereo RF64 master with five-second crossfades whenever possible, writes exact placement to `outputs/final/timeline.csv`, and runs independent encoders for lossless FLAC, 192 kbit/s AAC/M4A, stereo 128 kbit/s Opus, and stereo 32 kbit/s Opus. Every compressed result is decoded end to end as an integrity check.
+`concat` streams all 576 WAVs into a seekable stereo RF64 master with crossfades of up to ten seconds, writes exact placement to `outputs/final/timeline.csv`, and runs independent encoders for lossless FLAC, 192 kbit/s AAC/M4A, stereo 128 kbit/s Opus, and stereo 32 kbit/s Opus. Every compressed result is decoded end to end as an integrity check. Ten seconds is the CLI default; shorter values remain available through `--crossfade-seconds`.
 
 ## Full-run audit
 

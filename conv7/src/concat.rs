@@ -209,9 +209,10 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         serde_json::to_vec_pretty(&report)?,
     )?;
     eprintln!(
-        "concatenation passed: {} inputs, {} full 5s fades, {} shortened fades, {:.2} hours",
+        "concatenation passed: {} inputs, {} full {:.3}s fades, {} shortened fades, {:.2} hours",
         report.input_files,
         report.full_crossfades,
+        report.requested_crossfade_seconds,
         report.shortened_crossfades,
         report.output_duration_seconds / 3600.0
     );

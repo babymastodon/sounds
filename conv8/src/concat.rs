@@ -186,6 +186,12 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
     let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
     let opus_32k = probe_encoding(&opus_32k_path, "opus", output_seconds)?;
+    validate_decodable_in_parallel(&[
+        ("FLAC", &flac_path),
+        ("AAC", &aac_path),
+        ("Opus", &opus_path),
+        ("Opus 32k", &opus_32k_path),
+    ])?;
     let report = ConcatReport {
         status: "pass",
         input_files: rows.len(),
@@ -493,6 +499,34 @@ fn encode_outputs(
 fn remove_if_present(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn validate_decodable_in_parallel(encodings: &[(&str, &Path)]) -> Result<()> {
+    let mut jobs = encodings
+        .iter()
+        .map(|&(name, path)| {
+            let child = Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(path)
+                .args(["-map", "0:a:0", "-f", "null", "-"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .with_context(|| format!("start {name} end-to-end decode validation"))?;
+            Ok((name, child))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    eprintln!("validating compressed masters by decoding in parallel");
+    for (name, mut child) in jobs.drain(..) {
+        let status = child
+            .wait()
+            .with_context(|| format!("wait for {name} decode validation"))?;
+        if !status.success() {
+            bail!("{name} end-to-end decode validation failed with {status}");
+        }
     }
     Ok(())
 }

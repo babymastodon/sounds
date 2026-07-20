@@ -59,6 +59,7 @@ struct PairMetrics {
     note_durations_seconds: String,
     note_envelopes: String,
     instrument: String,
+    instrument_parameters: String,
     scheduled_note_count: usize,
     preprocess_dry_correlation: f32,
     preprocess_difference_rms_db_relative: f32,
@@ -467,7 +468,8 @@ fn pair_metrics(
         note_levels_db_below_local: gesture_levels(preprocessing.gesture_profile),
         note_durations_seconds: gesture_durations(preprocessing.gesture_profile),
         note_envelopes: gesture_envelopes(preprocessing.gesture_profile),
-        instrument: preprocessing.instrument.slug().to_owned(),
+        instrument: preprocessing.instrument_profile.kind.slug().to_owned(),
+        instrument_parameters: preprocessing.instrument_profile.parameters(),
         scheduled_note_count: preprocessing.scheduled_note_count,
         preprocess_dry_correlation: preprocessing.dry_correlation,
         preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
@@ -559,6 +561,7 @@ fn verify_metric_assignments(
             .with_context(|| format!("missing pitch metadata for pair {pair}"))?;
         let expected_chord = chord_index(fingerprints[job.left], fingerprints[job.right]);
         let expected_profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
+        let expected_instrument = crate::pitch::instrument_profile(expected_profile);
         if row.approach != approach.slug()
             || row.left != clips[job.left].id
             || row.right != clips[job.right].id
@@ -571,12 +574,13 @@ fn verify_metric_assignments(
             || row.note_levels_db_below_local != gesture_levels(expected_profile)
             || row.note_durations_seconds != gesture_durations(expected_profile)
             || row.note_envelopes != gesture_envelopes(expected_profile)
-            || row.instrument != crate::pitch::instrument_kind(expected_profile).slug()
+            || row.instrument != expected_instrument.kind.slug()
+            || row.instrument_parameters != expected_instrument.parameters()
             || row.scheduled_note_count != scheduled_note_count(expected_profile, approach)
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
-        let minimum_correlation = 0.85;
+        let minimum_correlation = 0.80;
         let maximum_difference_db = -4.0;
         if row.preprocess_dry_correlation < minimum_correlation
             || !row.preprocess_difference_rms_db_relative.is_finite()
@@ -710,6 +714,7 @@ mod tests {
             note_durations_seconds: "0.400000;0.711413;1.503361".into(),
             note_envelopes: "pluck;swell;tremolo_arc".into(),
             instrument: "modal_noise_resonator".into(),
+            instrument_parameters: "detune_cents=36.000;mode_disorder_percent=4.000;sustained_noise_percent=23.000;drive=3.500;folds=1".into(),
             scheduled_note_count: 3,
             preprocess_dry_correlation: 0.90,
             preprocess_difference_rms_db_relative: -7.0,
@@ -739,7 +744,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,instrument_parameters,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

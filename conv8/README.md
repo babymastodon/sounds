@@ -9,11 +9,11 @@ Every short/long pair is rendered twice:
 1. **Long additive synth** adds notes to the 25–35 second input while leaving the short input unchanged.
 2. **Short additive synth** adds notes to the 5–15 second input while leaving the long input unchanged.
 
-The ordered pair of track names deterministically selects one of three gritty instrument families. The selection is approach-independent, so a pair uses the same instrument whether its long or short input is augmented:
+The ordered pair of track names deterministically selects one of three near-ruined instrument families. The selection is approach-independent, so a pair uses the same instrument whether its long or short input is augmented. A second set of hashes varies the intensity inside the listed ranges for each pair:
 
-1. **Modal-noise resonator** combines a 22 ms noise strike with six decaying, softly saturated modes at ratios `1.00`, `1.41`, `1.93`, `2.58`, `3.77`, and `5.12`.
-2. **Inharmonic FM/PM** combines a stable fundamental with two non-integer modulators at `sqrt(2)` and `2.731` times the selected pitch. Its modulation index falls from `3.4` to `1.6` through the note.
-3. **Saturated saw cluster** combines antialiased saw voices at `−7`, `0`, and `+7` cents around the 13-EDO pitch, then applies normalized `tanh(2.2x)` saturation.
+1. **Modal-noise resonator** runs three six-mode banks spread `±30–42` cents around the pitch, disorders upper modes by `±3–5%`, and mixes `18–28%` sustained scrape noise behind the 22 ms strike. Asymmetric clipping at `3–4×` drive followed by one wavefold supplies the broken edge.
+2. **Inharmonic FM/PM** runs three carriers spread `±20–35` cents, each driven by non-integer modulators at `sqrt(2)` and `2.731` times its frequency. A modulation index falling from `7–9` to `2.5–3.5`, `0.45–0.65` sample feedback, and one or two post-FM folds push it into unstable metallic noise.
+3. **Saturated saw cluster** runs seven voices across `±30–42` cents with `±5–9` cents of independent drift. Asymmetric clipping at `3.2–4.2×` drive and one or two wavefolds precede a `20–30%` aliased-saw mix and deterministic 9–11-bit quantization.
 
 Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count, rotates chord-tone pattern `0,1,2,1,0,2,0,1`, and jitters each onset within an evenly distributed slot, so gestures span the clip without becoming a beat grid.
 
@@ -25,7 +25,7 @@ duration = 0.4 × 10^((dB_below_local + 1.5) / 10)
 
 Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four envelopes: a fast pluck, smooth swell, reverse-pluck bloom, or tremolo arc. The instrument, pitch profile, and envelopes are approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
 
-The augmented clip retains the input's exact frame count, receives 20 ms boundary fades, and is RMS-matched to the original. Verification requires at least 0.85 dry/processed correlation and caps the processed-minus-dry RMS at −4 dB relative to the source. Every gesture hash, instrument, pitch level, duration, envelope, and scheduled count is recorded in `metrics.csv`.
+The augmented clip retains the input's exact frame count, receives 20 ms boundary fades, and is RMS-matched to the original. Verification requires at least 0.80 dry/processed correlation and caps the processed-minus-dry RMS at −4 dB relative to the source. Every gesture hash, instrument, exact intensity parameters, pitch level, duration, envelope, and scheduled count is recorded in `metrics.csv`.
 
 There is no post-convolution dry-source mix: both output channels are convolution products. Let `A` be the short input, `B` the long input, `D` half the shorter duration, `P(A)` the augmented short input, and `Q(B)` the augmented long input.
 
@@ -79,7 +79,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-instruments-v7` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-13edo-ruined-v8` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -111,9 +111,9 @@ outputs/final/short_additive_synth/
 
 Every compressed master is decoded end to end after encoding. Downloaded inputs, matrix WAVs, and final media are ignored by Git.
 
-## Full-run audit
+## Previous full-run baseline
 
-The `sparse-hashed-13edo-instruments-v7` run finished on 2026-07-19 with eight logical CPU cores. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Rendering, built-in verification, and release compilation took 1:15.64 with 1,208,812 KiB peak resident memory. A second independent decode and deterministic-metadata verification took 16.58 seconds with 503,108 KiB peak resident memory.
+The superseded `sparse-hashed-13edo-instruments-v7` run finished on 2026-07-19 with eight logical CPU cores. Its measurements remain here as a comparison point while the stronger `sparse-hashed-13edo-ruined-v8` output is regenerated. Each approach produced exactly 576 stereo WAVs totaling 3,889,175,040 bytes; together they contain 1,152 WAVs and 7,778,350,080 bytes. Rendering, built-in verification, and release compilation took 1:15.64 with 1,208,812 KiB peak resident memory. A second independent decode and deterministic-metadata verification took 16.58 seconds with 503,108 KiB peak resident memory.
 
 The chord, gesture, and instrument columns have the same SHA-256 signature in both metrics tables. All 13 chords occur 35–58 times per approach. The filename hash assigns 190 pairs to modal noise, 175 to inharmonic FM, and 211 to saturated saw. Across the 576 pair profiles, the 1,728 pitch gestures comprise 420 plucks, 432 reverse plucks, 432 swells, and 444 tremolo arcs. Realized pitch levels span 1.499 dB above to 4.248 dB below local RMS, and durations span 0.400–1.503 seconds. Long inputs contain 3–6 notes; short inputs contain 2–3.
 

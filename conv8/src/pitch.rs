@@ -12,7 +12,7 @@ pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
 pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 pub const MINIMUM_NOTE_SECONDS: f32 = 0.4;
 pub const MAXIMUM_NOTE_SECONDS: f32 = 1.504;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-instruments-v7";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-ruined-v8";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -95,14 +95,56 @@ pub enum InstrumentKind {
     SaturatedSawCluster,
 }
 
-impl InstrumentKind {
-    #[cfg(test)]
-    pub const ALL: [Self; 3] = [
-        Self::ModalNoiseResonator,
-        Self::InharmonicFm,
-        Self::SaturatedSawCluster,
-    ];
+#[derive(Clone, Copy, Debug)]
+pub struct InstrumentProfile {
+    pub kind: InstrumentKind,
+    pub detune_spread_cents: f32,
+    pub modal_disorder: f32,
+    pub sustained_noise_mix: f32,
+    pub drive: f32,
+    pub fm_feedback: f32,
+    pub fm_index_start: f32,
+    pub fm_index_end: f32,
+    pub fold_count: u8,
+    pub drift_cents: f32,
+    pub alias_mix: f32,
+    pub bit_depth: u8,
+}
 
+impl InstrumentProfile {
+    pub fn parameters(self) -> String {
+        match self.kind {
+            InstrumentKind::ModalNoiseResonator => format!(
+                "detune_cents={:.3};mode_disorder_percent={:.3};sustained_noise_percent={:.3};drive={:.3};folds={}",
+                self.detune_spread_cents,
+                self.modal_disorder * 100.0,
+                self.sustained_noise_mix * 100.0,
+                self.drive,
+                self.fold_count
+            ),
+            InstrumentKind::InharmonicFm => format!(
+                "detune_cents={:.3};feedback={:.3};index={:.3}->{:.3};drive={:.3};folds={}",
+                self.detune_spread_cents,
+                self.fm_feedback,
+                self.fm_index_start,
+                self.fm_index_end,
+                self.drive,
+                self.fold_count
+            ),
+            InstrumentKind::SaturatedSawCluster => format!(
+                "detune_cents={:.3};drift_cents={:.3};drive={:.3};folds={};alias_percent={:.3};bits={}",
+                self.detune_spread_cents,
+                self.drift_cents,
+                self.drive,
+                self.fold_count,
+                self.alias_mix * 100.0,
+                self.bit_depth
+            ),
+        }
+    }
+}
+
+impl InstrumentKind {
     pub const fn slug(self) -> &'static str {
         match self {
             Self::ModalNoiseResonator => "modal_noise_resonator",
@@ -116,7 +158,7 @@ impl InstrumentKind {
 pub struct PreprocessedClip {
     pub samples: Vec<f32>,
     pub gesture_profile: GestureProfile,
-    pub instrument: InstrumentKind,
+    pub instrument_profile: InstrumentProfile,
     pub scheduled_note_count: usize,
     pub dry_correlation: f32,
     pub difference_rms_db_relative: f32,
@@ -191,12 +233,52 @@ pub fn scheduled_note_count(profile: GestureProfile, approach: PitchApproach) ->
     minimum + hash as usize % possibilities
 }
 
-pub fn instrument_kind(profile: GestureProfile) -> InstrumentKind {
-    match derived_hash(profile.fingerprint, b"instrument-family", 0) % 3 {
+pub fn instrument_profile(profile: GestureProfile) -> InstrumentProfile {
+    let kind = match derived_hash(profile.fingerprint, b"instrument-family", 0) % 3 {
         0 => InstrumentKind::ModalNoiseResonator,
         1 => InstrumentKind::InharmonicFm,
         _ => InstrumentKind::SaturatedSawCluster,
+    };
+    let mut result = InstrumentProfile {
+        kind,
+        detune_spread_cents: 0.0,
+        modal_disorder: 0.0,
+        sustained_noise_mix: 0.0,
+        drive: 0.0,
+        fm_feedback: 0.0,
+        fm_index_start: 0.0,
+        fm_index_end: 0.0,
+        fold_count: 0,
+        drift_cents: 0.0,
+        alias_mix: 0.0,
+        bit_depth: 0,
+    };
+    match kind {
+        InstrumentKind::ModalNoiseResonator => {
+            result.detune_spread_cents = hashed_range(profile, b"modal-detune", 30.0, 42.0);
+            result.modal_disorder = hashed_range(profile, b"modal-disorder", 0.03, 0.05);
+            result.sustained_noise_mix = hashed_range(profile, b"modal-noise", 0.18, 0.28);
+            result.drive = hashed_range(profile, b"modal-drive", 3.0, 4.0);
+            result.fold_count = 1;
+        }
+        InstrumentKind::InharmonicFm => {
+            result.detune_spread_cents = hashed_range(profile, b"fm-detune", 20.0, 35.0);
+            result.fm_feedback = hashed_range(profile, b"fm-feedback", 0.45, 0.65);
+            result.fm_index_start = hashed_range(profile, b"fm-index-start", 7.0, 9.0);
+            result.fm_index_end = hashed_range(profile, b"fm-index-end", 2.5, 3.5);
+            result.drive = hashed_range(profile, b"fm-drive", 1.6, 2.0);
+            result.fold_count = 1 + (derived_hash(profile.fingerprint, b"fm-folds", 0) % 2) as u8;
+        }
+        InstrumentKind::SaturatedSawCluster => {
+            result.detune_spread_cents = hashed_range(profile, b"saw-detune", 30.0, 42.0);
+            result.drift_cents = hashed_range(profile, b"saw-drift", 5.0, 9.0);
+            result.drive = hashed_range(profile, b"saw-drive", 3.2, 4.2);
+            result.fold_count = 1 + (derived_hash(profile.fingerprint, b"saw-folds", 0) % 2) as u8;
+            result.alias_mix = hashed_range(profile, b"saw-alias", 0.20, 0.30);
+            result.bit_depth = 9 + (derived_hash(profile.fingerprint, b"saw-bits", 0) % 3) as u8;
+        }
     }
+    result
 }
 
 pub fn preprocess(
@@ -216,7 +298,7 @@ fn additive_synth_voice(
 ) -> PreprocessedClip {
     let mut samples = input.to_vec();
     let scheduled_note_count = scheduled_note_count(profile, approach);
-    let instrument = instrument_kind(profile);
+    let instrument_profile = instrument_profile(profile);
     let spacing = input.len() as f32 / (scheduled_note_count + 1) as f32;
     let pattern_offset = derived_hash(
         profile.fingerprint,
@@ -245,7 +327,7 @@ fn additive_synth_voice(
             ((approach as u64) << 32) | note_index as u64,
         );
         let mut note = synthesize_note(
-            instrument,
+            instrument_profile,
             frequency,
             frames,
             gesture.duration_seconds,
@@ -270,33 +352,34 @@ fn additive_synth_voice(
         difference_rms_db_relative: relative_difference_db(input, &samples),
         samples,
         gesture_profile: profile,
-        instrument,
+        instrument_profile,
         scheduled_note_count,
     }
 }
 
 fn synthesize_note(
-    instrument: InstrumentKind,
+    instrument: InstrumentProfile,
     frequency: f32,
     frames: usize,
     duration: f32,
     envelope_kind: EnvelopeKind,
     seed: u64,
 ) -> Vec<f32> {
-    match instrument {
+    match instrument.kind {
         InstrumentKind::ModalNoiseResonator => {
-            modal_noise_note(frequency, frames, duration, envelope_kind, seed)
+            modal_noise_note(instrument, frequency, frames, duration, envelope_kind, seed)
         }
         InstrumentKind::InharmonicFm => {
-            inharmonic_fm_note(frequency, frames, duration, envelope_kind, seed)
+            inharmonic_fm_note(instrument, frequency, frames, duration, envelope_kind, seed)
         }
         InstrumentKind::SaturatedSawCluster => {
-            saturated_saw_note(frequency, frames, duration, envelope_kind, seed)
+            saturated_saw_note(instrument, frequency, frames, duration, envelope_kind, seed)
         }
     }
 }
 
 fn modal_noise_note(
+    instrument: InstrumentProfile,
     frequency: f32,
     frames: usize,
     duration: f32,
@@ -305,87 +388,194 @@ fn modal_noise_note(
 ) -> Vec<f32> {
     const RATIOS: [f32; 6] = [1.0, 1.41, 1.93, 2.58, 3.77, 5.12];
     const AMPLITUDES: [f32; 6] = [1.0, 0.62, 0.38, 0.26, 0.15, 0.09];
-    let phases = std::array::from_fn::<_, 6, _>(|index| {
-        2.0 * PI * unit_interval(derived_hash(seed, b"modal-phase", index as u64))
+    let cents = [
+        -instrument.detune_spread_cents,
+        0.0,
+        instrument.detune_spread_cents,
+    ];
+    let frequencies = std::array::from_fn::<_, 3, _>(|bank| {
+        std::array::from_fn::<_, 6, _>(|mode| {
+            let disorder = if mode == 0 {
+                1.0
+            } else {
+                let hash = derived_hash(seed, b"modal-disorder", (bank * 6 + mode) as u64);
+                1.0 + (unit_interval(hash) * 2.0 - 1.0) * instrument.modal_disorder
+            };
+            frequency * 2.0_f32.powf(cents[bank] / 1_200.0) * RATIOS[mode] * disorder
+        })
     });
-    let saturation = 1.6_f32.tanh();
+    let phases = std::array::from_fn::<_, 3, _>(|bank| {
+        std::array::from_fn::<_, 6, _>(|mode| {
+            2.0 * PI * unit_interval(derived_hash(seed, b"modal-phase", (bank * 6 + mode) as u64))
+        })
+    });
     (0..frames)
         .map(|frame| {
             let time = frame as f32 / SAMPLE_RATE as f32;
             let progress = time / duration;
-            let modes = RATIOS
+            let modes = frequencies
                 .iter()
-                .zip(AMPLITUDES)
                 .zip(phases)
-                .enumerate()
-                .map(|(index, ((&ratio, amplitude), phase))| {
-                    let modal_decay = (-(1.1 + index as f32 * 0.55) * progress).exp();
-                    amplitude * modal_decay * (2.0 * PI * frequency * ratio * time + phase).sin()
+                .map(|(bank_frequencies, bank_phases)| {
+                    bank_frequencies
+                        .iter()
+                        .zip(AMPLITUDES)
+                        .zip(bank_phases)
+                        .enumerate()
+                        .map(|(mode, ((&frequency, amplitude), phase))| {
+                            let modal_decay = (-(1.1 + mode as f32 * 0.55) * progress).exp();
+                            amplitude * modal_decay * (2.0 * PI * frequency * time + phase).sin()
+                        })
+                        .sum::<f32>()
                 })
-                .sum::<f32>();
+                .sum::<f32>()
+                / 3.0;
             let attack_noise = noise_sample(seed, frame) * (-time / 0.022).exp() * 0.42;
-            let raw = modes + attack_noise;
-            (1.6 * raw).tanh() / saturation * envelope(envelope_kind, time, duration)
+            let sustained_noise =
+                noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame) * instrument.sustained_noise_mix;
+            let raw =
+                modes * (1.0 - instrument.sustained_noise_mix) + attack_noise + sustained_noise;
+            let clipped = asymmetric_clip(raw, instrument.drive);
+            let folded = fold_signal(clipped * 1.35, instrument.fold_count);
+            (0.2 * raw + 0.8 * folded) * envelope(envelope_kind, time, duration)
         })
         .collect()
 }
 
 fn inharmonic_fm_note(
+    instrument: InstrumentProfile,
     frequency: f32,
     frames: usize,
     duration: f32,
     envelope_kind: EnvelopeKind,
     seed: u64,
 ) -> Vec<f32> {
-    let phase_1 = 2.0 * PI * unit_interval(derived_hash(seed, b"fm-phase", 0));
-    let phase_2 = 2.0 * PI * unit_interval(derived_hash(seed, b"fm-phase", 1));
-    (0..frames)
-        .map(|frame| {
-            let time = frame as f32 / SAMPLE_RATE as f32;
-            let progress = (time / duration).clamp(0.0, 1.0);
-            let carrier = 2.0 * PI * frequency * time;
-            let modulator_1 = (2.0 * PI * frequency * SQRT_2 * time + phase_1).sin();
-            let modulator_2 = (2.0 * PI * frequency * 2.731 * time + phase_2).sin();
-            let index = 3.4 - 1.8 * progress;
-            let fm = (carrier + index * modulator_1 + 0.9 * modulator_2).sin();
-            let fundamental = carrier.sin();
-            (0.72 * fm + 0.28 * fundamental) * envelope(envelope_kind, time, duration)
+    let cents = [
+        -instrument.detune_spread_cents,
+        0.0,
+        instrument.detune_spread_cents,
+    ];
+    let frequencies = cents.map(|cents| frequency * 2.0_f32.powf(cents / 1_200.0));
+    let phases = std::array::from_fn::<_, 3, _>(|carrier| {
+        std::array::from_fn::<_, 2, _>(|modulator| {
+            2.0 * PI
+                * unit_interval(derived_hash(
+                    seed,
+                    b"fm-phase",
+                    (carrier * 2 + modulator) as u64,
+                ))
         })
-        .collect()
+    });
+    let mut previous = [0.0_f32; 3];
+    let mut output = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let time = frame as f32 / SAMPLE_RATE as f32;
+        let progress = (time / duration).clamp(0.0, 1.0);
+        let index = instrument
+            .fm_index_start
+            .mul_add(1.0 - progress, instrument.fm_index_end * progress);
+        let mut carriers = 0.0;
+        for carrier in 0..3 {
+            let carrier_frequency = frequencies[carrier];
+            let carrier_phase = 2.0 * PI * carrier_frequency * time;
+            let modulator_1 =
+                (2.0 * PI * carrier_frequency * SQRT_2 * time + phases[carrier][0]).sin();
+            let modulator_2 =
+                (2.0 * PI * carrier_frequency * 2.731 * time + phases[carrier][1]).sin();
+            let value = (carrier_phase
+                + index * modulator_1
+                + 1.4 * modulator_2
+                + PI * instrument.fm_feedback * previous[carrier])
+                .sin();
+            previous[carrier] = value;
+            carriers += value;
+        }
+        let raw = 0.88 * carriers / 3.0 + 0.12 * (2.0 * PI * frequency * time).sin();
+        let folded = fold_signal(raw * instrument.drive, instrument.fold_count);
+        output.push(folded * envelope(envelope_kind, time, duration));
+    }
+    output
 }
 
 fn saturated_saw_note(
+    instrument: InstrumentProfile,
     frequency: f32,
     frames: usize,
     duration: f32,
     envelope_kind: EnvelopeKind,
     seed: u64,
 ) -> Vec<f32> {
-    let cents = [-7.0_f32, 0.0, 7.0];
+    let cents = std::array::from_fn::<_, 7, _>(|index| {
+        instrument.detune_spread_cents * (index as f32 - 3.0) / 3.0
+    });
     let frequencies = cents.map(|cents| frequency * 2.0_f32.powf(cents / 1_200.0));
-    let phases = std::array::from_fn::<_, 3, _>(|index| {
+    let phases = std::array::from_fn::<_, 7, _>(|index| {
         unit_interval(derived_hash(seed, b"saw-phase", index as u64))
     });
-    let saturation = 2.2_f32.tanh();
+    let drift_frequencies = std::array::from_fn::<_, 7, _>(|index| {
+        0.55 + 0.65 * unit_interval(derived_hash(seed, b"saw-drift-rate", index as u64))
+    });
+    let drift_phases = std::array::from_fn::<_, 7, _>(|index| {
+        2.0 * PI * unit_interval(derived_hash(seed, b"saw-drift-phase", index as u64))
+    });
+    let levels = ((1_u32 << instrument.bit_depth) - 1) as f32;
     (0..frames)
         .map(|frame| {
             let time = frame as f32 / SAMPLE_RATE as f32;
-            let cluster = frequencies
+            let (clean, aliased) = frequencies
                 .iter()
                 .zip(phases)
-                .map(|(&frequency, phase)| poly_blep_saw(frequency, time, phase))
-                .sum::<f32>()
-                / 3.0;
-            (2.2 * cluster).tanh() / saturation * envelope(envelope_kind, time, duration)
+                .zip(drift_frequencies)
+                .zip(drift_phases)
+                .map(|(((&frequency, phase), drift_frequency), drift_phase)| {
+                    let fractional_drift = 2.0_f32.powf(instrument.drift_cents / 1_200.0) - 1.0;
+                    let drift_depth = frequency * fractional_drift / (2.0 * PI * drift_frequency);
+                    let phase = (frequency * time
+                        + phase
+                        + drift_depth * (2.0 * PI * drift_frequency * time + drift_phase).sin())
+                    .fract();
+                    (
+                        poly_blep_saw_phase(phase, frequency / SAMPLE_RATE as f32),
+                        2.0 * phase - 1.0,
+                    )
+                })
+                .fold((0.0_f32, 0.0_f32), |(clean, aliased), (voice, naive)| {
+                    (clean + voice, aliased + naive)
+                });
+            let clean = clean / 7.0;
+            let aliased = aliased / 7.0;
+            let raw = clean.mul_add(1.0 - instrument.alias_mix, aliased * instrument.alias_mix);
+            let clipped = asymmetric_clip(raw, instrument.drive);
+            let folded = fold_signal(clipped * 1.5, instrument.fold_count);
+            let quantized = (folded * levels).round() / levels;
+            quantized * envelope(envelope_kind, time, duration)
         })
         .collect()
 }
 
-fn poly_blep_saw(frequency: f32, time: f32, phase_offset: f32) -> f32 {
-    let phase = (frequency * time + phase_offset).fract();
-    let increment = frequency / SAMPLE_RATE as f32;
+fn poly_blep_saw_phase(phase: f32, increment: f32) -> f32 {
     let naive = 2.0 * phase - 1.0;
     naive - poly_blep(phase, increment)
+}
+
+fn asymmetric_clip(sample: f32, drive: f32) -> f32 {
+    let bias = 0.18;
+    ((drive * sample + bias).tanh() - bias.tanh()) / (drive + bias).tanh()
+}
+
+fn fold_signal(mut sample: f32, folds: u8) -> f32 {
+    for fold in 0..folds {
+        if fold > 0 {
+            sample *= 1.7;
+        }
+        let wrapped = (sample + 1.0).rem_euclid(4.0);
+        sample = if wrapped <= 2.0 {
+            wrapped - 1.0
+        } else {
+            3.0 - wrapped
+        };
+    }
+    sample
 }
 
 fn poly_blep(phase: f32, increment: f32) -> f32 {
@@ -435,6 +625,11 @@ fn derived_hash(seed: u64, tag: &[u8], value: u64) -> u64 {
 
 fn unit_interval(hash: u64) -> f32 {
     (hash >> 40) as f32 / ((1_u32 << 24) - 1) as f32
+}
+
+fn hashed_range(profile: GestureProfile, tag: &[u8], minimum: f32, maximum: f32) -> f32 {
+    let unit = unit_interval(derived_hash(profile.fingerprint, tag, 0));
+    minimum + unit * (maximum - minimum)
 }
 
 fn envelope(kind: EnvelopeKind, time: f32, duration: f32) -> f32 {
@@ -578,7 +773,7 @@ mod tests {
         assert!(output.samples.iter().any(|sample| sample.abs() > 1.0e-5));
         assert_eq!(output.scheduled_note_count, 2);
         assert!(
-            output.dry_correlation >= 0.85,
+            output.dry_correlation >= 0.80,
             "correlation={}",
             output.dry_correlation
         );
@@ -634,17 +829,33 @@ mod tests {
         let mut observed = [false; 3];
         for index in 0..100 {
             let profile = gesture_profile(&format!("short-{index}"), "long");
-            let instrument = instrument_kind(profile);
-            assert_eq!(instrument, instrument_kind(profile));
-            observed[instrument as usize] = true;
+            let instrument = instrument_profile(profile);
+            assert_eq!(instrument.kind, instrument_profile(profile).kind);
+            assert_eq!(
+                instrument.parameters(),
+                instrument_profile(profile).parameters()
+            );
+            observed[instrument.kind as usize] = true;
         }
         assert!(observed.into_iter().all(|seen| seen));
     }
 
     #[test]
     fn all_instruments_generate_distinct_finite_notes() {
-        let outputs = InstrumentKind::ALL.map(|instrument| {
-            synthesize_note(instrument, 151.0, 4_800, 0.5, EnvelopeKind::Swell, 42)
+        let mut profiles = [None; 3];
+        for index in 0..100 {
+            let profile = instrument_profile(gesture_profile(&format!("short-{index}"), "long"));
+            profiles[profile.kind as usize] = Some(profile);
+        }
+        let outputs = profiles.map(|profile| {
+            synthesize_note(
+                profile.expect("all instrument families should be selected"),
+                151.0,
+                4_800,
+                0.5,
+                EnvelopeKind::Swell,
+                42,
+            )
         });
         for output in &outputs {
             assert!(output.iter().all(|sample| sample.is_finite()));

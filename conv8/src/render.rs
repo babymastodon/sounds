@@ -16,8 +16,10 @@ use crate::convolution::{CUT_FADE_MILLISECONDS, TRIM_FRACTION_OF_SHORTER};
 use crate::convolution::{PairJob, convolve_stereo_spectra, group_jobs, make_jobs, prepare_group};
 use crate::manifest::{SourceEntry, is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{
-    ALGORITHM_VERSION, PitchApproach, PreprocessedClip, chord, chord_index, fingerprint_bytes,
-    fingerprint_hex, preprocess,
+    ALGORITHM_VERSION, GestureProfile, MAXIMUM_NOTE_DB_BELOW_LOCAL, MAXIMUM_NOTE_SECONDS,
+    MINIMUM_NOTE_DB_BELOW_LOCAL, MINIMUM_NOTE_SECONDS, PitchApproach, PreprocessedClip, chord,
+    chord_index, fingerprint_bytes, fingerprint_hex, gesture_profile, preprocess,
+    scheduled_note_count,
 };
 
 #[derive(Clone, Debug)]
@@ -52,7 +54,11 @@ struct PairMetrics {
     chord_frequencies_hz: String,
     pitch_algorithm_version: String,
     processed_role: String,
-    additive_note_db_below_local: f32,
+    gesture_fingerprint: String,
+    note_levels_db_below_local: String,
+    note_durations_seconds: String,
+    note_envelopes: String,
+    scheduled_note_count: usize,
     preprocess_dry_correlation: f32,
     preprocess_difference_rms_db_relative: f32,
     path: String,
@@ -87,7 +93,13 @@ struct VerificationReport {
     chord_hash: &'static str,
     pitch_algorithm_version: &'static str,
     processed_role: &'static str,
-    additive_note_db_below_local: f32,
+    gesture_hash: &'static str,
+    minimum_note_db_below_local: f32,
+    maximum_note_db_below_local: f32,
+    minimum_note_seconds: f32,
+    maximum_note_seconds: f32,
+    minimum_scheduled_note_count: usize,
+    maximum_scheduled_note_count: usize,
     minimum_preprocess_dry_correlation: f32,
     minimum_preprocess_difference_rms_db_relative: f32,
     maximum_preprocess_difference_rms_db_relative: f32,
@@ -165,13 +177,19 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                     let selected_chord_index =
                         chord_index(fingerprints[job.left], fingerprints[job.right]);
                     let selected_chord = chord(selected_chord_index);
+                    let profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
                     let preprocessing_input =
                         if options.approach == PitchApproach::LongAdditiveSynth {
                             &clips[job.right].samples
                         } else {
                             &clips[job.left].samples
                         };
-                    let preprocessing = preprocess(preprocessing_input, selected_chord);
+                    let preprocessing = preprocess(
+                        preprocessing_input,
+                        selected_chord,
+                        profile,
+                        options.approach,
+                    );
                     let path = pair_path(&options.output_dir, &clips, job);
                     let metrics = if path.exists() && cache_matches {
                         let metrics = measure_wav(&path)?;
@@ -335,7 +353,13 @@ fn verify_loaded(
         chord_hash: "FNV-1a-64 over prepared WAV bytes, then domain-separated ordered pair modulo 13",
         pitch_algorithm_version: ALGORITHM_VERSION,
         processed_role: approach.processed_role(),
-        additive_note_db_below_local: approach.additive_note_db_below_local(),
+        gesture_hash: "domain-separated FNV-1a-64 over ordered short and long input names",
+        minimum_note_db_below_local: MINIMUM_NOTE_DB_BELOW_LOCAL,
+        maximum_note_db_below_local: MAXIMUM_NOTE_DB_BELOW_LOCAL,
+        minimum_note_seconds: MINIMUM_NOTE_SECONDS,
+        maximum_note_seconds: MAXIMUM_NOTE_SECONDS,
+        minimum_scheduled_note_count: pitch_audit.minimum_note_count,
+        maximum_scheduled_note_count: pitch_audit.maximum_note_count,
         minimum_preprocess_dry_correlation: pitch_audit.minimum_correlation,
         minimum_preprocess_difference_rms_db_relative: pitch_audit.minimum_difference_db,
         maximum_preprocess_difference_rms_db_relative: pitch_audit.maximum_difference_db,
@@ -430,7 +454,11 @@ fn pair_metrics(
             .join(";"),
         pitch_algorithm_version: ALGORITHM_VERSION.to_owned(),
         processed_role: approach.processed_role().to_owned(),
-        additive_note_db_below_local: preprocessing.additive_note_db_below_local,
+        gesture_fingerprint: format!("{:016x}", preprocessing.gesture_profile.fingerprint),
+        note_levels_db_below_local: gesture_levels(preprocessing.gesture_profile),
+        note_durations_seconds: gesture_durations(preprocessing.gesture_profile),
+        note_envelopes: gesture_envelopes(preprocessing.gesture_profile),
+        scheduled_note_count: preprocessing.scheduled_note_count,
         preprocess_dry_correlation: preprocessing.dry_correlation,
         preprocess_difference_rms_db_relative: preprocessing.difference_rms_db_relative,
         path: path
@@ -464,6 +492,26 @@ struct PitchMetadataAudit {
     minimum_correlation: f32,
     minimum_difference_db: f32,
     maximum_difference_db: f32,
+    minimum_note_count: usize,
+    maximum_note_count: usize,
+}
+
+fn gesture_levels(profile: GestureProfile) -> String {
+    profile
+        .notes
+        .map(|note| format!("{:.6}", note.db_below_local))
+        .join(";")
+}
+
+fn gesture_durations(profile: GestureProfile) -> String {
+    profile
+        .notes
+        .map(|note| format!("{:.6}", note.duration_seconds))
+        .join(";")
+}
+
+fn gesture_envelopes(profile: GestureProfile) -> String {
+    profile.notes.map(|note| note.envelope.slug()).join(";")
 }
 
 fn verify_metric_assignments(
@@ -497,6 +545,7 @@ fn verify_metric_assignments(
             .get(&pair)
             .with_context(|| format!("missing pitch metadata for pair {pair}"))?;
         let expected_chord = chord_index(fingerprints[job.left], fingerprints[job.right]);
+        let expected_profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
         if row.approach != approach.slug()
             || row.left != clips[job.left].id
             || row.right != clips[job.right].id
@@ -505,12 +554,16 @@ fn verify_metric_assignments(
             || row.chord_index != expected_chord
             || row.pitch_algorithm_version != ALGORITHM_VERSION
             || row.processed_role != approach.processed_role()
-            || row.additive_note_db_below_local != approach.additive_note_db_below_local()
+            || row.gesture_fingerprint != format!("{:016x}", expected_profile.fingerprint)
+            || row.note_levels_db_below_local != gesture_levels(expected_profile)
+            || row.note_durations_seconds != gesture_durations(expected_profile)
+            || row.note_envelopes != gesture_envelopes(expected_profile)
+            || row.scheduled_note_count != scheduled_note_count(expected_profile, approach)
         {
             bail!("pair {pair} has inconsistent deterministic pitch metadata");
         }
-        let minimum_correlation = 0.95;
-        let maximum_difference_db = -10.0;
+        let minimum_correlation = 0.85;
+        let maximum_difference_db = -4.0;
         if row.preprocess_dry_correlation < minimum_correlation
             || !row.preprocess_difference_rms_db_relative.is_finite()
             || row.preprocess_difference_rms_db_relative > maximum_difference_db
@@ -535,6 +588,16 @@ fn verify_metric_assignments(
             .values()
             .map(|row| row.preprocess_difference_rms_db_relative)
             .fold(f32::NEG_INFINITY, f32::max),
+        minimum_note_count: rows
+            .values()
+            .map(|row| row.scheduled_note_count)
+            .min()
+            .unwrap_or(0),
+        maximum_note_count: rows
+            .values()
+            .map(|row| row.scheduled_note_count)
+            .max()
+            .unwrap_or(0),
     })
 }
 
@@ -616,9 +679,13 @@ mod tests {
             chord_frequencies_hz: "198.0;110.0;154.0".into(),
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
             processed_role: "short".into(),
-            additive_note_db_below_local: 6.0,
-            preprocess_dry_correlation: 0.97,
-            preprocess_difference_rms_db_relative: -13.0,
+            gesture_fingerprint: "0000000000000003".into(),
+            note_levels_db_below_local: "0.500000;3.000000;6.250000".into(),
+            note_durations_seconds: "0.400000;0.700000;1.503000".into(),
+            note_envelopes: "pluck;swell;tremolo_arc".into(),
+            scheduled_note_count: 3,
+            preprocess_dry_correlation: 0.90,
+            preprocess_difference_rms_db_relative: -7.0,
             path: "wav/left__right.wav".into(),
             channels: 2,
             trim_frames: 21,
@@ -645,7 +712,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,additive_note_db_below_local,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

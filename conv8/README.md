@@ -1,6 +1,6 @@
 # conv8
 
-conv8 is an additive-pitch playground built from conv7. It reuses the same 48 open-licensed inputs, 24×24 short-to-long matrix, complementary stereo trims, convolution-only outputs, ten-second final crossfades, verification gates, and FLAC/AAC/Opus encoders. The experiment compares adding the same quiet synthesized notes to either the long or short input before convolution.
+conv8 is an additive-pitch playground built from conv7. It reuses the same 48 open-licensed inputs, 24×24 short-to-long matrix, complementary stereo trims, convolution-only outputs, ten-second final crossfades, verification gates, and FLAC/AAC/Opus encoders. The experiment compares adding the same sparse, synthesized gestures to either the long or short input before convolution.
 
 ## Controlled two-way comparison
 
@@ -9,9 +9,17 @@ Every short/long pair is rendered twice:
 1. **Long additive synth** adds notes to the 25–35 second input while leaving the short input unchanged.
 2. **Short additive synth** adds notes to the 5–15 second input while leaving the long input unchanged.
 
-Both use the same muted-kalimba-like additive instrument. A 250 ms note starts every 1.25 seconds and follows chord-tone pattern `0,1,2,1,0,2,0,1`. Its partial frequency ratios are `1`, `2.01`, `3.93`, and `6.79`, with amplitudes `1`, `0.28`, `0.11`, and `0.04`. An 8 ms squared attack and exponential decay keep each event brief.
+Both use the same resonant, mallet-like additive instrument. Its partial frequency ratios are `1`, `2.01`, `3.93`, and `6.79`, with amplitudes `1`, `0.28`, `0.11`, and `0.04`. Only two or three notes occur in a short input and three to six in a long input. A pair-and-role hash chooses the count, rotates chord-tone pattern `0,1,2,1,0,2,0,1`, and jitters each onset within an evenly distributed slot, so gestures span the clip without becoming a beat grid.
 
-Each note is independently scaled to 6 dB below the surrounding input RMS, measured over a local half-interval window. The augmented clip retains the input's exact frame count, receives 20 ms boundary fades, and is RMS-matched to the original. Verification requires at least 0.95 dry/processed correlation and caps the processed-minus-dry RMS at −10 dB relative to the source.
+The ordered pair of input names hashes to a three-entry gesture profile, one entry per chord tone. Levels range from 0.5 to 6.25 dB below the surrounding 1.5-second local RMS window. Duration varies inversely from 0.4 to about 1.504 seconds:
+
+~~~text
+duration = 0.4 × 10^((dB_below_local - 0.5) / 10)
+~~~
+
+Consequently a loud note is short and a quiet note rings longer, while `relative_power × duration` stays nearly constant. The same pair hash independently assigns each pitch one of four envelopes: a fast pluck, smooth swell, reverse-pluck bloom, or tremolo arc. The profile is approach-independent, while the sparse count and placements include the processed role so the two input lengths are covered appropriately.
+
+The augmented clip retains the input's exact frame count, receives 20 ms boundary fades, and is RMS-matched to the original. Verification requires at least 0.85 dry/processed correlation and caps the processed-minus-dry RMS at −4 dB relative to the source. Every gesture hash, pitch level, duration, envelope, and scheduled count is recorded in `metrics.csv`.
 
 There is no post-convolution dry-source mix: both output channels are convolution products. Let `A` be the short input, `B` the long input, `D` half the shorter duration, `P(A)` the augmented short input, and `Q(B)` the augmented long input.
 
@@ -54,7 +62,7 @@ Chord selection is content-based and approach-independent:
 2. Hash the fixed tag `conv8-bohlen-pierce-pair-v1`, the short-file hash, then the long-file hash.
 3. Select `pair_hash mod 13`.
 
-The ordered short→long role, chord index, steps, frequencies, and both file fingerprints are recorded in each `metrics.csv`, making assignments deterministic across reruns and identical between approaches.
+The ordered short→long role, chord index, steps, frequencies, both file fingerprints, and name-derived gesture profile are recorded in each `metrics.csv`, making assignments deterministic across reruns. The chord and per-pitch gestures are identical between approaches.
 
 ## Corpus and matrix
 
@@ -65,7 +73,7 @@ outputs/long_additive_synth/
 outputs/short_additive_synth/
 ~~~
 
-Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `additive-notes-v3` algorithm marker, and verification report.
+Each directory contains its own 24×24 `matrix.csv`, detailed metrics, `sparse-hashed-additive-v4` algorithm marker, and verification report.
 
 ## Run the complete pipeline
 
@@ -99,4 +107,4 @@ Every compressed master is decoded end to end after encoding. Downloaded inputs,
 
 ## Full-run audit
 
-The focused `additive-notes-v3` matrices and masters are being rebuilt from scratch. This section will record their measured verification and encoding results after completion.
+The focused `sparse-hashed-additive-v4` matrices and masters are being rebuilt from scratch. This section will record their measured verification and encoding results after completion.

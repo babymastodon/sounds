@@ -30,6 +30,7 @@ const state = {
   spectrumLayer: null,
   analysisSamples: null,
   analysisSampleRate: 0,
+  audioObjectUrl: "",
   selectionGeneration: 0,
 };
 
@@ -117,7 +118,9 @@ function bindEvents() {
     refreshButtons();
     selectClip(true);
   });
-  ui.playButton.addEventListener("click", togglePlayback);
+  ui.playButton.addEventListener("click", () => {
+    void togglePlayback().catch(showError);
+  });
   ui.audio.addEventListener("play", refreshPlayButton);
   ui.audio.addEventListener("pause", refreshPlayButton);
   ui.audio.addEventListener("loadedmetadata", refreshTransport);
@@ -142,7 +145,7 @@ function bindEvents() {
     if (event.target.matches("select, input")) return;
     if (event.code === "Space") {
       event.preventDefault();
-      togglePlayback();
+      void togglePlayback().catch(showError);
     } else if (event.code === "ArrowLeft") {
       ui.audio.currentTime = Math.max(0, ui.audio.currentTime - 5);
     } else if (event.code === "ArrowRight") {
@@ -174,8 +177,19 @@ async function selectClip(preservePlayback) {
     state.analysisSampleRate = 0;
     state.waveformLayer = null;
     state.spectrumLayer = null;
-    ui.audio.src = url;
+    drawLoading(ui.waveform, "LOADING WAVEFORM");
+    drawLoading(ui.spectrogram, "LOADING SPECTRUM");
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (generation !== state.selectionGeneration) return;
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    const previousObjectUrl = state.audioObjectUrl;
+    state.audioObjectUrl = objectUrl;
+    ui.audio.dataset.path = clip.path;
+    ui.audio.src = objectUrl;
     ui.audio.load();
+    if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
     await once(ui.audio, "loadedmetadata");
     if (generation !== state.selectionGeneration) return;
     ui.audio.currentTime = Math.max(
@@ -186,7 +200,7 @@ async function selectClip(preservePlayback) {
       await ui.audio.play();
     }
     updateMetadata(clip);
-    await analyzeSelection(url, generation);
+    await analyzeSelection(bytes, generation);
   } catch (error) {
     if (generation === state.selectionGeneration) showError(error);
   }
@@ -230,12 +244,9 @@ function metricMarkup(label, value) {
   return `<div><dt>${label}</dt><dd>${value}</dd></div>`;
 }
 
-async function analyzeSelection(url, generation) {
+async function analyzeSelection(bytes, generation) {
   drawLoading(ui.waveform, "DECODING WAVEFORM");
   drawLoading(ui.spectrogram, "COMPUTING SPECTRAL FIELD");
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
-  const bytes = await response.arrayBuffer();
   const context = new AudioContext();
   try {
     const decoded = await context.decodeAudioData(bytes);
@@ -415,7 +426,8 @@ function sizedLayer(canvas) {
   const layer = document.createElement("canvas");
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   layer.width = Math.max(300, Math.floor(canvas.clientWidth * ratio));
-  layer.height = Math.floor(Number(canvas.getAttribute("height")) * ratio);
+  const cssHeight = canvas.clientHeight || Number(canvas.getAttribute("height"));
+  layer.height = Math.max(80, Math.floor(cssHeight * ratio));
   canvas.width = layer.width;
   canvas.height = layer.height;
   return layer;
@@ -447,8 +459,12 @@ function refreshButtons() {
 }
 
 async function togglePlayback() {
-  if (ui.audio.paused) await ui.audio.play();
-  else ui.audio.pause();
+  if (ui.audio.paused) {
+    await ui.audio.play();
+    hideError();
+  } else {
+    ui.audio.pause();
+  }
 }
 
 function refreshPlayButton() {
@@ -475,7 +491,7 @@ function shortAlgorithm(value) {
   return {
     multiresolution: "multi",
     sliding_wola: "wola",
-    evolving_ir: "evolving ir",
+    evolving_ir: "ir",
     chunk_crossfade: "chunks",
   }[value];
 }
@@ -492,7 +508,21 @@ function once(target, eventName) {
     };
     const rejectEvent = () => {
       cleanup();
-      reject(new Error(target.error?.message || `Failed while waiting for ${eventName}`));
+      const code = target.error?.code;
+      const reason = {
+        1: "playback was aborted",
+        2: "a network error interrupted the media load",
+        3: "the WAV could not be decoded",
+        4: "the media source is not supported",
+      }[code];
+      reject(
+        new Error(
+          target.error?.message ||
+            (reason
+              ? `Audio failed: ${reason} (media error ${code})`
+              : `Failed while waiting for ${eventName}`),
+        ),
+      );
     };
     target.addEventListener(eventName, resolveEvent, { once: true });
     target.addEventListener("error", rejectEvent, { once: true });

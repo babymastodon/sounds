@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "preview": "node preview-server.mjs",
-    "test": "node tests/e2e.mjs"
+    "test": "npm run test:browser",
+    "test:all": "npm run test:browser && npm run test:native-audio",
+    "test:browser": "node tests/e2e.mjs",
+    "test:native-audio": "node tests/native-audio.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.62.0"

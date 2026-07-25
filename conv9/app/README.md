@@ -2,6 +2,11 @@
 
 This Tauri 2 desktop interface reads `../../outputs/catalog.json` at runtime; it does not bundle the roughly 4.6 GB render corpus. The backend grants the asset protocol access only to the resolved output directory, then the frontend decodes a selected WAV for a static waveform and log-frequency spectrogram. Both plots have synchronized playback cursors and support click-to-seek.
 
+WebKitGTK can fetch Tauri asset URLs but cannot use them directly as HTML media
+sources. The listener therefore fetches each selected WAV once, creates a
+`blob:` media URL for playback, and reuses the same bytes for waveform and
+spectrum analysis.
+
 Install the [official Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) first. On Fedora:
 
 ```bash
@@ -39,8 +44,8 @@ ranges so playback seeking works correctly; a generic static server may not.
 The same UI uses relative HTTP paths instead of the Tauri bridge, so preview
 mode does not replace the desktop app.
 
-The functional test uses Playwright with an installed Chrome or Chromium and
-the real output catalog:
+The browser functional test uses Playwright with an installed Chrome or
+Chromium and the real output catalog:
 
 ```bash
 cd conv9/app
@@ -49,3 +54,22 @@ npm test
 ```
 
 Set `CHROME_BIN` if the browser is not in a standard Linux location.
+
+Linux native audio is tested separately through Tauri's official WebDriver,
+WebKitWebDriver, and an isolated PipeWire/PulseAudio sink. The test launches the
+real desktop binary, starts playback, records its sink, and measures the
+captured PCM so a moving playback timer cannot masquerade as working audio.
+It also verifies that the native 1280×860 window does not overflow.
+
+```bash
+cargo install tauri-driver --locked
+cd conv9/app/src-tauri
+cargo build
+cd ..
+npm run test:native-audio
+```
+
+The test requires `WebKitWebDriver`, `pactl`, and FFmpeg. Set
+`TAURI_DRIVER_BIN` or `CONV9_TAURI_SYSROOT` when they are in nonstandard
+locations. `npm run test:all` runs both browser and native suites after the
+desktop binary has been built.

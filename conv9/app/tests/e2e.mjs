@@ -38,7 +38,7 @@ try {
     headless: true,
     args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("response", (response) => {
     if (response.status() >= 400) {
@@ -76,6 +76,7 @@ try {
   await assertAudioReady(page, "/multiresolution/short/");
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
+  await assertNoViewportOverflow(page);
   assert.equal(await page.locator("#errorPanel").isHidden(), true, "error panel hidden");
 
   await setAudioTime(page, 24);
@@ -126,17 +127,18 @@ try {
 
   const sourceBeforeResize = await audioSource(page);
   const timeBeforeResize = await audioTime(page);
-  await page.setViewportSize({ width: 1150, height: 820 });
+  await page.setViewportSize({ width: 900, height: 640 });
   await page.waitForTimeout(500);
   assert.equal(await audioSource(page), sourceBeforeResize, "resize does not reload audio");
   await expectAudioTime(page, timeBeforeResize, 0.2);
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
+  await assertNoViewportOverflow(page);
 
   const secondPair = await page.locator("#pairSelect option").nth(1).getAttribute("value");
   await page.locator("#pairSelect").selectOption(secondPair);
   await page.waitForFunction(
-    (pair) => document.querySelector("#audio").currentSrc.includes(pair),
+    (pair) => document.querySelector("#audio").dataset.path.includes(pair),
     secondPair,
   );
   await assertAudioReady(page, "/sliding_wola/medium/");
@@ -176,10 +178,12 @@ async function assertAudioReady(page, pathPart) {
   await page.waitForFunction(
     (part) => {
       const audio = document.querySelector("#audio");
+      const normalizedPart = part.replace(/^\/+/, "");
       return (
         audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
         Math.abs(audio.duration - 60) < 0.01 &&
-        audio.currentSrc.includes(part)
+        audio.currentSrc.startsWith("blob:") &&
+        audio.dataset.path.includes(normalizedPart)
       );
     },
     pathPart,
@@ -200,6 +204,27 @@ async function assertCanvasHasVariation(page, selector) {
     }
     return false;
   }, selector);
+}
+
+async function assertNoViewportOverflow(page) {
+  const layout = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+    bodyScrollWidth: document.body.scrollWidth,
+    bodyScrollHeight: document.body.scrollHeight,
+  }));
+  assert.ok(
+    layout.scrollWidth <= layout.viewportWidth &&
+      layout.bodyScrollWidth <= layout.viewportWidth,
+    `horizontal overflow: ${JSON.stringify(layout)}`,
+  );
+  assert.ok(
+    layout.scrollHeight <= layout.viewportHeight &&
+      layout.bodyScrollHeight <= layout.viewportHeight,
+    `vertical overflow: ${JSON.stringify(layout)}`,
+  );
 }
 
 async function setAudioTime(page, seconds) {

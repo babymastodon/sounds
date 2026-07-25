@@ -28,6 +28,8 @@ const state = {
   preset: "short",
   waveformLayer: null,
   spectrumLayer: null,
+  analysisSamples: null,
+  analysisSampleRate: 0,
   selectionGeneration: 0,
 };
 
@@ -135,7 +137,7 @@ function bindEvents() {
       ui.audio.currentTime = phase * (ui.audio.duration || 60);
     });
   }
-  window.addEventListener("resize", debounce(() => selectClip(false), 180));
+  window.addEventListener("resize", debounce(resizeVisualizations, 180));
   document.addEventListener("keydown", (event) => {
     if (event.target.matches("select, input")) return;
     if (event.code === "Space") {
@@ -151,31 +153,43 @@ function bindEvents() {
 
 async function selectClip(preservePlayback) {
   const generation = ++state.selectionGeneration;
-  const clip = state.catalog.clips.find(
-    (candidate) =>
-      candidate.pair === state.pair &&
-      candidate.algorithm === state.algorithm &&
-      candidate.preset === state.preset,
-  );
-  if (!clip) {
-    showError(`No rendered file for ${state.pair} / ${state.algorithm} / ${state.preset}`);
-    return;
+  try {
+    const clip = state.catalog.clips.find(
+      (candidate) =>
+        candidate.pair === state.pair &&
+        candidate.algorithm === state.algorithm &&
+        candidate.preset === state.preset,
+    );
+    if (!clip) {
+      throw new Error(
+        `No rendered file for ${state.pair} / ${state.algorithm} / ${state.preset}`,
+      );
+    }
+    hideError();
+    const oldDuration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
+    const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
+    const resume = preservePlayback && !ui.audio.paused;
+    const url = audioUrl(clip.path);
+    state.analysisSamples = null;
+    state.analysisSampleRate = 0;
+    state.waveformLayer = null;
+    state.spectrumLayer = null;
+    ui.audio.src = url;
+    ui.audio.load();
+    await once(ui.audio, "loadedmetadata");
+    if (generation !== state.selectionGeneration) return;
+    ui.audio.currentTime = Math.max(
+      0,
+      Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration),
+    );
+    if (resume) {
+      await ui.audio.play();
+    }
+    updateMetadata(clip);
+    await analyzeSelection(url, generation);
+  } catch (error) {
+    if (generation === state.selectionGeneration) showError(error);
   }
-  hideError();
-  const oldDuration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
-  const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
-  const resume = preservePlayback && !ui.audio.paused;
-  const url = audioUrl(clip.path);
-  ui.audio.src = url;
-  ui.audio.load();
-  await once(ui.audio, "loadedmetadata");
-  if (generation !== state.selectionGeneration) return;
-  ui.audio.currentTime = Math.max(0, Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration));
-  if (resume) {
-    await ui.audio.play();
-  }
-  updateMetadata(clip);
-  await analyzeSelection(url, generation);
 }
 
 function audioUrl(relativePath) {
@@ -226,12 +240,24 @@ async function analyzeSelection(url, generation) {
   try {
     const decoded = await context.decodeAudioData(bytes);
     if (generation !== state.selectionGeneration) return;
-    const samples = decoded.getChannelData(0);
-    state.waveformLayer = renderWaveformLayer(ui.waveform, samples);
-    state.spectrumLayer = renderSpectrogramLayer(ui.spectrogram, samples, decoded.sampleRate);
+    state.analysisSamples = decoded.getChannelData(0);
+    state.analysisSampleRate = decoded.sampleRate;
+    resizeVisualizations();
   } finally {
     await context.close();
   }
+}
+
+function resizeVisualizations() {
+  if (!state.analysisSamples || !state.analysisSampleRate) return;
+  state.waveformLayer = renderWaveformLayer(ui.waveform, state.analysisSamples);
+  state.spectrumLayer = renderSpectrogramLayer(
+    ui.spectrogram,
+    state.analysisSamples,
+    state.analysisSampleRate,
+  );
+  ui.waveform.setAttribute("aria-busy", "false");
+  ui.spectrogram.setAttribute("aria-busy", "false");
 }
 
 function renderWaveformLayer(canvas, samples) {
@@ -396,6 +422,7 @@ function sizedLayer(canvas) {
 }
 
 function drawLoading(canvas, label) {
+  canvas.setAttribute("aria-busy", "true");
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   context.fillStyle = "#090b0b";
@@ -408,10 +435,14 @@ function drawLoading(canvas, label) {
 
 function refreshButtons() {
   for (const button of ui.algorithmButtons.querySelectorAll("button")) {
-    button.classList.toggle("active", button.dataset.value === state.algorithm);
+    const active = button.dataset.value === state.algorithm;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active);
   }
   for (const button of ui.presetButtons.querySelectorAll("button")) {
-    button.classList.toggle("active", button.dataset.value === state.preset);
+    const active = button.dataset.value === state.preset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active);
   }
 }
 

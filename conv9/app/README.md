@@ -14,13 +14,38 @@ sudo dnf install webkit2gtk4.1-devel \
 sudo dnf group install "c-development"
 ```
 
-Run after generating the corpus:
+Run from the repository root after generating the corpus:
 
 ```bash
-cd conv9/app/src-tauri
-cargo run
+./conv9/app/run.sh
 ```
 
-Set `CONV9_OUTPUT_DIR=/absolute/path/to/outputs` if the output tree is not in the normal `conv9/outputs` location.
+The launcher uses installed system libraries when available. In the development
+environment it can also use an extracted sysroot at `/tmp/conv9-tauri-devel`, or
+one selected with `CONV9_TAURI_SYSROOT`. If neither is available, it prints the
+required Fedora installation command. Set
+`CONV9_OUTPUT_DIR=/absolute/path/to/outputs` if the output tree is not in the
+normal `conv9/outputs` location.
 
-For frontend-only inspection from the `conv9` directory, run `python3 -m http.server 4173` and open `http://127.0.0.1:4173/app/src/`. The same UI then uses relative HTTP paths instead of the Tauri bridge; this preview mode does not replace the desktop app.
+For frontend-only inspection:
+
+```bash
+cd conv9/app
+npm run preview
+```
+
+Open `http://127.0.0.1:4173/app/src/`. This preview server supports HTTP byte
+ranges so playback seeking works correctly; a generic static server may not.
+The same UI uses relative HTTP paths instead of the Tauri bridge, so preview
+mode does not replace the desktop app.
+
+The functional test uses Playwright with an installed Chrome or Chromium and
+the real output catalog:
+
+```bash
+cd conv9/app
+npm ci
+npm test
+```
+
+Set `CHROME_BIN` if the browser is not in a standard Linux location.

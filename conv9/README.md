@@ -77,9 +77,7 @@ outputs/
 The app deliberately leaves the multi-gigabyte output hierarchy outside its bundle. After generation:
 
 ```bash
-cd app/src-tauri
-cargo run
+./app/run.sh
 ```
 
 The Rust backend resolves `conv9/outputs`, grants the Tauri asset protocol access only to that directory, and returns the catalog. See [`app/README.md`](app/README.md) for relocation details.
-

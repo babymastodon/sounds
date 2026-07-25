@@ -83,3 +83,41 @@ fn validate_output_dir(path: PathBuf) -> Result<PathBuf, String> {
     }
     Ok(canonical)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn output_directory_requires_catalog() {
+        let directory = scratch_directory("missing-catalog");
+        fs::create_dir_all(&directory).expect("create test directory");
+        let error = validate_output_dir(directory.clone()).expect_err("missing catalog must fail");
+        assert!(error.contains("does not contain catalog.json"));
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn output_directory_is_canonicalized() {
+        let directory = scratch_directory("valid-catalog");
+        fs::create_dir_all(&directory).expect("create test directory");
+        fs::write(directory.join("catalog.json"), b"{}").expect("write catalog");
+        let expected = directory.canonicalize().expect("canonical test directory");
+        assert_eq!(
+            validate_output_dir(directory.clone()).expect("valid output directory"),
+            expected
+        );
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    fn scratch_directory(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        env::temp_dir().join(format!("conv9-listener-{label}-{}-{nonce}", process::id()))
+    }
+}

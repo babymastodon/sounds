@@ -1,11 +1,8 @@
 # conv9 Listener
 
-This Tauri 2 desktop interface reads `../../outputs/catalog.json` at runtime; it does not bundle the roughly 4.6 GB render corpus. The backend grants the asset protocol access only to the resolved output directory, then the frontend decodes a selected WAV for a static waveform and log-frequency spectrogram. Both plots have synchronized playback cursors and support click-to-seek.
+This Tauri 2 desktop app renders conv9 selections on demand. At startup it loads the 12 prepared source WAVs into the Rust backend. A clip, method, window, or method-parameter change runs the convolution on a blocking worker, encodes the conditioned result to an in-memory PCM16 WAV, and returns it through raw binary IPC. The frontend creates one temporary `blob:` URL for playback and analysis; superseded blobs are revoked. Nothing is written to an output directory or retained as a render cache.
 
-WebKitGTK can fetch Tauri asset URLs but cannot use them directly as HTML media
-sources. The listener therefore fetches each selected WAV once, creates a
-`blob:` media URL for playback, and reuses the same bytes for waveform and
-spectrum analysis.
+The app uses environment-native window decorations with minimize and maximize disabled. Audio loops automatically. Method changes preserve playback phase and playing state. The interface is fixed to the available viewport and uses an 8,192-point spectrogram analysis with up to 2,880 time columns.
 
 Install the [official Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) first. On Fedora:
 
@@ -19,57 +16,35 @@ sudo dnf install webkit2gtk4.1-devel \
 sudo dnf group install "c-development"
 ```
 
-Run from the repository root after generating the corpus:
+Prepare the source material once, then launch from the repository root:
 
 ```bash
+cd conv9
+./scripts/download_samples.sh
+cd ..
 ./conv9/app/run.sh
 ```
 
-The launcher uses installed system libraries when available. In the development
-environment it can also use an extracted sysroot at `/tmp/conv9-tauri-devel`, or
-one selected with `CONV9_TAURI_SYSROOT`. If neither is available, it prints the
-required Fedora installation command. Set
-`CONV9_OUTPUT_DIR=/absolute/path/to/outputs` if the output tree is not in the
-normal `conv9/outputs` location.
+The launcher uses installed system libraries when available. In this development environment it can also use an extracted sysroot at `/tmp/conv9-tauri-devel`, or one selected with `CONV9_TAURI_SYSROOT`. Override input locations with `CONV9_MANIFEST` and `CONV9_INPUT_DIR`.
 
-For frontend-only inspection:
+## Tests
 
-```bash
-cd conv9/app
-npm run preview
-```
-
-Open `http://127.0.0.1:4173/app/src/`. This preview server supports HTTP byte
-ranges so playback seeking works correctly; a generic static server may not.
-The same UI uses relative HTTP paths instead of the Tauri bridge, so preview
-mode does not replace the desktop app.
-
-The browser functional test uses Playwright with an installed Chrome or
-Chromium and the real output catalog:
+The Playwright suite hosts only the frontend and prepared input fixture. It injects an on-demand test bridge to cover independent clip selection, continuous window sliders/numeric inputs, every dynamic method panel, rapid stale selections, looping transport, high-resolution visualizations, and 1280×860 plus 900×640 layouts:
 
 ```bash
 cd conv9/app
 npm ci
-npm test
+npm run test:browser
 ```
 
-Set `CHROME_BIN` if the browser is not in a standard Linux location.
-
-Linux native audio is tested separately through Tauri's official WebDriver,
-WebKitWebDriver, and an isolated PipeWire/PulseAudio sink. The test launches the
-real desktop binary, starts playback, records its sink, and measures the
-captured PCM so a moving playback timer cannot masquerade as working audio.
-It also verifies that the native 1280×860 window does not overflow.
+The native test is the authoritative integration test. It launches the real desktop binary through Tauri’s official WebDriver, invokes real windowed and full-convolution renders, starts WebKit playback, records an isolated PipeWire/PulseAudio sink with FFmpeg, and asserts that the captured PCM is non-silent:
 
 ```bash
 cargo install tauri-driver --locked
 cd conv9/app/src-tauri
-cargo build
+cargo build --offline
 cd ..
 npm run test:native-audio
 ```
 
-The test requires `WebKitWebDriver`, `pactl`, and FFmpeg. Set
-`TAURI_DRIVER_BIN` or `CONV9_TAURI_SYSROOT` when they are in nonstandard
-locations. `npm run test:all` runs both browser and native suites after the
-desktop binary has been built.
+It requires `WebKitWebDriver`, `pactl`, and FFmpeg. Set `TAURI_DRIVER_BIN` or `CONV9_TAURI_SYSROOT` when they are in nonstandard locations. `npm run test:all` runs both suites after the desktop binary has been built.

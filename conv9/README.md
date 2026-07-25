@@ -1,83 +1,51 @@
-# conv9: lockstep windowed convolution
+# conv9: on-demand local convolution
 
-`conv9` replaces whole-clip convolution with local convolution. Two one-minute clips advance in normalized lockstep, a short window is extracted from each, only those windows are linearly FFT-convolved, and the local results are merged onto a fixed one-minute timeline. This retains changes of scene, rhythm, and texture that a 119.999-second whole-clip convolution would blur into one stationary tail.
+`conv9` compares two independently selected one-minute clips without retaining rendered audio. Every UI selection invokes the Rust DSP, conditions the result, encodes a mono 48 kHz PCM16 WAV in memory, and transfers it directly to the Tauri webview. Changing a clip, method, window, or method parameter starts a new render; stale work is cancelled between FFT blocks. There is no output directory or render cache.
 
-The complete experiment is:
-
-- 12 license-tracked, open/free one-minute mono sources spanning music, percussion, mechanical rhythm, activities, speech, city, weather, water, wildlife, and transit;
-- all 66 unordered source pairs;
-- four local-convolution algorithms;
-- short, medium, and long window presets;
-- 792 one-minute, mono, 48 kHz PCM16 WAVs;
-- an exhaustive verifier and generated `metrics.csv` / `catalog.json`;
-- a Tauri comparison app with position-preserving variant switching, waveform, log-frequency spectrogram, and a synchronized seek cursor in both views.
-
-## Ranked algorithms
-
-The ranking is an expected-result ranking, not a baked-in test result:
-
-1. **Multiresolution convolution** should give the best balance. It convolves low frequencies with windows 1.6× the selected preset, mid frequencies at 1×, and highs at 0.6×. Complementary raised-cosine masks split the local convolution spectrum at 160–300 Hz and 1.7–2.6 kHz before the bands are overlap-added and recombined. Bass gets enough context to sound stable while transients get shorter windows and less smear.
-2. **Sliding WOLA convolution** is the strongest neutral baseline. Tukey-windowed source frames advance in lockstep, each full local linear convolution is centered at the corresponding output time, and Hann weighted overlap-add divides by the accumulated synthesis weights. It should be smooth and preserve local evolution, with less special treatment than the first method.
-3. **Dual evolving-IR convolution** treats each source in turn as the local carrier. It center-crops each local convolution to the A-window and B-window lengths, overlap-adds both directional views, and averages them. It should retain tighter event timing, but it intentionally discards more convolution tails.
-4. **Independent chunks + crossfade** is the simple comparator. Non-overlapping lockstep chunks are independently convolved, center-cropped to their timeline slot plus a 25% transition, and merged with equal-power edge crossfades. It is likely to make block boundaries or abrupt texture changes more evident.
-
-All four paths are convolution-only; there is no dry source mixed into any render.
-
-## Window presets
-
-| Preset | clip A window | clip B window | lockstep hop |
-|---|---:|---:|---:|
-| short | 0.30 s | 0.45 s | 0.55 s |
-| medium | 0.90 s | 1.30 s | 1.40 s |
-| long | 2.25 s | 3.25 s | 3.20 s |
-
-The unequal A/B lengths make the requested per-clip window control explicit. Presets live in `WindowPreset::config` in `src/dsp.rs`; changing those three definitions changes every algorithm consistently. At a timeline phase `p`, each extractor reads the window centered at `p × (source_frames − 1)`, with reflection at the boundaries.
-
-Local convolutions receive smoothed RMS gains whose adjacent changes are limited to 1 dB. Completed files are DC-removed, high-passed at 18 Hz, gently saturated toward −20.4 dBFS RMS, peak-limited below 0.92, and faded for 20 ms. These shared stages keep comparisons level-matched without normalizing each algorithm differently after encoding.
-
-## Build and generate
-
-Requirements: Rust, FFmpeg/FFprobe, `curl`, and about 5 GB free for the finished output tree.
+The 12 license-tracked sources span music, percussion, mechanical rhythm, activities, speech, city, weather, water, wildlife, and transit. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
 
 ```bash
 cd conv9
 ./scripts/download_samples.sh
+```
+
+Prepared inputs are exact 60-second, mono, 48 kHz WAVs. They are source material, not precomputed convolutions.
+
+## Methods and controls
+
+The two source selectors are independent. Each method declares its own controls, so a method can have zero, two, or eventually more windows:
+
+1. **Multiresolution** convolves complementary low, mid, and high bands with different window scales, then recombines them. Its panel exposes A/B windows, Tukey taper, low/high window scale, low/high band gain, and both frequency splits.
+2. **Sliding WOLA** performs lockstep local linear convolutions and Hann weighted overlap-add. It exposes A/B windows and Tukey taper.
+3. **Dual evolving IR** crops each local convolution to A- and B-sized carriers before overlap-add. It exposes A/B windows, Tukey taper, and the A/B carrier balance.
+4. **Independent chunks** convolves lockstep chunks and joins them with equal-power fades. It exposes A/B windows, Tukey taper, and crossfade percentage; the UI also reports the resulting duration.
+5. **Full convolution** is the smear/reference method. It linearly convolves both complete 60-second clips, then retains the final 60 seconds. It has no window controls.
+
+Windowed methods accept independent real-valued A/B durations from 0.10 to 30.00 seconds. The UI uses logarithmic sliders for usable sub-second resolution plus numeric inputs for exact hundredths. Their hop is derived as 80% of the longer window, ensuring overlap without another global control. All local paths contain convolution only; no dry source is mixed in.
+
+Every output is DC-removed, high-passed at 18 Hz, gently saturated toward the shared RMS target, held below a 0.92 peak ceiling, and faded for 20 ms. These safety/level constraints are intentionally not user-editable.
+
+## Run
+
+```bash
+./conv9/app/run.sh
+```
+
+The desktop app uses native window decorations, disables minimize/maximize, loops audio automatically, preserves playback position across renders, and displays waveform plus an 8,192-point, up-to-2,880-column log-frequency spectrogram. See [`app/README.md`](app/README.md) for prerequisites and tests.
+
+## Test
+
+```bash
+cd conv9
 cargo test --offline
-cargo build --release --offline
-target/release/conv9 render --jobs 4
-target/release/conv9 verify --jobs 4
+
+cd app/src-tauri
+cargo test --offline
+cargo build --offline
+
+cd ..
+npm ci
+npm run test:all
 ```
 
-Renders resume safely: an existing output is reused only after its format, duration, level, finiteness, and ceiling are validated. Use `--force` to replace selected valid files. Development filters make it possible to render one comparison:
-
-```bash
-target/release/conv9 render \
-  --pair ambient_guitar__drumland_ambient \
-  --algorithm sliding_wola \
-  --preset short \
-  --force
-```
-
-The full hierarchy is:
-
-```text
-outputs/
-  multiresolution/{short,medium,long}/*.wav
-  sliding_wola/{short,medium,long}/*.wav
-  evolving_ir/{short,medium,long}/*.wav
-  chunk_crossfade/{short,medium,long}/*.wav
-  catalog.json
-  metrics.csv
-```
-
-`sources.tsv` is the canonical provenance manifest. The download script prefers a byte-identical source already cached by an earlier experiment and otherwise uses the recorded HTTPS URL. It always prepares a new exact 60-second, mono, 48 kHz float WAV for this experiment and records source/prepared SHA-256 files.
-
-## Listener app
-
-The app deliberately leaves the multi-gigabyte output hierarchy outside its bundle. After generation:
-
-```bash
-./app/run.sh
-```
-
-The Rust backend resolves `conv9/outputs`, grants the Tauri asset protocol access only to that directory, and returns the catalog. See [`app/README.md`](app/README.md) for relocation details.
+The browser suite checks the control model, stale-selection behavior, looping, visualizations, transport, and fixed-viewport layout. The native suite drives the real Tauri app, renders both windowed and full convolution through Rust, records an isolated audio sink, and measures the captured PCM.

@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conv9Dir = resolve(appDir, "..");
 const application = resolve(appDir, "src-tauri/target/debug/conv9-listener");
-const outputDir = resolve(conv9Dir, "outputs");
+const manifest = resolve(conv9Dir, "sources.tsv");
+const inputDir = resolve(conv9Dir, "samples/prepared");
+const retiredOutputDir = resolve(conv9Dir, "outputs");
 const driverBinary =
   process.env.TAURI_DRIVER_BIN || "/tmp/conv9-tauri-driver/bin/tauri-driver";
 const sysroot = process.env.CONV9_TAURI_SYSROOT || "/tmp/conv9-tauri-devel";
@@ -21,7 +23,9 @@ assert.ok(
   existsSync(driverBinary),
   `install tauri-driver or set TAURI_DRIVER_BIN: missing ${driverBinary}`,
 );
-assert.ok(existsSync(resolve(outputDir, "catalog.json")), "conv9 output catalog is missing");
+assert.ok(existsSync(manifest), "conv9 source manifest is missing");
+assert.ok(existsSync(resolve(inputDir, "ambient_guitar.wav")), "prepared inputs are missing");
+assert.equal(existsSync(retiredOutputDir), false, "precomputed output tree must remain absent");
 
 let moduleId;
 let driver;
@@ -64,7 +68,15 @@ try {
         readyState: audio?.readyState,
         duration: audio?.duration,
         source: audio?.currentSrc,
+        path: audio?.dataset.path,
+        loop: audio?.loop,
         title: document.querySelector("#renderTitle")?.textContent,
+        status: document.querySelector("#renderStatus")?.textContent,
+        sourceACount: document.querySelector("#sourceASelect")?.options.length,
+        sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
+        methodCount: document.querySelectorAll("#algorithmButtons button").length,
+        windowCount: document.querySelectorAll("#methodTools .window-control").length,
+        fftSize: spectrum?.dataset.fftSize,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden,
         waveformReady: waveform?.getAttribute("aria-busy") === "false",
@@ -80,10 +92,18 @@ try {
     return value.readyState >= 4 && value.waveformReady && value.spectrumReady
       ? value
       : undefined;
-  });
+  }, 180_000);
   assert.equal(initial.duration, 60);
   assert.match(initial.source, /^blob:tauri:/);
-  assert.equal(initial.title, "multi / short");
+  assert.match(initial.path, /multiresolution\/0\.30x0\.45$/);
+  assert.equal(initial.loop, true);
+  assert.equal(initial.title, "multi");
+  assert.match(initial.status, /^rendered \d+ ms$/);
+  assert.equal(initial.sourceACount, 12);
+  assert.equal(initial.sourceBCount, 12);
+  assert.equal(initial.methodCount, 5);
+  assert.equal(initial.windowCount, 2);
+  assert.equal(initial.fftSize, "8192");
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");
   assert.ok(initial.viewport.scrollHeight <= initial.viewport.height, "native vertical overflow");
@@ -122,9 +142,77 @@ try {
   );
   assert.equal(afterCapture.paused, false);
   assert.equal(afterCapture.errorHidden, true, afterCapture.error);
+
+  await execute(port, sessionId, `
+    document.querySelector("#algorithmButtons button[data-value='chunk_crossfade']").click();
+    const setCrossfade = () => {
+      const input = document.querySelector("input[aria-label='crossfade exact value']");
+      if (!input) return false;
+      input.value = "40";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    };
+    return setCrossfade();
+  `);
+  const chunked = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const audio = document.querySelector("#audio");
+      return {
+        source: audio.currentSrc,
+        path: audio.dataset.path,
+        title: document.querySelector("#renderTitle")?.textContent,
+        readout: document.querySelector("#windowReadout")?.textContent,
+        status: document.querySelector("#renderStatus")?.textContent,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.path.includes("/chunk_crossfade/") &&
+      value.status?.startsWith("rendered ") ? value : undefined;
+  }, 180_000);
+  assert.equal(chunked.title, "chunks");
+  assert.match(chunked.readout, /40%/);
+  assert.equal(chunked.errorHidden, true, chunked.error);
+
+  await execute(
+    port,
+    sessionId,
+    `document.querySelector("#algorithmButtons button[data-value='full_convolution']").click();
+     return true;`,
+  );
+  const full = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const audio = document.querySelector("#audio");
+      return {
+        duration: audio.duration,
+        paused: audio.paused,
+        source: audio.currentSrc,
+        path: audio.dataset.path,
+        title: document.querySelector("#renderTitle")?.textContent,
+        status: document.querySelector("#renderStatus")?.textContent,
+        toolInputs: document.querySelectorAll("#methodTools input").length,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.path.endsWith("/full_convolution/full") &&
+      value.status?.startsWith("rendered ") ? value : undefined;
+  }, 180_000);
+  assert.equal(full.duration, 60);
+  assert.equal(full.paused, false);
+  assert.equal(full.title, "full");
+  assert.equal(full.toolInputs, 0);
+  assert.equal(full.errorHidden, true, full.error);
+  assert.notEqual(full.source, initial.source, "full convolution received a new in-memory WAV");
+
+  await captureMonitor();
+  const fullSignal = analyzePcm16(await readFile(capturePath));
+  assert.ok(fullSignal.rms > 0.003, `full convolution is silent: RMS ${fullSignal.rms}`);
+  assert.ok(fullSignal.peak > 0.01, `full convolution peak is too low: ${fullSignal.peak}`);
+  assert.equal(existsSync(retiredOutputDir), false, "native renders must not create outputs");
   console.log(
-    `conv9 native audio passed: ${decibels(signal.rms).toFixed(2)} dBFS RMS, ` +
-      `${decibels(signal.peak).toFixed(2)} dBFS peak`,
+    `conv9 native audio passed: windowed ${decibels(signal.rms).toFixed(2)} dBFS RMS, ` +
+      `full ${decibels(fullSignal.rms).toFixed(2)} dBFS RMS`,
   );
 } finally {
   if (sessionId && driver) {
@@ -165,7 +253,8 @@ function nativeEnvironment() {
   const libraryDir = resolve(sysroot, "usr/lib64");
   const environment = {
     ...process.env,
-    CONV9_OUTPUT_DIR: outputDir,
+    CONV9_MANIFEST: manifest,
+    CONV9_INPUT_DIR: inputDir,
     PULSE_SINK: sinkName,
   };
   if (existsSync(libraryDir)) {

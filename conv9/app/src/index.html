@@ -11,36 +11,40 @@
     <main class="shell">
       <header class="masthead">
         <h1>conv9</h1>
-        <section class="selectors">
-          <label class="pair-field">
-            <span>pair</span>
-            <select id="pairSelect" aria-label="Source pair"></select>
-          </label>
-          <div>
-            <span class="field-label">method</span>
-            <div id="algorithmButtons" class="segmented four"></div>
-          </div>
-          <div>
-            <span class="field-label">window</span>
-            <div id="presetButtons" class="segmented three"></div>
-          </div>
-        </section>
-        <span id="matrixStatus">loading…</span>
+        <div class="method-field">
+          <span class="field-label">method</span>
+          <div id="algorithmButtons" class="segmented"></div>
+        </div>
+        <span id="renderStatus">loading…</span>
       </header>
 
-      <section class="selection-context">
-        <div class="source-strip">
-          <article class="source-card" id="sourceA"></article>
-          <div class="convolution-mark" aria-hidden="true">∗</div>
-          <article class="source-card" id="sourceB"></article>
+      <section class="clip-selectors" aria-label="Convolution sources">
+        <article class="clip-field">
+          <label for="sourceASelect">a / clip</label>
+          <select id="sourceASelect" aria-label="Clip A"></select>
+          <div id="sourceAMeta" class="source-meta"></div>
+        </article>
+        <div class="convolution-mark" aria-hidden="true">∗</div>
+        <article class="clip-field">
+          <label for="sourceBSelect">b / clip</label>
+          <select id="sourceBSelect" aria-label="Clip B"></select>
+          <div id="sourceBMeta" class="source-meta"></div>
+        </article>
+      </section>
+
+      <section class="method-panel" aria-label="Selected method controls">
+        <header>
+          <span id="methodToolTitle">method parameters</span>
+        </header>
+        <div id="methodTools" class="method-tools"></div>
+      </section>
+
+      <section class="now-playing">
+        <div>
+          <h2 id="renderTitle">—</h2>
+          <span id="windowReadout"></span>
         </div>
-        <div class="now-playing">
-          <div>
-            <h2 id="renderTitle">—</h2>
-            <span id="windowReadout"></span>
-          </div>
-          <dl class="metrics" id="metrics"></dl>
-        </div>
+        <dl class="metrics" id="metrics"></dl>
       </section>
 
       <section class="transport-panel">
@@ -54,20 +58,16 @@
             <input id="volume" type="range" min="0" max="1" value="0.8" step="0.01" />
           </label>
         </div>
-        <audio id="audio" preload="auto"></audio>
+        <audio id="audio" preload="auto" loop></audio>
       </section>
 
       <section class="visuals">
         <article class="visual-card">
-          <header>
-            <span>waveform</span>
-          </header>
+          <header><span>waveform</span></header>
           <canvas id="waveform" height="220" aria-label="Audio waveform"></canvas>
         </article>
         <article class="visual-card spectrogram-card">
-          <header>
-            <span>spectrum</span>
-          </header>
+          <header><span>spectrum / 8192 fft</span></header>
           <canvas id="spectrogram" height="300" aria-label="Audio spectrum"></canvas>
         </article>
       </section>

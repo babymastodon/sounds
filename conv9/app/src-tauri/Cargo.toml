@@ -2,14 +2,23 @@
 name = "conv9-listener"
 version = "0.1.0"
 edition = "2024"
-description = "Tauri comparison browser for conv9 windowed-convolution renders"
+description = "Tauri on-demand listener for conv9 windowed convolution"
 license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+conv9 = { path = "../.." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = [] }
 
+[profile.dev.package.conv9]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3

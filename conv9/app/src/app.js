@@ -1,10 +1,12 @@
 const ui = {
-  matrixStatus: document.querySelector("#matrixStatus"),
-  pairSelect: document.querySelector("#pairSelect"),
+  renderStatus: document.querySelector("#renderStatus"),
+  sourceASelect: document.querySelector("#sourceASelect"),
+  sourceBSelect: document.querySelector("#sourceBSelect"),
+  sourceAMeta: document.querySelector("#sourceAMeta"),
+  sourceBMeta: document.querySelector("#sourceBMeta"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
-  presetButtons: document.querySelector("#presetButtons"),
-  sourceA: document.querySelector("#sourceA"),
-  sourceB: document.querySelector("#sourceB"),
+  methodToolTitle: document.querySelector("#methodToolTitle"),
+  methodTools: document.querySelector("#methodTools"),
   renderTitle: document.querySelector("#renderTitle"),
   metrics: document.querySelector("#metrics"),
   audio: document.querySelector("#audio"),
@@ -21,65 +23,77 @@ const ui = {
 
 const state = {
   catalog: null,
-  outputDir: "",
-  pairs: [],
-  pair: "",
+  bridge: null,
+  sourceA: "",
+  sourceB: "",
   algorithm: "multiresolution",
-  preset: "short",
+  settings: new Map(),
   waveformLayer: null,
   spectrumLayer: null,
   analysisSamples: null,
   analysisSampleRate: 0,
   audioObjectUrl: "",
   selectionGeneration: 0,
+  selectionTimer: 0,
 };
 
 async function boot() {
   try {
-    const tauri = window.__TAURI__;
-    let bootstrap;
-    if (tauri?.core?.invoke && tauri?.core?.convertFileSrc) {
-      bootstrap = await tauri.core.invoke("load_bootstrap");
-    } else {
-      const response = await fetch("../../outputs/catalog.json");
-      if (!response.ok) {
-        throw new Error(
-          "No Tauri bridge and no ../../outputs/catalog.json browser-preview endpoint.",
-        );
-      }
-      bootstrap = {
-        catalog: await response.json(),
-        outputDir: "../../outputs",
-      };
-    }
+    state.bridge = runtimeBridge();
+    const bootstrap = await state.bridge.loadBootstrap();
     state.catalog = bootstrap.catalog;
-    state.outputDir = bootstrap.outputDir;
-    state.pairs = [...new Set(state.catalog.clips.map((clip) => clip.pair))].sort();
-    if (!state.pairs.length) {
-      throw new Error("The catalog has no rendered clips.");
+    if (state.catalog.mode !== "on_demand") {
+      throw new Error("The backend did not provide an on-demand catalog.");
     }
-    state.pair = state.pairs[0];
+    if (state.catalog.sources.length < 2) {
+      throw new Error("At least two prepared clips are required.");
+    }
+    state.sourceA = state.catalog.sources[0].id;
+    state.sourceB = state.catalog.sources[1].id;
+    for (const algorithm of state.catalog.algorithms) {
+      state.settings.set(algorithm.id, {
+        windows: Object.fromEntries(
+          algorithm.windows.map((window) => [window.id, window.default]),
+        ),
+        parameters: Object.fromEntries(
+          algorithm.parameters.map((parameter) => [parameter.id, parameter.default]),
+        ),
+      });
+    }
     buildControls();
     bindEvents();
-    ui.matrixStatus.textContent = `${state.catalog.clips.length} renders`;
-    await selectClip(false);
+    ui.renderStatus.textContent = "on demand";
+    await selectClip(false, ++state.selectionGeneration);
     requestAnimationFrame(animateCursor);
   } catch (error) {
     showError(error);
   }
 }
 
-function buildControls() {
-  const sourceById = new Map(state.catalog.sources.map((source) => [source.id, source]));
-  for (const pair of state.pairs) {
-    const [left, right] = pair.split("__");
-    const option = document.createElement("option");
-    option.value = pair;
-    option.textContent =
-      `${sourceById.get(left)?.category ?? left} × ${sourceById.get(right)?.category ?? right}`;
-    ui.pairSelect.append(option);
+function runtimeBridge() {
+  if (window.__CONV9_TEST_BRIDGE__) return window.__CONV9_TEST_BRIDGE__;
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) {
+    throw new Error("The on-demand renderer requires the conv9 Tauri desktop app.");
   }
-  ui.pairSelect.value = state.pair;
+  return {
+    loadBootstrap: () => invoke("load_bootstrap"),
+    renderSelection: async (request) => parseEnvelope(await invoke("render_selection", request)),
+    supersedeRender: (requestId) =>
+      invoke("supersede_render", { requestId }).catch(() => {}),
+  };
+}
+
+function buildControls() {
+  for (const source of state.catalog.sources) {
+    const option = document.createElement("option");
+    option.value = source.id;
+    option.textContent = `${source.category} / ${source.kind}`;
+    ui.sourceASelect.append(option);
+    ui.sourceBSelect.append(option.cloneNode(true));
+  }
+  ui.sourceASelect.value = state.sourceA;
+  ui.sourceBSelect.value = state.sourceB;
 
   for (const algorithm of state.catalog.algorithms) {
     const button = document.createElement("button");
@@ -89,34 +103,29 @@ function buildControls() {
     button.textContent = shortAlgorithm(algorithm.id);
     ui.algorithmButtons.append(button);
   }
-  for (const preset of state.catalog.presets) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.value = preset.id;
-    button.textContent = preset.id;
-    ui.presetButtons.append(button);
-  }
   refreshButtons();
+  buildMethodTools();
+  refreshSourceMetadata();
 }
 
 function bindEvents() {
-  ui.pairSelect.addEventListener("change", () => {
-    state.pair = ui.pairSelect.value;
-    selectClip(true);
+  ui.sourceASelect.addEventListener("change", () => {
+    state.sourceA = ui.sourceASelect.value;
+    refreshSourceMetadata();
+    scheduleSelection(true);
+  });
+  ui.sourceBSelect.addEventListener("change", () => {
+    state.sourceB = ui.sourceBSelect.value;
+    refreshSourceMetadata();
+    scheduleSelection(true);
   });
   ui.algorithmButtons.addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
     state.algorithm = button.dataset.value;
     refreshButtons();
-    selectClip(true);
-  });
-  ui.presetButtons.addEventListener("click", (event) => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    state.preset = button.dataset.value;
-    refreshButtons();
-    selectClip(true);
+    buildMethodTools();
+    scheduleSelection(true);
   });
   ui.playButton.addEventListener("click", () => {
     void togglePlayback().catch(showError);
@@ -154,43 +163,141 @@ function bindEvents() {
   });
 }
 
-async function selectClip(preservePlayback) {
-  const generation = ++state.selectionGeneration;
-  try {
-    const clip = state.catalog.clips.find(
-      (candidate) =>
-        candidate.pair === state.pair &&
-        candidate.algorithm === state.algorithm &&
-        candidate.preset === state.preset,
+function buildMethodTools() {
+  const algorithm = selectedAlgorithm();
+  const settings = state.settings.get(algorithm.id);
+  ui.methodToolTitle.textContent = `${shortAlgorithm(algorithm.id)} / tools`;
+  ui.methodTools.replaceChildren();
+  if (!algorithm.windows.length && !algorithm.parameters.length) {
+    const summary = document.createElement("span");
+    summary.className = "method-summary";
+    summary.textContent = "entire 60s × 60s / linear convolution / final 60s retained";
+    ui.methodTools.append(summary);
+    return;
+  }
+  for (const descriptor of algorithm.windows) {
+    ui.methodTools.append(
+      toolControl(descriptor, settings.windows, { logarithmic: descriptor.scale === "log", window: true }),
     );
-    if (!clip) {
-      throw new Error(
-        `No rendered file for ${state.pair} / ${state.algorithm} / ${state.preset}`,
-      );
+  }
+  for (const descriptor of algorithm.parameters) {
+    ui.methodTools.append(toolControl(descriptor, settings.parameters));
+  }
+}
+
+function toolControl(descriptor, target, options = {}) {
+  const control = document.createElement("label");
+  control.className = `tool-control${options.window ? " window-control" : ""}`;
+  const label = document.createElement("span");
+  label.textContent = descriptor.label;
+  const inputs = document.createElement("span");
+  inputs.className = "tool-inputs";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.ariaLabel = descriptor.label;
+  const number = document.createElement("input");
+  number.type = "number";
+  number.min = descriptor.minimum;
+  number.max = descriptor.maximum;
+  number.step = descriptor.step;
+  number.ariaLabel = `${descriptor.label} exact value`;
+  const unit = document.createElement("span");
+  unit.className = "tool-unit";
+  unit.textContent = options.window ? "s" : descriptor.unit;
+  const initial = target[descriptor.id];
+  if (options.logarithmic) {
+    slider.min = "0";
+    slider.max = "1000";
+    slider.step = "1";
+    slider.value = logPosition(initial, descriptor.minimum, descriptor.maximum);
+  } else {
+    slider.min = descriptor.minimum;
+    slider.max = descriptor.maximum;
+    slider.step = descriptor.step;
+    slider.value = initial;
+  }
+  number.value = formatControlValue(initial, descriptor.step);
+  slider.setAttribute("aria-valuetext", `${number.value}${unit.textContent}`);
+
+  const applyValue = (value) => {
+    if (!Number.isFinite(value)) {
+      number.value = formatControlValue(target[descriptor.id], descriptor.step);
+      return;
     }
+    const safe = clamp(roundToStep(value, descriptor.step), descriptor.minimum, descriptor.maximum);
+    target[descriptor.id] = safe;
+    number.value = formatControlValue(safe, descriptor.step);
+    slider.value = options.logarithmic
+      ? logPosition(safe, descriptor.minimum, descriptor.maximum)
+      : safe;
+    slider.setAttribute("aria-valuetext", `${number.value}${unit.textContent}`);
+    scheduleSelection(true);
+  };
+  slider.addEventListener("input", () => {
+    const value = options.logarithmic
+      ? logValue(Number(slider.value), descriptor.minimum, descriptor.maximum)
+      : Number(slider.value);
+    applyValue(value);
+  });
+  number.addEventListener("input", () => {
+    const value = Number(number.value);
+    if (Number.isFinite(value) && value >= descriptor.minimum && value <= descriptor.maximum) {
+      applyValue(value);
+    }
+  });
+  number.addEventListener("change", () => applyValue(Number(number.value)));
+  inputs.append(slider, number, unit);
+  control.append(label, inputs);
+  return control;
+}
+
+function scheduleSelection(preservePlayback) {
+  const generation = ++state.selectionGeneration;
+  clearTimeout(state.selectionTimer);
+  state.bridge.supersedeRender?.(generation);
+  ui.renderStatus.textContent = "queued";
+  state.selectionTimer = setTimeout(() => {
+    void selectClip(preservePlayback, generation);
+  }, 140);
+}
+
+async function selectClip(preservePlayback, generation) {
+  try {
     hideError();
     const oldDuration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
     const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
     const resume = preservePlayback && !ui.audio.paused;
-    const url = audioUrl(clip.path);
+    const algorithm = selectedAlgorithm();
+    const settings = state.settings.get(algorithm.id);
+    const request = {
+      requestId: generation,
+      leftId: state.sourceA,
+      rightId: state.sourceB,
+      algorithm: state.algorithm,
+      windows: { ...settings.windows },
+      parameters: { ...settings.parameters },
+    };
     state.analysisSamples = null;
     state.analysisSampleRate = 0;
     state.waveformLayer = null;
     state.spectrumLayer = null;
-    drawLoading(ui.waveform, "LOADING WAVEFORM");
-    drawLoading(ui.spectrogram, "LOADING SPECTRUM");
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
-    const bytes = await response.arrayBuffer();
+    ui.renderStatus.textContent = "rendering…";
+    drawLoading(ui.waveform, "RENDERING ON DEMAND");
+    drawLoading(ui.spectrogram, "RENDERING ON DEMAND");
+    const rendered = await state.bridge.renderSelection(request);
     if (generation !== state.selectionGeneration) return;
+    const bytes = normalizeBytes(rendered.wav);
+    const analysisBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
     const previousObjectUrl = state.audioObjectUrl;
     state.audioObjectUrl = objectUrl;
-    ui.audio.dataset.path = clip.path;
+    ui.audio.dataset.path = selectionSignature(request);
+    const metadataLoaded = once(ui.audio, "loadedmetadata");
     ui.audio.src = objectUrl;
+    ui.audio.loop = true;
     ui.audio.load();
     if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
-    await once(ui.audio, "loadedmetadata");
+    await metadataLoaded;
     if (generation !== state.selectionGeneration) return;
     ui.audio.currentTime = Math.max(
       0,
@@ -199,49 +306,119 @@ async function selectClip(preservePlayback) {
     if (resume) {
       await ui.audio.play();
     }
-    updateMetadata(clip);
-    await analyzeSelection(bytes, generation);
+    updateMetadata(rendered.header, settings);
+    await analyzeSelection(analysisBytes, generation);
+    if (generation === state.selectionGeneration) {
+      ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
+    }
   } catch (error) {
-    if (generation === state.selectionGeneration) showError(error);
+    if (generation === state.selectionGeneration) {
+      ui.renderStatus.textContent = "failed";
+      showError(error);
+    }
   }
 }
 
-function audioUrl(relativePath) {
-  if (window.__TAURI__?.core?.convertFileSrc) {
-    const separator = state.outputDir.includes("\\") ? "\\" : "/";
-    const absolutePath =
-      `${state.outputDir}${separator}${relativePath.replaceAll("/", separator)}`;
-    return window.__TAURI__.core.convertFileSrc(absolutePath);
-  }
-  return new URL(`../../outputs/${relativePath}`, window.location.href).href;
-}
-
-function updateMetadata(clip) {
-  const sources = new Map(state.catalog.sources.map((source) => [source.id, source]));
-  const left = sources.get(clip.left);
-  const right = sources.get(clip.right);
-  ui.sourceA.innerHTML = sourceMarkup("A", left);
-  ui.sourceB.innerHTML = sourceMarkup("B", right);
-  const algorithm = state.catalog.algorithms.find((item) => item.id === state.algorithm);
-  const preset = state.catalog.presets.find((item) => item.id === state.preset);
-  ui.renderTitle.textContent = `${shortAlgorithm(algorithm.id)} / ${preset.id}`;
+function updateMetadata(header, settings) {
+  ui.renderTitle.textContent = shortAlgorithm(state.algorithm);
   ui.metrics.innerHTML = [
-    metricMarkup("rms", `${clip.metrics.rms_dbfs.toFixed(1)} dbfs`),
-    metricMarkup("peak", `${(clip.metrics.peak * 100).toFixed(1)}%`),
+    metricMarkup("rms", `${header.metrics.rms_dbfs.toFixed(1)} dbfs`),
+    metricMarkup("peak", `${(header.metrics.peak * 100).toFixed(1)}%`),
   ].join("");
-  ui.windowReadout.textContent =
-    `a ${preset.clip_a_seconds.toFixed(2)}s / b ${preset.clip_b_seconds.toFixed(2)}s / hop ${preset.hop_seconds.toFixed(2)}s`;
+  const clipASeconds = header.windows.clip_a_seconds;
+  const clipBSeconds = header.windows.clip_b_seconds;
+  if (clipASeconds == null) {
+    ui.windowReadout.textContent = "full 60s × 60s / final 60s retained";
+  } else {
+    let readout =
+      `a ${clipASeconds.toFixed(2)}s / b ${clipBSeconds.toFixed(2)}s / ` +
+      `hop ${header.hopSeconds.toFixed(2)}s`;
+    if (state.algorithm === "chunk_crossfade") {
+      const percentage = settings.parameters.chunk_crossfade_percent;
+      const duration = Math.max(clipASeconds, clipBSeconds) * percentage / 100;
+      readout += ` / fade ${duration.toFixed(2)}s (${percentage.toFixed(0)}%)`;
+    }
+    ui.windowReadout.textContent = readout;
+  }
 }
 
-function sourceMarkup(label, source) {
-  return `<span class="field-label">${label.toLowerCase()} / ${escapeHtml(source.kind)}</span>
-    <strong>${escapeHtml(source.category)}</strong>
-    <small>${escapeHtml(source.creator)} / ${escapeHtml(source.license)} /
-      <a href="${escapeHtml(source.source_page)}">source</a></small>`;
+function refreshSourceMetadata() {
+  const sources = new Map(state.catalog.sources.map((source) => [source.id, source]));
+  ui.sourceAMeta.innerHTML = sourceMetadata(sources.get(state.sourceA));
+  ui.sourceBMeta.innerHTML = sourceMetadata(sources.get(state.sourceB));
+}
+
+function sourceMetadata(source) {
+  return `${escapeHtml(source.creator)} / ${escapeHtml(source.license)} / ` +
+    `<a href="${escapeHtml(source.source_page)}">source</a>`;
 }
 
 function metricMarkup(label, value) {
   return `<div><dt>${label}</dt><dd>${value}</dd></div>`;
+}
+
+function selectedAlgorithm() {
+  return state.catalog.algorithms.find((algorithm) => algorithm.id === state.algorithm);
+}
+
+function selectionSignature(request) {
+  const windows = request.windows.clip_a_seconds == null
+    ? "full"
+    : `${request.windows.clip_a_seconds.toFixed(2)}x${request.windows.clip_b_seconds.toFixed(2)}`;
+  return `${request.leftId}__${request.rightId}/${request.algorithm}/${windows}`;
+}
+
+function parseEnvelope(raw) {
+  const bytes = normalizeBytes(raw);
+  if (
+    bytes.length < 12 ||
+    String.fromCharCode(...bytes.subarray(0, 4)) !== "CV9R"
+  ) {
+    throw new Error("The renderer returned an invalid audio envelope.");
+  }
+  const headerLength = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + 4,
+    4,
+  ).getUint32(0, true);
+  const wavOffset = 8 + headerLength;
+  if (wavOffset + 44 > bytes.length) {
+    throw new Error("The renderer returned a truncated audio envelope.");
+  }
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, wavOffset)));
+  return { header, wav: bytes.subarray(wavOffset) };
+}
+
+function normalizeBytes(value) {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) return Uint8Array.from(value);
+  throw new Error(`Unsupported binary render response: ${typeof value}`);
+}
+
+function logPosition(value, minimum, maximum) {
+  return Math.round(1000 * Math.log(value / minimum) / Math.log(maximum / minimum));
+}
+
+function logValue(position, minimum, maximum) {
+  return minimum * Math.pow(maximum / minimum, position / 1000);
+}
+
+function roundToStep(value, step) {
+  const decimals = String(step).split(".")[1]?.length ?? 0;
+  return Number((Math.round(value / step) * step).toFixed(decimals));
+}
+
+function formatControlValue(value, step) {
+  const decimals = String(step).split(".")[1]?.length ?? 0;
+  return Number(value).toFixed(decimals);
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 async function analyzeSelection(bytes, generation) {
@@ -299,8 +476,10 @@ function renderSpectrogramLayer(canvas, samples, sampleRate) {
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   const { width, height } = layer;
-  const columns = Math.min(width, 720);
-  const fftSize = 2048;
+  const columns = Math.min(width, 2880);
+  const fftSize = 8192;
+  canvas.dataset.fftSize = String(fftSize);
+  canvas.dataset.analysisColumns = String(columns);
   const real = new Float64Array(fftSize);
   const imaginary = new Float64Array(fftSize);
   const magnitudes = new Float32Array((fftSize / 2 + 1) * columns);
@@ -451,11 +630,6 @@ function refreshButtons() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active);
   }
-  for (const button of ui.presetButtons.querySelectorAll("button")) {
-    const active = button.dataset.value === state.preset;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active);
-  }
 }
 
 async function togglePlayback() {
@@ -493,6 +667,7 @@ function shortAlgorithm(value) {
     sliding_wola: "wola",
     evolving_ir: "ir",
     chunk_crossfade: "chunks",
+    full_convolution: "full",
   }[value];
 }
 

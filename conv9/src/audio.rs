@@ -1,5 +1,5 @@
 use std::f32::consts::PI;
-use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -123,49 +123,29 @@ pub fn condition_output(samples: &mut [f32]) -> Result<AudioMetrics> {
     Ok(metrics)
 }
 
-pub fn write_pcm16(path: &Path, samples: &[f32]) -> Result<()> {
+pub fn encode_pcm16(samples: &[f32]) -> Result<Vec<u8>> {
     if samples.len() != OUTPUT_FRAMES {
         bail!(
-            "refusing to write {} frames; expected {OUTPUT_FRAMES}",
+            "refusing to encode {} frames; expected {OUTPUT_FRAMES}",
             samples.len()
         );
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("wav.part");
     let spec = WavSpec {
         channels: 1,
         sample_rate: SAMPLE_RATE,
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
-    let mut writer = WavWriter::create(&temporary, spec)
-        .with_context(|| format!("create {}", temporary.display()))?;
-    for &sample in samples {
-        writer.write_sample((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16)?;
-    }
-    writer.finalize()?;
-    fs::rename(&temporary, path)
-        .with_context(|| format!("move completed WAV to {}", path.display()))?;
-    Ok(())
-}
-
-pub fn measure_wav(path: &Path) -> Result<AudioMetrics> {
-    let reader = WavReader::open(path).with_context(|| format!("open {}", path.display()))?;
-    let spec = reader.spec();
-    if spec.channels != 1
-        || spec.sample_rate != SAMPLE_RATE
-        || spec.bits_per_sample != 16
-        || spec.sample_format != SampleFormat::Int
+    let mut bytes = Vec::with_capacity(44 + samples.len() * 2);
     {
-        bail!("{} is not mono 48 kHz PCM16", path.display());
+        let cursor = Cursor::new(&mut bytes);
+        let mut writer = WavWriter::new(cursor, spec)?;
+        for &sample in samples {
+            writer.write_sample((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16)?;
+        }
+        writer.finalize()?;
     }
-    let samples = reader
-        .into_samples::<i16>()
-        .map(|sample| sample.map(|value| value as f32 / 32768.0))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(measure(&samples))
+    Ok(bytes)
 }
 
 pub fn validate_metrics(metrics: &AudioMetrics, frames: usize, context: &str) -> Result<()> {

@@ -1,393 +1,338 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::audio::{
-    AudioClip, AudioMetrics, OUTPUT_FRAMES, SAMPLE_RATE, condition_output, measure_wav,
-    read_prepared_clip, validate_metrics, write_pcm16,
+    AudioClip, AudioMetrics, OUTPUT_SECONDS, SAMPLE_RATE, condition_output, encode_pcm16,
+    read_prepared_clip,
 };
-use crate::dsp::{Algorithm, WindowConfig, WindowPreset, render_algorithm};
+use crate::dsp::{
+    Algorithm, AlgorithmParameters, DEFAULT_A_WINDOW_SECONDS, DEFAULT_B_WINDOW_SECONDS,
+    MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, WindowConfig, render_algorithm_cancellable,
+};
 use crate::manifest::{SourceEntry, load_manifest};
 
-pub const PAIR_COUNT: usize = 66;
-pub const OUTPUT_COUNT: usize = PAIR_COUNT * 4 * 3;
-
-#[derive(Clone, Debug)]
-pub struct RenderOptions {
-    pub manifest: PathBuf,
-    pub input_dir: PathBuf,
-    pub output_dir: PathBuf,
-    pub force: bool,
-    pub algorithm: Option<Algorithm>,
-    pub preset: Option<WindowPreset>,
-    pub pair: Option<String>,
+#[derive(Debug, Serialize)]
+pub struct Catalog {
+    pub schema_version: u32,
+    pub mode: &'static str,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub output_seconds: usize,
+    pub sources: Vec<SourceEntry>,
+    pub algorithms: Vec<AlgorithmCatalogEntry>,
 }
 
-#[derive(Clone, Debug)]
-pub struct VerifyOptions {
-    pub manifest: PathBuf,
-    pub input_dir: PathBuf,
-    pub output_dir: PathBuf,
+#[derive(Debug, Serialize)]
+pub struct AlgorithmCatalogEntry {
+    pub id: Algorithm,
+    pub title: &'static str,
+    pub rank: u8,
+    pub windows: Vec<WindowCatalogEntry>,
+    pub parameters: Vec<ParameterCatalogEntry>,
 }
 
-#[derive(Clone)]
-struct Pair {
-    left: usize,
-    right: usize,
-    slug: String,
+#[derive(Debug, Serialize)]
+pub struct ParameterCatalogEntry {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub minimum: f32,
+    pub maximum: f32,
+    pub step: f32,
+    pub default: f32,
+    pub unit: &'static str,
 }
 
-#[derive(Clone)]
-struct RenderTask {
-    pair: Pair,
-    algorithm: Algorithm,
-    preset: WindowPreset,
+#[derive(Debug, Serialize)]
+pub struct WindowCatalogEntry {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub minimum: f32,
+    pub maximum: f32,
+    pub step: f32,
+    pub default: f32,
+    pub scale: &'static str,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MetricsRow {
-    pub pair: String,
-    pub left: String,
-    pub right: String,
-    pub algorithm: Algorithm,
-    pub preset: WindowPreset,
-    pub path: String,
+#[derive(Debug)]
+pub struct RenderedAudio {
+    pub wav: Vec<u8>,
     pub metrics: AudioMetrics,
+    pub config: Option<WindowConfig>,
 }
 
-#[derive(Debug, Serialize)]
-struct Catalog {
-    schema_version: u32,
-    generated_by: &'static str,
-    sample_rate: u32,
-    channels: u16,
-    output_seconds: usize,
-    expected_pairs: usize,
-    expected_outputs: usize,
+#[derive(Clone, Debug)]
+pub struct RenderSelection {
+    pub left_id: String,
+    pub right_id: String,
+    pub algorithm: String,
+    pub windows: HashMap<String, f32>,
+    pub parameters: AlgorithmParameters,
+}
+
+pub struct OnDemandRenderer {
     sources: Vec<SourceEntry>,
-    algorithms: Vec<AlgorithmCatalogEntry>,
-    presets: Vec<PresetCatalogEntry>,
-    clips: Vec<MetricsRow>,
+    clips: Vec<AudioClip>,
+    indices: HashMap<String, usize>,
 }
 
-#[derive(Debug, Serialize)]
-struct AlgorithmCatalogEntry {
-    id: Algorithm,
-    title: &'static str,
-    rank: u8,
-}
-
-#[derive(Debug, Serialize)]
-struct PresetCatalogEntry {
-    id: WindowPreset,
-    title: &'static str,
-    #[serde(flatten)]
-    config: WindowConfig,
-}
-
-pub fn render_matrix(options: RenderOptions) -> Result<()> {
-    let sources = load_manifest(&options.manifest)?;
-    let clips = load_clips(&sources, &options.input_dir)?;
-    let pairs = make_pairs(&sources);
-    let tasks = make_tasks(&pairs, &options)?;
-    if tasks.is_empty() {
-        bail!("render filters selected no tasks");
+impl OnDemandRenderer {
+    pub fn load(manifest: &Path, input_dir: &Path) -> Result<Self> {
+        let sources = load_manifest(manifest)?;
+        let clips = sources
+            .iter()
+            .map(|source| {
+                read_prepared_clip(&source.id, &input_dir.join(format!("{}.wav", source.id)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let indices = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| (source.id.clone(), index))
+            .collect();
+        Ok(Self {
+            sources,
+            clips,
+            indices,
+        })
     }
-    fs::create_dir_all(&options.output_dir)?;
-    eprintln!(
-        "rendering {} task(s) from {} pairs; each output is 60 s mono PCM16",
-        tasks.len(),
-        pairs.len()
-    );
-    let rows = tasks
-        .par_iter()
-        .enumerate()
-        .map(|(index, task)| {
-            let path = output_path(&options.output_dir, task);
-            let metrics = if path.is_file() && !options.force {
-                let metrics = measure_wav(&path)
-                    .with_context(|| format!("validate reusable {}", path.display()))?;
-                validate_metrics(&metrics, OUTPUT_FRAMES, &path.display().to_string())?;
-                metrics
-            } else {
-                let mut output = render_algorithm(
-                    task.algorithm,
-                    task.preset,
-                    &clips[task.pair.left],
-                    &clips[task.pair.right],
-                )
+
+    pub fn catalog(&self) -> Catalog {
+        Catalog {
+            schema_version: 2,
+            mode: "on_demand",
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+            output_seconds: OUTPUT_SECONDS,
+            sources: self.sources.clone(),
+            algorithms: Algorithm::ALL
+                .into_iter()
+                .map(|algorithm| AlgorithmCatalogEntry {
+                    id: algorithm,
+                    title: algorithm.title(),
+                    rank: algorithm.rank(),
+                    windows: window_catalog(algorithm),
+                    parameters: parameter_catalog(algorithm),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn render(
+        &self,
+        selection: &RenderSelection,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<RenderedAudio> {
+        let algorithm = Algorithm::from_str(&selection.algorithm)?;
+        let config = if algorithm == Algorithm::FullConvolution {
+            None
+        } else {
+            Some(WindowConfig::new(
+                selection
+                    .windows
+                    .get("clip_a_seconds")
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("missing clip A window"))?,
+                selection
+                    .windows
+                    .get("clip_b_seconds")
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("missing clip B window"))?,
+            )?)
+        };
+        let parameters = selection.parameters.validate(algorithm)?;
+        let left = self.clip(&selection.left_id)?;
+        let right = self.clip(&selection.right_id)?;
+        let mut output =
+            render_algorithm_cancellable(algorithm, config, parameters, left, right, cancelled)
                 .with_context(|| {
                     format!(
-                        "{} / {} / {}",
-                        task.algorithm.slug(),
-                        task.preset.slug(),
-                        task.pair.slug
+                        "{} / {} ({}) × {} ({})",
+                        algorithm.slug(),
+                        left.id,
+                        selection
+                            .windows
+                            .get("clip_a_seconds")
+                            .copied()
+                            .map(|seconds| format!("{seconds:.2} s"))
+                            .unwrap_or_else(|| "full".to_owned()),
+                        right.id,
+                        selection
+                            .windows
+                            .get("clip_b_seconds")
+                            .copied()
+                            .map(|seconds| format!("{seconds:.2} s"))
+                            .unwrap_or_else(|| "full".to_owned()),
                     )
                 })?;
-                let metrics = condition_output(&mut output)?;
-                write_pcm16(&path, &output)?;
-                metrics
-            };
-            eprintln!(
-                "[{}/{}] {} / {} / {}",
-                index + 1,
-                tasks.len(),
-                task.algorithm.slug(),
-                task.preset.slug(),
-                task.pair.slug
-            );
-            Ok(MetricsRow {
-                pair: task.pair.slug.clone(),
-                left: clips[task.pair.left].id.clone(),
-                right: clips[task.pair.right].id.clone(),
-                algorithm: task.algorithm,
-                preset: task.preset,
-                path: relative_output_path(task),
-                metrics,
-            })
+        if cancelled() {
+            bail!("render cancelled");
+        }
+        let metrics = condition_output(&mut output)?;
+        let wav = encode_pcm16(&output)?;
+        Ok(RenderedAudio {
+            wav,
+            metrics,
+            config,
         })
-        .collect::<Result<Vec<_>>>()?;
-    write_metrics(&options.output_dir.join("metrics.csv"), &rows)?;
-    write_catalog(&options.output_dir, sources, rows)?;
-    Ok(())
+    }
+
+    fn clip(&self, id: &str) -> Result<&AudioClip> {
+        self.indices
+            .get(id)
+            .and_then(|index| self.clips.get(*index))
+            .ok_or_else(|| anyhow::anyhow!("unknown source {id}"))
+    }
 }
 
-pub fn verify_matrix(options: VerifyOptions) -> Result<()> {
-    let sources = load_manifest(&options.manifest)?;
-    let _clips = load_clips(&sources, &options.input_dir)?;
-    let pairs = make_pairs(&sources);
-    let tasks = make_tasks(
-        &pairs,
-        &RenderOptions {
-            manifest: options.manifest.clone(),
-            input_dir: options.input_dir.clone(),
-            output_dir: options.output_dir.clone(),
-            force: false,
-            algorithm: None,
-            preset: None,
-            pair: None,
+fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
+    if algorithm == Algorithm::FullConvolution {
+        return Vec::new();
+    }
+    vec![
+        WindowCatalogEntry {
+            id: "clip_a_seconds",
+            label: "A window",
+            minimum: MIN_WINDOW_SECONDS,
+            maximum: MAX_WINDOW_SECONDS,
+            step: 0.01,
+            default: DEFAULT_A_WINDOW_SECONDS,
+            scale: "log",
         },
-    )?;
-    if tasks.len() != OUTPUT_COUNT {
-        bail!(
-            "internal task count is {}, expected {OUTPUT_COUNT}",
-            tasks.len()
-        );
-    }
-    let rows = tasks
-        .par_iter()
-        .map(|task| {
-            let path = output_path(&options.output_dir, task);
-            if !path.is_file() {
-                bail!("missing {}", path.display());
-            }
-            let metrics = measure_wav(&path)?;
-            validate_metrics(&metrics, OUTPUT_FRAMES, &path.display().to_string())?;
-            Ok(MetricsRow {
-                pair: task.pair.slug.clone(),
-                left: sources[task.pair.left].id.clone(),
-                right: sources[task.pair.right].id.clone(),
-                algorithm: task.algorithm,
-                preset: task.preset,
-                path: relative_output_path(task),
-                metrics,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let unique_paths = rows
-        .iter()
-        .map(|row| row.path.as_str())
-        .collect::<HashSet<_>>();
-    if unique_paths.len() != OUTPUT_COUNT {
-        bail!(
-            "expected {OUTPUT_COUNT} unique paths, found {}",
-            unique_paths.len()
-        );
-    }
-    let wav_count = count_wavs(&options.output_dir)?;
-    if wav_count != OUTPUT_COUNT {
-        bail!("output tree contains {wav_count} WAVs; expected exactly {OUTPUT_COUNT}");
-    }
-    write_metrics(&options.output_dir.join("metrics.csv"), &rows)?;
-    write_catalog(&options.output_dir, sources, rows)?;
-    eprintln!("verified {OUTPUT_COUNT} outputs: {PAIR_COUNT} pairs × 4 algorithms × 3 presets");
-    Ok(())
+        WindowCatalogEntry {
+            id: "clip_b_seconds",
+            label: "B window",
+            minimum: MIN_WINDOW_SECONDS,
+            maximum: MAX_WINDOW_SECONDS,
+            step: 0.01,
+            default: DEFAULT_B_WINDOW_SECONDS,
+            scale: "log",
+        },
+    ]
 }
 
-fn load_clips(sources: &[SourceEntry], input_dir: &Path) -> Result<Vec<AudioClip>> {
-    sources
-        .iter()
-        .map(|source| read_prepared_clip(&source.id, &input_dir.join(format!("{}.wav", source.id))))
-        .collect()
-}
-
-fn make_pairs(sources: &[SourceEntry]) -> Vec<Pair> {
-    let mut pairs = Vec::with_capacity(PAIR_COUNT);
-    for left in 0..sources.len() {
-        for right in left + 1..sources.len() {
-            pairs.push(Pair {
-                left,
-                right,
-                slug: format!("{}__{}", sources[left].id, sources[right].id),
-            });
-        }
-    }
-    debug_assert_eq!(pairs.len(), PAIR_COUNT);
-    pairs
-}
-
-fn make_tasks(pairs: &[Pair], options: &RenderOptions) -> Result<Vec<RenderTask>> {
-    if let Some(pair) = &options.pair
-        && !pairs.iter().any(|candidate| candidate.slug == *pair)
-    {
-        bail!("unknown pair {pair}");
-    }
-    let algorithms = options
-        .algorithm
-        .map(|value| vec![value])
-        .unwrap_or_else(|| Algorithm::ALL.to_vec());
-    let presets = options
-        .preset
-        .map(|value| vec![value])
-        .unwrap_or_else(|| WindowPreset::ALL.to_vec());
-    let mut tasks = Vec::new();
-    for pair in pairs {
-        if options
-            .pair
-            .as_ref()
-            .is_some_and(|selected| selected != &pair.slug)
-        {
-            continue;
-        }
-        for &algorithm in &algorithms {
-            for &preset in &presets {
-                tasks.push(RenderTask {
-                    pair: pair.clone(),
-                    algorithm,
-                    preset,
-                });
-            }
-        }
-    }
-    Ok(tasks)
-}
-
-fn output_path(root: &Path, task: &RenderTask) -> PathBuf {
-    root.join(relative_output_path(task))
-}
-
-fn relative_output_path(task: &RenderTask) -> String {
-    format!(
-        "{}/{}/{}.wav",
-        task.algorithm.slug(),
-        task.preset.slug(),
-        task.pair.slug
-    )
-}
-
-fn write_metrics(path: &Path, rows: &[MetricsRow]) -> Result<()> {
-    let temporary = path.with_extension("csv.part");
-    let mut writer = csv::Writer::from_path(&temporary)
-        .with_context(|| format!("create {}", temporary.display()))?;
-    writer.write_record([
-        "pair",
-        "left",
-        "right",
-        "algorithm",
-        "preset",
-        "path",
-        "frames",
-        "duration_seconds",
-        "peak",
-        "rms",
-        "rms_dbfs",
-        "dc_offset",
-        "clipped_samples",
-        "non_finite_samples",
-    ])?;
-    let mut sorted = rows.to_vec();
-    sorted.sort_by(|a, b| a.path.cmp(&b.path));
-    for row in sorted {
-        writer.write_record([
-            row.pair,
-            row.left,
-            row.right,
-            row.algorithm.slug().to_owned(),
-            row.preset.slug().to_owned(),
-            row.path,
-            row.metrics.frames.to_string(),
-            row.metrics.duration_seconds.to_string(),
-            row.metrics.peak.to_string(),
-            row.metrics.rms.to_string(),
-            row.metrics.rms_dbfs.to_string(),
-            row.metrics.dc_offset.to_string(),
-            row.metrics.clipped_samples.to_string(),
-            row.metrics.non_finite_samples.to_string(),
-        ])?;
-    }
-    writer.flush()?;
-    fs::rename(&temporary, path)?;
-    Ok(())
-}
-
-fn write_catalog(root: &Path, sources: Vec<SourceEntry>, mut clips: Vec<MetricsRow>) -> Result<()> {
-    clips.sort_by(|a, b| a.path.cmp(&b.path));
-    let catalog = Catalog {
-        schema_version: 1,
-        generated_by: "conv9",
-        sample_rate: SAMPLE_RATE,
-        channels: 1,
-        output_seconds: 60,
-        expected_pairs: PAIR_COUNT,
-        expected_outputs: OUTPUT_COUNT,
-        sources,
-        algorithms: Algorithm::ALL
-            .into_iter()
-            .map(|algorithm| AlgorithmCatalogEntry {
-                id: algorithm,
-                title: algorithm.title(),
-                rank: algorithm.rank(),
-            })
-            .collect(),
-        presets: WindowPreset::ALL
-            .into_iter()
-            .map(|preset| PresetCatalogEntry {
-                id: preset,
-                title: preset.title(),
-                config: preset.config(),
-            })
-            .collect(),
-        clips,
+fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
+    let defaults = AlgorithmParameters::default();
+    let taper = || ParameterCatalogEntry {
+        id: "taper",
+        label: "taper",
+        minimum: 0.05,
+        maximum: 1.0,
+        step: 0.01,
+        default: defaults.taper,
+        unit: "",
     };
-    let path = root.join("catalog.json");
-    let temporary = root.join("catalog.json.part");
-    fs::write(&temporary, serde_json::to_vec_pretty(&catalog)?)?;
-    fs::rename(&temporary, path)?;
-    Ok(())
+    match algorithm {
+        Algorithm::Multiresolution => vec![
+            taper(),
+            ParameterCatalogEntry {
+                id: "multires_low_scale",
+                label: "low scale",
+                minimum: 1.0,
+                maximum: 3.0,
+                step: 0.05,
+                default: defaults.multires_low_scale,
+                unit: "×",
+            },
+            ParameterCatalogEntry {
+                id: "multires_high_scale",
+                label: "high scale",
+                minimum: 0.15,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.multires_high_scale,
+                unit: "×",
+            },
+            ParameterCatalogEntry {
+                id: "multires_low_mix",
+                label: "low gain",
+                minimum: 0.0,
+                maximum: 2.0,
+                step: 0.01,
+                default: defaults.multires_low_mix,
+                unit: "×",
+            },
+            ParameterCatalogEntry {
+                id: "multires_high_mix",
+                label: "high gain",
+                minimum: 0.0,
+                maximum: 2.0,
+                step: 0.01,
+                default: defaults.multires_high_mix,
+                unit: "×",
+            },
+            ParameterCatalogEntry {
+                id: "multires_low_split_hz",
+                label: "low split",
+                minimum: 80.0,
+                maximum: 800.0,
+                step: 5.0,
+                default: defaults.multires_low_split_hz,
+                unit: "hz",
+            },
+            ParameterCatalogEntry {
+                id: "multires_high_split_hz",
+                label: "high split",
+                minimum: 800.0,
+                maximum: 8_000.0,
+                step: 25.0,
+                default: defaults.multires_high_split_hz,
+                unit: "hz",
+            },
+        ],
+        Algorithm::SlidingWola => vec![taper()],
+        Algorithm::EvolvingIr => vec![
+            taper(),
+            ParameterCatalogEntry {
+                id: "evolving_a_mix",
+                label: "A carrier",
+                minimum: 0.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.evolving_a_mix,
+                unit: "",
+            },
+        ],
+        Algorithm::ChunkCrossfade => vec![
+            taper(),
+            ParameterCatalogEntry {
+                id: "chunk_crossfade_percent",
+                label: "crossfade",
+                minimum: 5.0,
+                maximum: 75.0,
+                step: 1.0,
+                default: defaults.chunk_crossfade_percent,
+                unit: "%",
+            },
+        ],
+        Algorithm::FullConvolution => Vec::new(),
+    }
 }
 
-fn count_wavs(root: &Path) -> Result<usize> {
-    fn recurse(path: &Path, count: &mut usize) -> Result<()> {
-        for entry in fs::read_dir(path).with_context(|| format!("read {}", path.display()))? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                recurse(&entry.path(), count)?;
-            } else if entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "wav")
-            {
-                *count += 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_method_exposes_its_parameters() {
+        for algorithm in Algorithm::ALL {
+            let parameters = parameter_catalog(algorithm);
+            if algorithm == Algorithm::FullConvolution {
+                assert!(parameters.is_empty());
+                assert!(window_catalog(algorithm).is_empty());
+            } else {
+                assert!(!parameters.is_empty());
+                assert!(parameters.iter().any(|parameter| parameter.id == "taper"));
+                assert_eq!(window_catalog(algorithm).len(), 2);
             }
         }
-        Ok(())
+        assert!(
+            parameter_catalog(Algorithm::ChunkCrossfade)
+                .iter()
+                .any(|parameter| parameter.id == "chunk_crossfade_percent")
+        );
     }
-    let mut count = 0;
-    recurse(root, &mut count)?;
-    Ok(count)
 }

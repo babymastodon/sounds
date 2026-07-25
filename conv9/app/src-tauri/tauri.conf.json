@@ -10,20 +10,19 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "conv9 · windowed convolution listener",
+        "title": "conv9 · convolution listener",
         "width": 1280,
         "height": 860,
         "minWidth": 900,
         "minHeight": 640,
+        "decorations": true,
+        "minimizable": false,
+        "maximizable": false,
         "resizable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' asset: http://asset.localhost; media-src 'self' blob: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'",
-      "assetProtocol": {
-        "enable": true,
-        "scope": []
-      }
+      "csp": "default-src 'self'; media-src 'self' blob:; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

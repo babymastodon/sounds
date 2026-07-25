@@ -3,7 +3,12 @@ mod dsp;
 mod manifest;
 mod render;
 
-pub use dsp::{Algorithm, WindowPreset};
+pub use audio::AudioMetrics;
+pub use dsp::{
+    Algorithm, AlgorithmParameters, DEFAULT_A_WINDOW_SECONDS, DEFAULT_B_WINDOW_SECONDS,
+    MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, WindowConfig,
+};
 pub use render::{
-    OUTPUT_COUNT, PAIR_COUNT, RenderOptions, VerifyOptions, render_matrix, verify_matrix,
+    AlgorithmCatalogEntry, Catalog, OnDemandRenderer, ParameterCatalogEntry, RenderSelection,
+    RenderedAudio, WindowCatalogEntry,
 };

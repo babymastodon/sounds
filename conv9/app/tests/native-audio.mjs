@@ -76,6 +76,13 @@ try {
         sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
         methodCount: document.querySelectorAll("#algorithmButtons button").length,
         windowCount: document.querySelectorAll("#methodTools .window-control").length,
+        missingTooltips: [...document.querySelectorAll("button, select, input, canvas, a[href]")]
+          .filter((control) =>
+            !control.title ||
+            control.title.trim().length < 40 ||
+            control.title.includes("undefined")
+          )
+          .map((control) => control.id || control.getAttribute("aria-label") || control.textContent),
         fftSize: spectrum?.dataset.fftSize,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden,
@@ -95,7 +102,7 @@ try {
   }, 180_000);
   assert.equal(initial.duration, 60);
   assert.match(initial.source, /^blob:tauri:/);
-  assert.match(initial.path, /multiresolution\/0\.30x0\.45$/);
+  assert.match(initial.path, /multiresolution\/5\.00x5\.00$/);
   assert.equal(initial.loop, true);
   assert.equal(initial.title, "multi");
   assert.match(initial.status, /^rendered \d+ ms$/);
@@ -103,6 +110,7 @@ try {
   assert.equal(initial.sourceBCount, 12);
   assert.equal(initial.methodCount, 5);
   assert.equal(initial.windowCount, 2);
+  assert.deepEqual(initial.missingTooltips, []);
   assert.equal(initial.fftSize, "8192");
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");

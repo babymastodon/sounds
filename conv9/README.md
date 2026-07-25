@@ -21,7 +21,7 @@ The two source selectors are independent. Each method declares its own controls,
 4. **Independent chunks** convolves lockstep chunks and joins them with equal-power fades. It exposes A/B windows, Tukey taper, and crossfade percentage; the UI also reports the resulting duration.
 5. **Full convolution** is the smear/reference method. It linearly convolves both complete 60-second clips, then retains the final 60 seconds. It has no window controls.
 
-Windowed methods accept independent real-valued A/B durations from 0.10 to 30.00 seconds. The UI uses logarithmic sliders for usable sub-second resolution plus numeric inputs for exact hundredths. Their hop is derived as 80% of the longer window, ensuring overlap without another global control. All local paths contain convolution only; no dry source is mixed in.
+Windowed methods start with independent 5.00-second A/B durations and accept values from 0.10 to 30.00 seconds. The UI uses softened-log sliders—less compressed than a pure logarithmic curve while retaining useful sub-second resolution—plus numeric inputs for exact hundredths. Their hop is derived as 80% of the longer window, ensuring overlap without another global control. Every interactive control has a specific hover tooltip describing its DSP or playback effect. All local paths contain convolution only; no dry source is mixed in.
 
 Every output is DC-removed, high-passed at 18 Hz, gently saturated toward the shared RMS target, held below a 0.92 peak ceiling, and faded for 20 ms. These safety/level constraints are intentionally not user-editable.
 

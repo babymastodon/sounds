@@ -46,6 +46,36 @@ impl Algorithm {
         }
     }
 
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Multiresolution => {
+                "Splits every local convolution into complementary low, mid, and high bands. \
+                 Low frequencies use longer windows for stability; highs use shorter windows \
+                 for sharper timing. The three bands are recombined before final level conditioning."
+            }
+            Self::SlidingWola => {
+                "Extracts synchronized A/B windows along the full timeline, linearly convolves \
+                 each pair, then merges them with Hann weighted overlap-add. This is the neutral \
+                 local-convolution baseline."
+            }
+            Self::EvolvingIr => {
+                "Convolves synchronized A/B windows, crops the result into separate A-sized and \
+                 B-sized carriers, then blends and overlap-adds them. Carrier balance shifts which \
+                 source's local timing dominates."
+            }
+            Self::ChunkCrossfade => {
+                "Convolves independent synchronized chunks, crops each result to its timeline slot, \
+                 and joins neighboring chunks with equal-power crossfades. Crossfade percentage \
+                 controls the transition duration."
+            }
+            Self::FullConvolution => {
+                "Linearly convolves both complete 60-second clips in one FFT operation. The result \
+                 is the smear/reference case; conv9 retains its final 60 seconds and applies the \
+                 same output conditioning as every other method."
+            }
+        }
+    }
+
     pub fn rank(self) -> u8 {
         match self {
             Self::Multiresolution => 1,
@@ -70,8 +100,8 @@ impl FromStr for Algorithm {
 
 pub const MIN_WINDOW_SECONDS: f32 = 0.10;
 pub const MAX_WINDOW_SECONDS: f32 = 30.00;
-pub const DEFAULT_A_WINDOW_SECONDS: f32 = 0.30;
-pub const DEFAULT_B_WINDOW_SECONDS: f32 = 0.45;
+pub const DEFAULT_A_WINDOW_SECONDS: f32 = 5.00;
+pub const DEFAULT_B_WINDOW_SECONDS: f32 = 5.00;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]

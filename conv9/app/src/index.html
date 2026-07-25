@@ -21,13 +21,21 @@
       <section class="clip-selectors" aria-label="Convolution sources">
         <article class="clip-field">
           <label for="sourceASelect">a / clip</label>
-          <select id="sourceASelect" aria-label="Clip A"></select>
+          <select
+            id="sourceASelect"
+            aria-label="Clip A"
+            title="Choose the first convolution source. Changing clip A cancels stale work and renders the selected method again with this signal as input A."
+          ></select>
           <div id="sourceAMeta" class="source-meta"></div>
         </article>
         <div class="convolution-mark" aria-hidden="true">∗</div>
         <article class="clip-field">
           <label for="sourceBSelect">b / clip</label>
-          <select id="sourceBSelect" aria-label="Clip B"></select>
+          <select
+            id="sourceBSelect"
+            aria-label="Clip B"
+            title="Choose the second convolution source. Changing clip B cancels stale work and renders the selected method again with this signal as input B."
+          ></select>
           <div id="sourceBMeta" class="source-meta"></div>
         </article>
       </section>
@@ -49,13 +57,37 @@
 
       <section class="transport-panel">
         <div class="transport">
-          <button id="playButton" class="play" type="button" aria-label="Play">▶</button>
+          <button
+            id="playButton"
+            class="play"
+            type="button"
+            aria-label="Play"
+            title="Play the current in-memory convolution from its present position. Playback loops automatically at the end."
+          >▶</button>
           <span id="currentTime">0:00.000</span>
-          <input id="seek" type="range" min="0" max="60" value="0" step="0.001" aria-label="Seek" />
+          <input
+            id="seek"
+            type="range"
+            min="0"
+            max="60"
+            value="0"
+            step="0.001"
+            aria-label="Seek"
+            title="Move the playback position through the 60-second render. The waveform and spectrogram cursors follow this exact time."
+          />
           <span id="duration">1:00.000</span>
           <label class="volume">
             <span>vol</span>
-            <input id="volume" type="range" min="0" max="1" value="0.8" step="0.01" />
+            <input
+              id="volume"
+              type="range"
+              min="0"
+              max="1"
+              value="0.8"
+              step="0.01"
+              aria-label="Playback volume"
+              title="Adjust listener playback volume only. This does not alter convolution rendering, output conditioning, metrics, or waveform data."
+            />
           </label>
         </div>
         <audio id="audio" preload="auto" loop></audio>
@@ -64,11 +96,21 @@
       <section class="visuals">
         <article class="visual-card">
           <header><span>waveform</span></header>
-          <canvas id="waveform" height="220" aria-label="Audio waveform"></canvas>
+          <canvas
+            id="waveform"
+            height="220"
+            aria-label="Audio waveform"
+            title="Shows output amplitude over the full 60 seconds. Click anywhere to seek playback to that timeline position."
+          ></canvas>
         </article>
         <article class="visual-card spectrogram-card">
           <header><span>spectrum / 8192 fft</span></header>
-          <canvas id="spectrogram" height="300" aria-label="Audio spectrum"></canvas>
+          <canvas
+            id="spectrogram"
+            height="300"
+            aria-label="Audio spectrum"
+            title="Shows output energy over time on a logarithmic 50 Hz–20 kHz axis using an 8,192-point FFT. Click anywhere to seek."
+          ></canvas>
         </article>
       </section>
     </main>

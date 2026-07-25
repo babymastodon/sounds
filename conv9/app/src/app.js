@@ -89,8 +89,15 @@ function buildControls() {
     const option = document.createElement("option");
     option.value = source.id;
     option.textContent = `${source.category} / ${source.kind}`;
+    option.title =
+      `Use “${source.category}” as clip A. This ${source.kind} source is ` +
+      `${source.seconds.toFixed(0)} seconds and will be conditioned before convolution.`;
     ui.sourceASelect.append(option);
-    ui.sourceBSelect.append(option.cloneNode(true));
+    const optionB = option.cloneNode(true);
+    optionB.title =
+      `Use “${source.category}” as clip B. This ${source.kind} source is ` +
+      `${source.seconds.toFixed(0)} seconds and will be conditioned before convolution.`;
+    ui.sourceBSelect.append(optionB);
   }
   ui.sourceASelect.value = state.sourceA;
   ui.sourceBSelect.value = state.sourceB;
@@ -99,7 +106,9 @@ function buildControls() {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.value = algorithm.id;
-    button.title = `${algorithm.title} · expected quality rank ${algorithm.rank}`;
+    button.title =
+      `${algorithm.title}. ${algorithm.description} Selecting it renders immediately ` +
+      `and shows only this method’s applicable controls.`;
     button.textContent = shortAlgorithm(algorithm.id);
     ui.algorithmButtons.append(button);
   }
@@ -177,7 +186,10 @@ function buildMethodTools() {
   }
   for (const descriptor of algorithm.windows) {
     ui.methodTools.append(
-      toolControl(descriptor, settings.windows, { logarithmic: descriptor.scale === "log", window: true }),
+      toolControl(descriptor, settings.windows, {
+        logarithmic: descriptor.scale === "soft_log",
+        window: true,
+      }),
     );
   }
   for (const descriptor of algorithm.parameters) {
@@ -188,6 +200,7 @@ function buildMethodTools() {
 function toolControl(descriptor, target, options = {}) {
   const control = document.createElement("label");
   control.className = `tool-control${options.window ? " window-control" : ""}`;
+  control.title = descriptor.description;
   const label = document.createElement("span");
   label.textContent = descriptor.label;
   const inputs = document.createElement("span");
@@ -195,12 +208,25 @@ function toolControl(descriptor, target, options = {}) {
   const slider = document.createElement("input");
   slider.type = "range";
   slider.ariaLabel = descriptor.label;
+  slider.setAttribute("aria-description", descriptor.description);
+  const scaleExplanation = options.logarithmic
+    ? "Slider travel uses a softened logarithmic curve: sub-second values retain detail without crowding multi-second values."
+    : "Slider travel is linear across the stated range.";
+  slider.title =
+    `${descriptor.description} ${scaleExplanation} Drag to adjust from ${descriptor.minimum} to ` +
+    `${descriptor.maximum}${options.window ? " seconds" : descriptor.unit}. ` +
+    `Changing it triggers a new on-demand render.`;
   const number = document.createElement("input");
   number.type = "number";
   number.min = descriptor.minimum;
   number.max = descriptor.maximum;
   number.step = descriptor.step;
   number.ariaLabel = `${descriptor.label} exact value`;
+  number.setAttribute("aria-description", descriptor.description);
+  number.title =
+    `${descriptor.description} Enter an exact value from ${descriptor.minimum} to ` +
+    `${descriptor.maximum}${options.window ? " seconds" : descriptor.unit}; ` +
+    `the adjacent slider follows it and the selection is rendered again.`;
   const unit = document.createElement("span");
   unit.className = "tool-unit";
   unit.textContent = options.window ? "s" : descriptor.unit;
@@ -350,7 +376,8 @@ function refreshSourceMetadata() {
 
 function sourceMetadata(source) {
   return `${escapeHtml(source.creator)} / ${escapeHtml(source.license)} / ` +
-    `<a href="${escapeHtml(source.source_page)}">source</a>`;
+    `<a href="${escapeHtml(source.source_page)}" ` +
+    `title="Open the original source and license page for ${escapeHtml(source.category)}.">source</a>`;
 }
 
 function metricMarkup(label, value) {
@@ -400,11 +427,21 @@ function normalizeBytes(value) {
 }
 
 function logPosition(value, minimum, maximum) {
-  return Math.round(1000 * Math.log(value / minimum) / Math.log(maximum / minimum));
+  const softness = 0.25;
+  return Math.round(
+    1000 *
+      Math.log((value + softness) / (minimum + softness)) /
+      Math.log((maximum + softness) / (minimum + softness)),
+  );
 }
 
 function logValue(position, minimum, maximum) {
-  return minimum * Math.pow(maximum / minimum, position / 1000);
+  const softness = 0.25;
+  return (
+    (minimum + softness) *
+      Math.pow((maximum + softness) / (minimum + softness), position / 1000) -
+    softness
+  );
 }
 
 function roundToStep(value, step) {
@@ -644,6 +681,9 @@ async function togglePlayback() {
 function refreshPlayButton() {
   ui.playButton.textContent = ui.audio.paused ? "▶" : "❚❚";
   ui.playButton.setAttribute("aria-label", ui.audio.paused ? "Play" : "Pause");
+  ui.playButton.title = ui.audio.paused
+    ? "Play the current in-memory convolution from its present position. Playback loops automatically at the end."
+    : "Pause playback at the current position. The rendered audio remains in memory and can resume from this point.";
 }
 
 function refreshTransport() {

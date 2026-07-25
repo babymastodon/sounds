@@ -30,6 +30,7 @@ pub struct Catalog {
 pub struct AlgorithmCatalogEntry {
     pub id: Algorithm,
     pub title: &'static str,
+    pub description: &'static str,
     pub rank: u8,
     pub windows: Vec<WindowCatalogEntry>,
     pub parameters: Vec<ParameterCatalogEntry>,
@@ -44,6 +45,7 @@ pub struct ParameterCatalogEntry {
     pub step: f32,
     pub default: f32,
     pub unit: &'static str,
+    pub description: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +57,7 @@ pub struct WindowCatalogEntry {
     pub step: f32,
     pub default: f32,
     pub scale: &'static str,
+    pub description: &'static str,
 }
 
 #[derive(Debug)]
@@ -113,6 +116,7 @@ impl OnDemandRenderer {
                 .map(|algorithm| AlgorithmCatalogEntry {
                     id: algorithm,
                     title: algorithm.title(),
+                    description: algorithm.description(),
                     rank: algorithm.rank(),
                     windows: window_catalog(algorithm),
                     parameters: parameter_catalog(algorithm),
@@ -200,7 +204,10 @@ fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
             maximum: MAX_WINDOW_SECONDS,
             step: 0.01,
             default: DEFAULT_A_WINDOW_SECONDS,
-            scale: "log",
+            scale: "soft_log",
+            description: "Sets how many seconds are extracted from clip A at each synchronized \
+                          timeline position. Longer windows retain more context and pitch detail \
+                          but produce more temporal smear and require larger FFTs.",
         },
         WindowCatalogEntry {
             id: "clip_b_seconds",
@@ -209,7 +216,10 @@ fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
             maximum: MAX_WINDOW_SECONDS,
             step: 0.01,
             default: DEFAULT_B_WINDOW_SECONDS,
-            scale: "log",
+            scale: "soft_log",
+            description: "Sets how many seconds are extracted from clip B at each synchronized \
+                          timeline position. Longer windows retain more context and pitch detail \
+                          but produce more temporal smear and require larger FFTs.",
         },
     ]
 }
@@ -224,6 +234,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
         step: 0.01,
         default: defaults.taper,
         unit: "",
+        description: "Sets the Tukey window taper fraction. Higher values soften a larger portion \
+                      of each window edge, reducing spectral leakage and boundary clicks while \
+                      giving the window center more influence.",
     };
     match algorithm {
         Algorithm::Multiresolution => vec![
@@ -236,6 +249,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 0.05,
                 default: defaults.multires_low_scale,
                 unit: "×",
+                description: "Multiplies both selected A/B window lengths for the low-frequency \
+                              band. Larger values stabilize bass and preserve slower motion, at the \
+                              cost of more smear and computation.",
             },
             ParameterCatalogEntry {
                 id: "multires_high_scale",
@@ -245,6 +261,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 0.01,
                 default: defaults.multires_high_scale,
                 unit: "×",
+                description: "Multiplies both selected A/B window lengths for the high-frequency \
+                              band. Smaller values sharpen transients and timing; larger values \
+                              retain more high-frequency context.",
             },
             ParameterCatalogEntry {
                 id: "multires_low_mix",
@@ -254,6 +273,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 0.01,
                 default: defaults.multires_low_mix,
                 unit: "×",
+                description: "Scales the low-frequency convolution band before it is recombined \
+                              with the mid and high bands. Final conditioning still enforces the \
+                              shared output level and peak ceiling.",
             },
             ParameterCatalogEntry {
                 id: "multires_high_mix",
@@ -263,6 +285,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 0.01,
                 default: defaults.multires_high_mix,
                 unit: "×",
+                description: "Scales the high-frequency convolution band before recombination. \
+                              Raise it for more texture and attack, or lower it for a darker result; \
+                              final output power is still conditioned.",
             },
             ParameterCatalogEntry {
                 id: "multires_low_split_hz",
@@ -272,6 +297,8 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 5.0,
                 default: defaults.multires_low_split_hz,
                 unit: "hz",
+                description: "Sets the center frequency of the raised-cosine low-to-mid band split. \
+                              The smooth transition spans approximately 70% to 130% of this value.",
             },
             ParameterCatalogEntry {
                 id: "multires_high_split_hz",
@@ -281,6 +308,8 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 25.0,
                 default: defaults.multires_high_split_hz,
                 unit: "hz",
+                description: "Sets the center frequency of the raised-cosine mid-to-high band split. \
+                              The smooth transition spans approximately 70% to 130% of this value.",
             },
         ],
         Algorithm::SlidingWola => vec![taper()],
@@ -294,6 +323,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 0.01,
                 default: defaults.evolving_a_mix,
                 unit: "",
+                description: "Blends the two cropped convolution carriers. 0 keeps only the \
+                              B-sized carrier, 1 keeps only the A-sized carrier, and 0.5 gives both \
+                              equal synthesis weight.",
             },
         ],
         Algorithm::ChunkCrossfade => vec![
@@ -306,6 +338,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 1.0,
                 default: defaults.chunk_crossfade_percent,
                 unit: "%",
+                description: "Sets the equal-power overlap as a percentage of the longer A/B chunk. \
+                              Higher values make smoother, longer transitions; lower values preserve \
+                              harder chunk boundaries. The resulting seconds appear below.",
             },
         ],
         Algorithm::FullConvolution => Vec::new(),
@@ -319,14 +354,26 @@ mod tests {
     #[test]
     fn each_method_exposes_its_parameters() {
         for algorithm in Algorithm::ALL {
+            assert!(algorithm.description().len() > 100);
             let parameters = parameter_catalog(algorithm);
             if algorithm == Algorithm::FullConvolution {
                 assert!(parameters.is_empty());
                 assert!(window_catalog(algorithm).is_empty());
             } else {
                 assert!(!parameters.is_empty());
+                assert!(
+                    parameters
+                        .iter()
+                        .all(|parameter| parameter.description.len() > 80)
+                );
                 assert!(parameters.iter().any(|parameter| parameter.id == "taper"));
-                assert_eq!(window_catalog(algorithm).len(), 2);
+                let windows = window_catalog(algorithm);
+                assert_eq!(windows.len(), 2);
+                assert!(windows.iter().all(|window| {
+                    window.default == 5.0
+                        && window.scale == "soft_log"
+                        && window.description.len() > 100
+                }));
             }
         }
         assert!(

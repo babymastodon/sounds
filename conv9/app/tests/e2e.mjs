@@ -106,8 +106,17 @@ try {
     await page.getByLabel("A window exact value").getAttribute("max"),
     "30",
   );
+  assert.equal(await page.getByLabel("A window exact value").inputValue(), "5.00");
+  assert.equal(await page.getByLabel("B window exact value").inputValue(), "5.00");
+  const defaultSliderPosition = Number(
+    await page.locator("input[type='range'][aria-label='A window']").inputValue(),
+  );
+  assert.ok(
+    defaultSliderPosition >= 580 && defaultSliderPosition <= 640,
+    `soft-log 5-second position is unexpected: ${defaultSliderPosition}`,
+  );
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.loop), true);
-  await assertAudioReady(page, "/multiresolution/0.30x0.45");
+  await assertAudioReady(page, "/multiresolution/5.00x5.00");
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
   assert.equal(await page.locator("#spectrogram").getAttribute("data-fft-size"), "8192");
@@ -116,6 +125,15 @@ try {
     "spectrogram time resolution exceeds the old 720-column cap",
   );
   await assertNoViewportOverflow(page);
+  await assertControlTooltips(page);
+  assert.match(
+    await page.getByRole("button", { name: "multi", exact: true }).getAttribute("title"),
+    /low, mid, and high bands/,
+  );
+  assert.match(
+    await page.locator("input[type='range'][aria-label='A window']").getAttribute("title"),
+    /seconds are extracted from clip A.*softened logarithmic curve/,
+  );
   assert.equal(await page.locator("#errorPanel").isHidden(), true, "error panel hidden");
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: process.env.CONV9_TEST_SCREENSHOT });
@@ -123,20 +141,25 @@ try {
 
   await setAudioTime(page, 24);
   await page.getByLabel("A window exact value").fill("1.37");
-  await waitForPath(page, "/multiresolution/1.37x0.45");
+  await waitForPath(page, "/multiresolution/1.37x5.00");
   await expectAudioTime(page, 24, 0.5);
 
   const thirdSource = await page.locator("#sourceBSelect option").nth(2).getAttribute("value");
   await page.locator("#sourceBSelect").selectOption(thirdSource);
-  await waitForPath(page, `${thirdSource}/multiresolution/1.37x0.45`);
+  await waitForPath(page, `${thirdSource}/multiresolution/1.37x5.00`);
 
   await page.getByRole("button", { name: "chunks", exact: true }).click();
-  await waitForPath(page, "/chunk_crossfade/0.30x0.45");
+  await waitForPath(page, "/chunk_crossfade/5.00x5.00");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 4);
   assert.equal(await page.getByLabel("crossfade exact value").inputValue(), "25");
+  assert.match(
+    await page.getByLabel("crossfade exact value").getAttribute("title"),
+    /equal-power overlap/,
+  );
+  await assertControlTooltips(page);
   await page.getByLabel("crossfade exact value").fill("40");
-  await waitForPath(page, "/chunk_crossfade/0.30x0.45");
+  await waitForPath(page, "/chunk_crossfade/5.00x5.00");
   await expectContains(page, "#windowReadout", "40%");
 
   await page.getByRole("button", { name: "full", exact: true }).click();
@@ -152,9 +175,10 @@ try {
     () => document.querySelector("#renderStatus")?.textContent === "rendering…",
   );
   await page.getByRole("button", { name: "ir", exact: true }).click();
-  await waitForPath(page, "/evolving_ir/0.30x0.45");
+  await waitForPath(page, "/evolving_ir/5.00x5.00");
   assert.ok((await audioTime(page)) >= beforeSwitch - 0.5, "switch preserves position");
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.paused), false);
+  assert.match(await page.locator("#playButton").getAttribute("title"), /Pause playback/);
   const requests = await page.evaluate(() => window.__CONV9_TEST_REQUESTS__);
   assert.equal(requests.at(-1).algorithm, "evolving_ir", "latest rapid selection wins");
 
@@ -221,8 +245,10 @@ async function testCatalog() {
       minimum: 0.1,
       maximum: 30,
       step: 0.01,
-      default: 0.3,
-      scale: "log",
+      default: 5,
+      scale: "soft_log",
+      description:
+        "Sets how many seconds are extracted from clip A at each synchronized timeline position. Longer windows retain more context but create more temporal smear.",
     },
     {
       id: "clip_b_seconds",
@@ -230,8 +256,10 @@ async function testCatalog() {
       minimum: 0.1,
       maximum: 30,
       step: 0.01,
-      default: 0.45,
-      scale: "log",
+      default: 5,
+      scale: "soft_log",
+      description:
+        "Sets how many seconds are extracted from clip B at each synchronized timeline position. Longer windows retain more context but create more temporal smear.",
     },
   ];
   const taper = {
@@ -242,6 +270,8 @@ async function testCatalog() {
     step: 0.01,
     default: 0.5,
     unit: "",
+    description:
+      "Sets the Tukey window taper fraction. Higher values soften more of each window edge to reduce leakage and clicks.",
   };
   const parameter = (id, label, minimum, maximum, step, defaultValue, unit = "") => ({
     id,
@@ -251,6 +281,24 @@ async function testCatalog() {
     step,
     default: defaultValue,
     unit,
+    description: {
+      multires_low_scale:
+        "Multiplies both windows for the low-frequency band. Larger values stabilize bass but add smear.",
+      multires_high_scale:
+        "Multiplies both windows for the high-frequency band. Smaller values sharpen transients and timing.",
+      multires_low_mix:
+        "Scales the low-frequency convolution band before all bands are recombined and conditioned.",
+      multires_high_mix:
+        "Scales the high-frequency convolution band before all bands are recombined and conditioned.",
+      multires_low_split_hz:
+        "Sets the smooth low-to-mid frequency split center used by the multiresolution method.",
+      multires_high_split_hz:
+        "Sets the smooth mid-to-high frequency split center used by the multiresolution method.",
+      evolving_a_mix:
+        "Blends the cropped carriers: zero keeps B, one keeps A, and one half weights both equally.",
+      chunk_crossfade_percent:
+        "Sets equal-power overlap as a percentage of the longer chunk. Higher values make longer, smoother transitions.",
+    }[id],
   });
   return {
     schema_version: 2,
@@ -263,6 +311,8 @@ async function testCatalog() {
       {
         id: "multiresolution",
         title: "Multiresolution convolution",
+        description:
+          "Splits local convolution into complementary low, mid, and high bands, uses different window scales, then recombines them.",
         rank: 1,
         windows: windows(),
         parameters: [
@@ -278,6 +328,8 @@ async function testCatalog() {
       {
         id: "sliding_wola",
         title: "Sliding WOLA convolution",
+        description:
+          "Convolves synchronized windows and merges them with Hann weighted overlap-add for a neutral local baseline.",
         rank: 2,
         windows: windows(),
         parameters: [taper],
@@ -285,6 +337,8 @@ async function testCatalog() {
       {
         id: "evolving_ir",
         title: "Dual evolving impulse response",
+        description:
+          "Crops every local convolution into A-sized and B-sized carriers, blends them, and overlap-adds the result.",
         rank: 3,
         windows: windows(),
         parameters: [
@@ -295,6 +349,8 @@ async function testCatalog() {
       {
         id: "chunk_crossfade",
         title: "Independent chunks + crossfade",
+        description:
+          "Convolves synchronized chunks and joins adjacent results with an equal-power crossfade of configurable length.",
         rank: 4,
         windows: windows(),
         parameters: [
@@ -305,6 +361,8 @@ async function testCatalog() {
       {
         id: "full_convolution",
         title: "Full linear convolution",
+        description:
+          "Convolves both complete 60-second clips as the smear reference and retains the final 60 seconds.",
         rank: 5,
         windows: [],
         parameters: [],
@@ -398,6 +456,24 @@ async function assertNoViewportOverflow(page) {
       layout.bodyScrollHeight <= layout.viewportHeight,
     `vertical overflow: ${JSON.stringify(layout)}`,
   );
+}
+
+async function assertControlTooltips(page) {
+  const missing = await page.locator("button, select, input, canvas, a[href]").evaluateAll(
+    (controls) =>
+      controls
+        .filter(
+          (control) =>
+            !control.title ||
+            control.title.trim().length < 40 ||
+            control.title.includes("undefined"),
+        )
+        .map(
+          (control) =>
+            `${control.tagName.toLowerCase()}#${control.id || control.getAttribute("aria-label") || control.textContent}`,
+        ),
+  );
+  assert.deepEqual(missing, [], `controls without explanatory hover tooltips: ${missing}`);
 }
 
 async function setAudioTime(page, seconds) {

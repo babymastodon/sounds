@@ -1,0 +1,8 @@
+/target/
+/samples/raw/
+/samples/prepared/
+/outputs/
+/app/src-tauri/target/
+/app/node_modules/
+/app/dist/
+

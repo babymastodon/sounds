@@ -3,6 +3,6 @@
 /samples/prepared/
 /outputs/
 /app/src-tauri/target/
+/app/src-tauri/gen/
 /app/node_modules/
 /app/dist/
-

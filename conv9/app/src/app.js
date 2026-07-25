@@ -28,16 +28,27 @@ const state = {
   preset: "short",
   waveformLayer: null,
   spectrumLayer: null,
-  loadGeneration: 0,
+  selectionGeneration: 0,
 };
 
 async function boot() {
   try {
     const tauri = window.__TAURI__;
-    if (!tauri?.core?.invoke || !tauri?.core?.convertFileSrc) {
-      throw new Error("This interface must be opened through the Tauri application.");
+    let bootstrap;
+    if (tauri?.core?.invoke && tauri?.core?.convertFileSrc) {
+      bootstrap = await tauri.core.invoke("load_bootstrap");
+    } else {
+      const response = await fetch("../../outputs/catalog.json");
+      if (!response.ok) {
+        throw new Error(
+          "No Tauri bridge and no ../../outputs/catalog.json browser-preview endpoint.",
+        );
+      }
+      bootstrap = {
+        catalog: await response.json(),
+        outputDir: "../../outputs",
+      };
     }
-    const bootstrap = await tauri.core.invoke("load_bootstrap");
     state.catalog = bootstrap.catalog;
     state.outputDir = bootstrap.outputDir;
     state.pairs = [...new Set(state.catalog.clips.map((clip) => clip.pair))].sort();
@@ -140,6 +151,7 @@ function bindEvents() {
 }
 
 async function selectClip(preservePlayback) {
+  const generation = ++state.selectionGeneration;
   const clip = state.catalog.clips.find(
     (candidate) =>
       candidate.pair === state.pair &&
@@ -154,18 +166,27 @@ async function selectClip(preservePlayback) {
   const oldDuration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
   const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
   const resume = preservePlayback && !ui.audio.paused;
-  const separator = state.outputDir.includes("\\") ? "\\" : "/";
-  const absolutePath = `${state.outputDir}${separator}${clip.path.replaceAll("/", separator)}`;
-  const url = window.__TAURI__.core.convertFileSrc(absolutePath);
+  const url = audioUrl(clip.path);
   ui.audio.src = url;
   ui.audio.load();
   await once(ui.audio, "loadedmetadata");
+  if (generation !== state.selectionGeneration) return;
   ui.audio.currentTime = Math.max(0, Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration));
   if (resume) {
     await ui.audio.play();
   }
   updateMetadata(clip);
-  await analyzeSelection(url);
+  await analyzeSelection(url, generation);
+}
+
+function audioUrl(relativePath) {
+  if (window.__TAURI__?.core?.convertFileSrc) {
+    const separator = state.outputDir.includes("\\") ? "\\" : "/";
+    const absolutePath =
+      `${state.outputDir}${separator}${relativePath.replaceAll("/", separator)}`;
+    return window.__TAURI__.core.convertFileSrc(absolutePath);
+  }
+  return new URL(`../../outputs/${relativePath}`, window.location.href).href;
 }
 
 function updateMetadata(clip) {
@@ -197,8 +218,7 @@ function metricMarkup(label, value) {
   return `<div><dt>${label}</dt><dd>${value}</dd></div>`;
 }
 
-async function analyzeSelection(url) {
-  const generation = ++state.loadGeneration;
+async function analyzeSelection(url, generation) {
   drawLoading(ui.waveform, "DECODING WAVEFORM");
   drawLoading(ui.spectrogram, "COMPUTING SPECTRAL FIELD");
   const response = await fetch(url);
@@ -207,7 +227,7 @@ async function analyzeSelection(url) {
   const context = new AudioContext();
   try {
     const decoded = await context.decodeAudioData(bytes);
-    if (generation !== state.loadGeneration) return;
+    if (generation !== state.selectionGeneration) return;
     const samples = decoded.getChannelData(0);
     state.waveformLayer = renderWaveformLayer(ui.waveform, samples);
     state.spectrumLayer = renderSpectrogramLayer(ui.spectrogram, samples, decoded.sampleRate);
@@ -481,4 +501,3 @@ function hideError() {
 }
 
 boot();
-

@@ -42,3 +42,16 @@ Generated index checksums:
 
 The output tree is intentionally ignored by Git and remains locally available. `conv9 verify` regenerates both indexes deterministically from the audio files and fails for any missing, extra, malformed, silent, non-finite, or clipped WAV.
 
+## Listener validation
+
+- `node --check app/src/app.js`: passed
+- Tauri 2.11.5 Rust dependency and application `cargo check`: passed
+- native Tauri debug executable link: passed
+- native executable startup against the generated catalog: remained healthy until the eight-second smoke-test timeout
+- browser-preview catalog: 792 / 792 entries
+- browser-preview selected WAV fetch/decode: passed
+- generated waveform canvas: passed
+- generated 2,048-point FFT log-frequency spectrogram: passed
+- empty error panel after visualization: confirmed
+
+This minimal Fedora workspace did not have Tauri's WebKitGTK/GLib development packages installed globally. Compile validation used the official Fedora prerequisite RPMs in a temporary user-owned library root; the repository itself contains no vendored native libraries. Normal builds should install the packages listed in `app/README.md`.

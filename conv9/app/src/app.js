@@ -58,8 +58,7 @@ async function boot() {
     state.pair = state.pairs[0];
     buildControls();
     bindEvents();
-    ui.matrixStatus.textContent =
-      `${state.catalog.clips.length} / ${state.catalog.expected_outputs} RENDERS`;
+    ui.matrixStatus.textContent = `${state.catalog.clips.length} renders`;
     await selectClip(false);
     requestAnimationFrame(animateCursor);
   } catch (error) {
@@ -84,7 +83,7 @@ function buildControls() {
     button.type = "button";
     button.dataset.value = algorithm.id;
     button.title = `${algorithm.title} · expected quality rank ${algorithm.rank}`;
-    button.textContent = `${algorithm.rank}. ${shortAlgorithm(algorithm.id)}`;
+    button.textContent = shortAlgorithm(algorithm.id);
     ui.algorithmButtons.append(button);
   }
   for (const preset of state.catalog.presets) {
@@ -197,20 +196,19 @@ function updateMetadata(clip) {
   ui.sourceB.innerHTML = sourceMarkup("B", right);
   const algorithm = state.catalog.algorithms.find((item) => item.id === state.algorithm);
   const preset = state.catalog.presets.find((item) => item.id === state.preset);
-  ui.renderTitle.textContent = `${algorithm.title} · ${preset.title}`;
+  ui.renderTitle.textContent = `${shortAlgorithm(algorithm.id)} / ${preset.id}`;
   ui.metrics.innerHTML = [
-    metricMarkup("RMS", `${clip.metrics.rms_dbfs.toFixed(1)} dBFS`),
-    metricMarkup("PEAK", `${(clip.metrics.peak * 100).toFixed(1)}%`),
-    metricMarkup("DC", clip.metrics.dc_offset.toExponential(1)),
+    metricMarkup("rms", `${clip.metrics.rms_dbfs.toFixed(1)} dbfs`),
+    metricMarkup("peak", `${(clip.metrics.peak * 100).toFixed(1)}%`),
   ].join("");
   ui.windowReadout.textContent =
-    `A ${preset.clip_a_seconds.toFixed(2)}s · B ${preset.clip_b_seconds.toFixed(2)}s · HOP ${preset.hop_seconds.toFixed(2)}s`;
+    `a ${preset.clip_a_seconds.toFixed(2)}s / b ${preset.clip_b_seconds.toFixed(2)}s / hop ${preset.hop_seconds.toFixed(2)}s`;
 }
 
 function sourceMarkup(label, source) {
-  return `<span class="field-label">SOURCE ${label} · ${escapeHtml(source.kind)}</span>
+  return `<span class="field-label">${label.toLowerCase()} / ${escapeHtml(source.kind)}</span>
     <strong>${escapeHtml(source.category)}</strong>
-    <small>${escapeHtml(source.creator)} · ${escapeHtml(source.license)} ·
+    <small>${escapeHtml(source.creator)} / ${escapeHtml(source.license)} /
       <a href="${escapeHtml(source.source_page)}">source</a></small>`;
 }
 
@@ -240,14 +238,9 @@ function renderWaveformLayer(canvas, samples) {
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   const { width, height } = layer;
-  context.fillStyle = "#090b0b";
+  context.fillStyle = "#181a19";
   context.fillRect(0, 0, width, height);
-  context.strokeStyle = "rgba(243,239,226,.1)";
-  context.beginPath();
-  context.moveTo(0, height / 2);
-  context.lineTo(width, height / 2);
-  context.stroke();
-  context.fillStyle = "#d8f150";
+  context.fillStyle = "#929e7c";
   const stride = samples.length / width;
   for (let x = 0; x < width; x++) {
     const start = Math.floor(x * stride);
@@ -384,7 +377,7 @@ function drawLayerWithCursor(canvas, layer, phase) {
   }
   context.drawImage(layer, 0, 0);
   const x = Math.round(phase * (canvas.width - 1)) + 0.5;
-  context.strokeStyle = "#ff725c";
+  context.strokeStyle = "#c77e69";
   context.lineWidth = Math.max(1, window.devicePixelRatio);
   context.beginPath();
   context.moveTo(x, 0);
@@ -449,10 +442,10 @@ function formatTime(seconds) {
 
 function shortAlgorithm(value) {
   return {
-    multiresolution: "MULTI",
-    sliding_wola: "WOLA",
-    evolving_ir: "IR",
-    chunk_crossfade: "CHUNKS",
+    multiresolution: "multi",
+    sliding_wola: "wola",
+    evolving_ir: "evolving ir",
+    chunk_crossfade: "chunks",
   }[value];
 }
 

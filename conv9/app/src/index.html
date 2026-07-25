@@ -9,27 +9,21 @@
   <body>
     <main class="shell">
       <header class="masthead">
-        <div>
-          <p class="eyebrow">CONVOLUTION FIELD STUDY / 09</p>
-          <h1>Lockstep Listener</h1>
-        </div>
-        <div class="status-cluster">
-          <span id="matrixStatus">Loading catalog…</span>
-          <span class="signal-dot" aria-hidden="true"></span>
-        </div>
+        <h1>conv9</h1>
+        <span id="matrixStatus">loading…</span>
       </header>
 
       <section class="selectors">
         <label class="pair-field">
-          <span>Source pair</span>
+          <span>pair</span>
           <select id="pairSelect" aria-label="Source pair"></select>
         </label>
         <div>
-          <span class="field-label">Algorithm · ranked</span>
+          <span class="field-label">method</span>
           <div id="algorithmButtons" class="segmented four"></div>
         </div>
         <div>
-          <span class="field-label">Window scale</span>
+          <span class="field-label">window</span>
           <div id="presetButtons" class="segmented three"></div>
         </div>
       </section>
@@ -43,8 +37,8 @@
       <section class="transport-panel">
         <div class="now-playing">
           <div>
-            <span class="field-label">Selected render</span>
             <h2 id="renderTitle">—</h2>
+            <span id="windowReadout"></span>
           </div>
           <dl class="metrics" id="metrics"></dl>
         </div>
@@ -55,7 +49,7 @@
           <input id="seek" type="range" min="0" max="60" value="0" step="0.001" aria-label="Seek" />
           <span id="duration">1:00.000</span>
           <label class="volume">
-            <span>VOL</span>
+            <span>vol</span>
             <input id="volume" type="range" min="0" max="1" value="0.8" step="0.01" />
           </label>
         </div>
@@ -65,29 +59,20 @@
       <section class="visuals">
         <article class="visual-card">
           <header>
-            <span>Waveform</span>
-            <small>click to seek</small>
+            <span>waveform</span>
           </header>
           <canvas id="waveform" height="220"></canvas>
         </article>
         <article class="visual-card spectrogram-card">
           <header>
-            <span>Spectral field</span>
-            <small>50 Hz — 20 kHz · click to seek</small>
+            <span>spectrum</span>
           </header>
           <canvas id="spectrogram" height="300"></canvas>
         </article>
       </section>
-
-      <footer>
-        <span>SPACE play/pause</span>
-        <span>← / → seek 5 seconds</span>
-        <span id="windowReadout"></span>
-      </footer>
     </main>
 
     <div id="errorPanel" class="error-panel" hidden></div>
     <script src="app.js"></script>
   </body>
 </html>
-

@@ -2,7 +2,7 @@
 
 This Tauri 2 desktop app renders conv9 selections on demand. At startup it loads the 12 prepared source WAVs into the Rust backend. A clip, method, window, or method-parameter change runs the convolution on a blocking worker, encodes the conditioned result to an in-memory PCM16 WAV, and returns it through raw binary IPC. The frontend creates one temporary `blob:` URL for playback and analysis; superseded blobs are revoked. Nothing is written to an output directory or retained as a render cache.
 
-The app uses environment-native window decorations with minimize and maximize disabled. Audio loops automatically. Method changes preserve playback phase and playing state. The interface is fixed to the available viewport and uses an 8,192-point spectrogram analysis with up to 2,880 time columns.
+The app uses environment-native window decorations with minimize and maximize disabled. Audio loops automatically. Method changes preserve playback phase and playing state. Render duration follows the method and parameters instead of being fixed to the one-minute inputs; full convolution also provides coupled offset/duration selectors for both clips. Each windowed method exposes overlap and its relevant alignment, crossfade, band, carrier, or crop controls without exposing safety/normalization internals. The interface is fixed to the available viewport and uses a 16,384-point spectrogram analysis with up to 2,880 time columns.
 
 Install the [official Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) first. On Fedora:
 

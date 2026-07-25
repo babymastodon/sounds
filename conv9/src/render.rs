@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::audio::{
-    AudioClip, AudioMetrics, OUTPUT_SECONDS, SAMPLE_RATE, condition_output, encode_pcm16,
+    AudioClip, AudioMetrics, INPUT_SECONDS, SAMPLE_RATE, condition_output, encode_pcm16,
     read_prepared_clip,
 };
 use crate::dsp::{
@@ -21,7 +21,7 @@ pub struct Catalog {
     pub mode: &'static str,
     pub sample_rate: u32,
     pub channels: u16,
-    pub output_seconds: usize,
+    pub input_seconds: usize,
     pub sources: Vec<SourceEntry>,
     pub algorithms: Vec<AlgorithmCatalogEntry>,
 }
@@ -105,11 +105,11 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 2,
+            schema_version: 4,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
-            output_seconds: OUTPUT_SECONDS,
+            input_seconds: INPUT_SECONDS,
             sources: self.sources.clone(),
             algorithms: Algorithm::ALL
                 .into_iter()
@@ -131,23 +131,30 @@ impl OnDemandRenderer {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<RenderedAudio> {
         let algorithm = Algorithm::from_str(&selection.algorithm)?;
+        let parameters = selection.parameters.validate(algorithm)?;
         let config = if algorithm == Algorithm::FullConvolution {
             None
         } else {
-            Some(WindowConfig::new(
-                selection
-                    .windows
-                    .get("clip_a_seconds")
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("missing clip A window"))?,
-                selection
-                    .windows
-                    .get("clip_b_seconds")
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("missing clip B window"))?,
-            )?)
+            let clip_a_seconds = selection
+                .windows
+                .get("clip_a_seconds")
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("missing clip A window"))?;
+            let clip_b_seconds = selection
+                .windows
+                .get("clip_b_seconds")
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("missing clip B window"))?;
+            Some(if algorithm == Algorithm::ChunkCrossfade {
+                WindowConfig::for_chunks(clip_a_seconds, clip_b_seconds)?
+            } else {
+                WindowConfig::new(
+                    clip_a_seconds,
+                    clip_b_seconds,
+                    parameters.window_overlap_percent,
+                )?
+            })
         };
-        let parameters = selection.parameters.validate(algorithm)?;
         let left = self.clip(&selection.left_id)?;
         let right = self.clip(&selection.right_id)?;
         let mut output =
@@ -226,21 +233,59 @@ fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
 
 fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
     let defaults = AlgorithmParameters::default();
-    let taper = || ParameterCatalogEntry {
+    let crossfade = || ParameterCatalogEntry {
         id: "taper",
-        label: "taper",
+        label: "crossfade",
         minimum: 0.05,
         maximum: 1.0,
         step: 0.01,
         default: defaults.taper,
         unit: "",
-        description: "Sets the Tukey window taper fraction. Higher values soften a larger portion \
-                      of each window edge, reducing spectral leakage and boundary clicks while \
-                      giving the window center more influence.",
+        description: "Shapes both the Tukey analysis window and the normalized raised-cosine \
+                      synthesis crossfade between overlapping convolution results. Higher values \
+                      make the transition longer and more gradual; 1 uses the full window.",
+    };
+    let analysis_taper = || ParameterCatalogEntry {
+        id: "taper",
+        label: "edge taper",
+        minimum: 0.05,
+        maximum: 1.0,
+        step: 0.01,
+        default: defaults.taper,
+        unit: "",
+        description: "Sets the Tukey taper applied to each independent input chunk before \
+                      convolution. Higher values soften more of each chunk edge to reduce spectral \
+                      leakage; chunk-to-chunk blending is controlled separately by overlap.",
+    };
+    let overlap = || ParameterCatalogEntry {
+        id: "window_overlap_percent",
+        label: "overlap",
+        minimum: 5.0,
+        maximum: 80.0,
+        step: 1.0,
+        default: defaults.window_overlap_percent,
+        unit: "%",
+        description: "Sets how much of the shorter A/B analysis window overlaps the next timeline \
+                      position, guaranteeing overlap for both inputs. Higher values make local \
+                      transitions denser and smoother but render more FFT blocks.",
+    };
+    let timeline_offset = || ParameterCatalogEntry {
+        id: "window_b_offset_seconds",
+        label: "B offset",
+        minimum: -30.0,
+        maximum: 30.0,
+        step: 0.1,
+        default: defaults.window_b_offset_seconds,
+        unit: "s",
+        description: "Offsets clip B's scan position relative to clip A at every window. Positive \
+                      values read B later and negative values read it earlier; reflected boundaries \
+                      preserve a continuous source without adding dry audio.",
     };
     match algorithm {
         Algorithm::Multiresolution => vec![
-            taper(),
+            crossfade(),
+            overlap(),
+            timeline_offset(),
             ParameterCatalogEntry {
                 id: "multires_low_scale",
                 label: "low scale",
@@ -298,7 +343,8 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 default: defaults.multires_low_split_hz,
                 unit: "hz",
                 description: "Sets the center frequency of the raised-cosine low-to-mid band split. \
-                              The smooth transition spans approximately 70% to 130% of this value.",
+                              The split-width control sets how broadly the neighboring bands blend \
+                              around this frequency.",
             },
             ParameterCatalogEntry {
                 id: "multires_high_split_hz",
@@ -309,12 +355,27 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 default: defaults.multires_high_split_hz,
                 unit: "hz",
                 description: "Sets the center frequency of the raised-cosine mid-to-high band split. \
-                              The smooth transition spans approximately 70% to 130% of this value.",
+                              The split-width control sets how broadly the neighboring bands blend \
+                              around this frequency.",
+            },
+            ParameterCatalogEntry {
+                id: "multires_transition_width",
+                label: "split width",
+                minimum: 0.05,
+                maximum: 0.75,
+                step: 0.01,
+                default: defaults.multires_transition_width,
+                unit: "",
+                description: "Sets the fractional width of both raised-cosine crossover regions. \
+                              Smaller values isolate bands more sharply; larger values blend them \
+                              broadly while normalized band masks keep their sum equal to one.",
             },
         ],
-        Algorithm::SlidingWola => vec![taper()],
+        Algorithm::SlidingWola => vec![crossfade(), overlap(), timeline_offset()],
         Algorithm::EvolvingIr => vec![
-            taper(),
+            crossfade(),
+            overlap(),
+            timeline_offset(),
             ParameterCatalogEntry {
                 id: "evolving_a_mix",
                 label: "A carrier",
@@ -327,23 +388,109 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               B-sized carrier, 1 keeps only the A-sized carrier, and 0.5 gives both \
                               equal synthesis weight.",
             },
+            ParameterCatalogEntry {
+                id: "evolving_mix_motion",
+                label: "carrier motion",
+                minimum: -1.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.evolving_mix_motion,
+                unit: "",
+                description: "Moves the A/B carrier balance over the output timeline around the \
+                              selected midpoint mix. Positive values evolve toward A; negative \
+                              values evolve toward B, with clamping at either pure carrier.",
+            },
+            ParameterCatalogEntry {
+                id: "evolving_crop_position",
+                label: "crop position",
+                minimum: 0.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.evolving_crop_position,
+                unit: "",
+                description: "Chooses which region of each complete local convolution becomes the \
+                              A- and B-sized carriers. 0 keeps the onset, 0.5 keeps the center, and \
+                              1 keeps the decaying tail.",
+            },
         ],
         Algorithm::ChunkCrossfade => vec![
-            taper(),
+            analysis_taper(),
             ParameterCatalogEntry {
                 id: "chunk_crossfade_percent",
-                label: "crossfade",
+                label: "overlap",
                 minimum: 5.0,
                 maximum: 75.0,
                 step: 1.0,
                 default: defaults.chunk_crossfade_percent,
                 unit: "%",
-                description: "Sets the equal-power overlap as a percentage of the longer A/B chunk. \
-                              Higher values make smoother, longer transitions; lower values preserve \
-                              harder chunk boundaries. The resulting seconds appear below.",
+                description: "Sets the equal-power overlap as a percentage of the shorter A/B chunk, \
+                              which is the convolution support available beyond the longer timeline \
+                              slot. Higher values make smoother, longer transitions.",
+            },
+            timeline_offset(),
+            ParameterCatalogEntry {
+                id: "chunk_crop_position",
+                label: "crop position",
+                minimum: 0.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.chunk_crop_position,
+                unit: "",
+                description: "Chooses where each timeline-sized block is cropped from its complete \
+                              A+B local convolution. 0 favors the onset, 0.5 keeps the center, and \
+                              1 favors the convolution tail before equal-power overlap.",
             },
         ],
-        Algorithm::FullConvolution => Vec::new(),
+        Algorithm::FullConvolution => vec![
+            ParameterCatalogEntry {
+                id: "full_a_offset_seconds",
+                label: "A offset",
+                minimum: 0.0,
+                maximum: INPUT_SECONDS as f32 - 0.1,
+                step: 0.1,
+                default: defaults.full_a_offset_seconds,
+                unit: "s",
+                description: "Sets where the selected segment begins in clip A. The segment is \
+                              convolved from this exact source time; changing the offset never pads \
+                              or wraps the source and may shorten the current duration to fit.",
+            },
+            ParameterCatalogEntry {
+                id: "full_a_duration_seconds",
+                label: "A duration",
+                minimum: 0.1,
+                maximum: INPUT_SECONDS as f32,
+                step: 0.1,
+                default: defaults.full_a_duration_seconds,
+                unit: "s",
+                description: "Sets the duration of clip A's selected segment. It defaults to the \
+                              complete 60-second source and is automatically kept within the clip \
+                              after the selected A offset.",
+            },
+            ParameterCatalogEntry {
+                id: "full_b_offset_seconds",
+                label: "B offset",
+                minimum: 0.0,
+                maximum: INPUT_SECONDS as f32 - 0.1,
+                step: 0.1,
+                default: defaults.full_b_offset_seconds,
+                unit: "s",
+                description: "Sets where the selected segment begins in clip B. The segment is \
+                              convolved from this exact source time; changing the offset never pads \
+                              or wraps the source and may shorten the current duration to fit.",
+            },
+            ParameterCatalogEntry {
+                id: "full_b_duration_seconds",
+                label: "B duration",
+                minimum: 0.1,
+                maximum: INPUT_SECONDS as f32,
+                step: 0.1,
+                default: defaults.full_b_duration_seconds,
+                unit: "s",
+                description: "Sets the duration of clip B's selected segment. It defaults to the \
+                              complete 60-second source and is automatically kept within the clip \
+                              after the selected B offset.",
+            },
+        ],
     }
 }
 
@@ -357,7 +504,12 @@ mod tests {
             assert!(algorithm.description().len() > 100);
             let parameters = parameter_catalog(algorithm);
             if algorithm == Algorithm::FullConvolution {
-                assert!(parameters.is_empty());
+                assert_eq!(parameters.len(), 4);
+                assert!(
+                    parameters
+                        .iter()
+                        .all(|parameter| parameter.description.len() > 80)
+                );
                 assert!(window_catalog(algorithm).is_empty());
             } else {
                 assert!(!parameters.is_empty());
@@ -381,5 +533,53 @@ mod tests {
                 .iter()
                 .any(|parameter| parameter.id == "chunk_crossfade_percent")
         );
+
+        let required = [
+            (
+                Algorithm::Multiresolution,
+                &[
+                    "taper",
+                    "window_overlap_percent",
+                    "window_b_offset_seconds",
+                    "multires_transition_width",
+                ][..],
+            ),
+            (
+                Algorithm::SlidingWola,
+                &["taper", "window_overlap_percent", "window_b_offset_seconds"][..],
+            ),
+            (
+                Algorithm::EvolvingIr,
+                &[
+                    "taper",
+                    "window_overlap_percent",
+                    "window_b_offset_seconds",
+                    "evolving_a_mix",
+                    "evolving_mix_motion",
+                    "evolving_crop_position",
+                ][..],
+            ),
+            (
+                Algorithm::ChunkCrossfade,
+                &[
+                    "taper",
+                    "chunk_crossfade_percent",
+                    "window_b_offset_seconds",
+                    "chunk_crop_position",
+                ][..],
+            ),
+        ];
+        for (algorithm, required_ids) in required {
+            let parameters = parameter_catalog(algorithm);
+            for required_id in required_ids {
+                assert!(
+                    parameters
+                        .iter()
+                        .any(|parameter| parameter.id == *required_id),
+                    "{} is missing {required_id}",
+                    algorithm.slug()
+                );
+            }
+        }
     }
 }

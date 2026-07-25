@@ -7,8 +7,8 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 
 pub const SAMPLE_RATE: u32 = 48_000;
-pub const OUTPUT_SECONDS: usize = 60;
-pub const OUTPUT_FRAMES: usize = SAMPLE_RATE as usize * OUTPUT_SECONDS;
+pub const INPUT_SECONDS: usize = 60;
+pub const INPUT_FRAMES: usize = SAMPLE_RATE as usize * INPUT_SECONDS;
 const INPUT_TARGET_RMS: f32 = 0.10;
 const OUTPUT_TARGET_RMS: f32 = 0.095;
 const OUTPUT_CEILING: f32 = 0.92;
@@ -60,15 +60,15 @@ pub fn read_prepared_clip(id: &str, path: &Path) -> Result<AudioClip> {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         }
     };
-    if samples.len().abs_diff(OUTPUT_FRAMES) > 2 {
+    if samples.len().abs_diff(INPUT_FRAMES) > 2 {
         bail!(
             "{} has {} frames; expected {}",
             path.display(),
             samples.len(),
-            OUTPUT_FRAMES
+            INPUT_FRAMES
         );
     }
-    samples.resize(OUTPUT_FRAMES, 0.0);
+    samples.resize(INPUT_FRAMES, 0.0);
     condition_input(&mut samples)?;
     Ok(AudioClip {
         id: id.to_owned(),
@@ -91,7 +91,7 @@ fn condition_input(samples: &mut [f32]) -> Result<()> {
 }
 
 pub fn condition_output(samples: &mut [f32]) -> Result<AudioMetrics> {
-    ensure_signal(samples, "raw windowed convolution")?;
+    ensure_signal(samples, "raw convolution")?;
     remove_mean(samples);
     high_pass(samples, 18.0);
     remove_mean(samples);
@@ -119,16 +119,13 @@ pub fn condition_output(samples: &mut [f32]) -> Result<AudioMetrics> {
     }
     edge_fade(samples, 0.02);
     let metrics = measure(samples);
-    validate_metrics(&metrics, OUTPUT_FRAMES, "conditioned output")?;
+    validate_metrics(&metrics, samples.len(), "conditioned output")?;
     Ok(metrics)
 }
 
 pub fn encode_pcm16(samples: &[f32]) -> Result<Vec<u8>> {
-    if samples.len() != OUTPUT_FRAMES {
-        bail!(
-            "refusing to encode {} frames; expected {OUTPUT_FRAMES}",
-            samples.len()
-        );
+    if samples.is_empty() {
+        bail!("refusing to encode an empty waveform");
     }
     let spec = WavSpec {
         channels: 1,
@@ -241,5 +238,22 @@ fn edge_fade(samples: &mut [f32], seconds: f32) {
         samples[index] *= gain;
         let tail = samples.len() - 1 - index;
         samples[tail] *= gain;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcm_encoder_preserves_variable_output_length() {
+        let frames = SAMPLE_RATE as usize * 2 + 137;
+        let samples = (0..frames)
+            .map(|frame| (2.0 * PI * 220.0 * frame as f32 / SAMPLE_RATE as f32).sin() * 0.2)
+            .collect::<Vec<_>>();
+        let bytes = encode_pcm16(&samples).unwrap();
+        let reader = WavReader::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.duration() as usize, frames);
+        assert_eq!(reader.spec().sample_rate, SAMPLE_RATE);
     }
 }

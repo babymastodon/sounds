@@ -100,9 +100,12 @@ try {
       ? value
       : undefined;
   }, 180_000);
-  assert.equal(initial.duration, 60);
+  assert.ok(
+    Math.abs(initial.duration - 76) < 0.02,
+    `default multiresolution duration was ${initial.duration}`,
+  );
   assert.match(initial.source, /^blob:tauri:/);
-  assert.match(initial.path, /multiresolution\/5\.00x5\.00$/);
+  assert.match(initial.path, /multiresolution\/5\.00x5\.00\//);
   assert.equal(initial.loop, true);
   assert.equal(initial.title, "multi");
   assert.match(initial.status, /^rendered \d+ ms$/);
@@ -111,7 +114,7 @@ try {
   assert.equal(initial.methodCount, 5);
   assert.equal(initial.windowCount, 2);
   assert.deepEqual(initial.missingTooltips, []);
-  assert.equal(initial.fftSize, "8192");
+  assert.equal(initial.fftSize, "16384");
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");
   assert.ok(initial.viewport.scrollHeight <= initial.viewport.height, "native vertical overflow");
@@ -154,7 +157,7 @@ try {
   await execute(port, sessionId, `
     document.querySelector("#algorithmButtons button[data-value='chunk_crossfade']").click();
     const setCrossfade = () => {
-      const input = document.querySelector("input[aria-label='crossfade exact value']");
+      const input = document.querySelector("input[aria-label='overlap exact value']");
       if (!input) return false;
       input.value = "40";
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -166,6 +169,7 @@ try {
     const value = await execute(port, sessionId, `
       const audio = document.querySelector("#audio");
       return {
+        duration: audio.duration,
         source: audio.currentSrc,
         path: audio.dataset.path,
         title: document.querySelector("#renderTitle")?.textContent,
@@ -179,8 +183,49 @@ try {
       value.status?.startsWith("rendered ") ? value : undefined;
   }, 180_000);
   assert.equal(chunked.title, "chunks");
+  assert.ok(
+    Math.abs(chunked.duration - 62) < 0.02,
+    `chunk duration was ${chunked.duration}`,
+  );
   assert.match(chunked.readout, /40%/);
   assert.equal(chunked.errorHidden, true, chunked.error);
+
+  for (const [algorithm, expectedDuration] of [
+    ["sliding_wola", 70],
+    ["evolving_ir", 65],
+  ]) {
+    await execute(
+      port,
+      sessionId,
+      `document.querySelector(
+        "#algorithmButtons button[data-value='${algorithm}']"
+      ).click(); return true;`,
+    );
+    const rendered = await poll(async () => {
+      const value = await execute(port, sessionId, `
+        const audio = document.querySelector("#audio");
+        return {
+          duration: audio.duration,
+          path: audio.dataset.path,
+          status: document.querySelector("#renderStatus")?.textContent,
+          error: document.querySelector("#errorPanel")?.textContent,
+          errorHidden: document.querySelector("#errorPanel")?.hidden
+        };
+      `);
+      if (
+        value.path.includes(`/${algorithm}/`) &&
+        value.status?.startsWith("rendered ")
+      ) {
+        return value;
+      }
+      throw new Error(`waiting for ${algorithm}: ${JSON.stringify(value)}`);
+    }, 90_000);
+    assert.ok(
+      Math.abs(rendered.duration - expectedDuration) < 0.02,
+      `${algorithm} duration was ${rendered.duration}`,
+    );
+    assert.equal(rendered.errorHidden, true, rendered.error);
+  }
 
   await execute(
     port,
@@ -203,15 +248,54 @@ try {
         errorHidden: document.querySelector("#errorPanel")?.hidden
       };
     `);
-    return value.path.endsWith("/full_convolution/full") &&
+    return value.path.endsWith(
+      "/full_convolution/a0.00+60.00_b0.00+60.00",
+    ) &&
       value.status?.startsWith("rendered ") ? value : undefined;
   }, 180_000);
-  assert.equal(full.duration, 60);
+  assert.ok(
+    Math.abs(full.duration - 120) < 0.02,
+    `default full-convolution duration was ${full.duration}`,
+  );
   assert.equal(full.paused, false);
   assert.equal(full.title, "full");
-  assert.equal(full.toolInputs, 0);
+  assert.equal(full.toolInputs, 8);
   assert.equal(full.errorHidden, true, full.error);
   assert.notEqual(full.source, initial.source, "full convolution received a new in-memory WAV");
+
+  await execute(port, sessionId, `
+    const setValue = (label, value) => {
+      const input = document.querySelector(\`input[aria-label="\${label} exact value"]\`);
+      input.value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setValue("A offset", 10);
+    setValue("A duration", 20);
+    setValue("B duration", 15);
+    return true;
+  `);
+  const segmentedFull = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const audio = document.querySelector("#audio");
+      return {
+        duration: audio.duration,
+        path: audio.dataset.path,
+        status: document.querySelector("#renderStatus")?.textContent,
+        readout: document.querySelector("#windowReadout")?.textContent,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.path.endsWith(
+      "/full_convolution/a10.00+20.00_b0.00+15.00",
+    ) && value.status?.startsWith("rendered ") ? value : undefined;
+  }, 180_000);
+  assert.ok(
+    Math.abs(segmentedFull.duration - 35) < 0.02,
+    `segmented full-convolution duration was ${segmentedFull.duration}`,
+  );
+  assert.match(segmentedFull.readout, /out 35\.00s/);
+  assert.equal(segmentedFull.errorHidden, true, segmentedFull.error);
 
   await captureMonitor();
   const fullSignal = analyzePcm16(await readFile(capturePath));
@@ -377,12 +461,21 @@ function command(binary, arguments_) {
 
 async function poll(check, timeout = 30_000) {
   const deadline = Date.now() + timeout;
+  let lastError;
   while (Date.now() < deadline) {
-    const result = await check();
-    if (result !== undefined) return result;
+    try {
+      const result = await check();
+      if (result !== undefined) return result;
+    } catch (error) {
+      // WebKitWebDriver can transiently reject script-result serialization
+      // while the webview's synchronous spectrum pass owns the UI thread.
+      lastError = error;
+    }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
   }
-  throw new Error("timed out waiting for native app state");
+  throw new Error(
+    `timed out waiting for native app state${lastError ? `: ${lastError.message}` : ""}`,
+  );
 }
 
 async function availablePort() {

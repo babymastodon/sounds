@@ -180,7 +180,7 @@ function buildMethodTools() {
   if (!algorithm.windows.length && !algorithm.parameters.length) {
     const summary = document.createElement("span");
     summary.className = "method-summary";
-    summary.textContent = "entire 60s × 60s / linear convolution / final 60s retained";
+    summary.textContent = "no configurable parameters";
     ui.methodTools.append(summary);
     return;
   }
@@ -207,6 +207,7 @@ function toolControl(descriptor, target, options = {}) {
   inputs.className = "tool-inputs";
   const slider = document.createElement("input");
   slider.type = "range";
+  slider.dataset.controlId = descriptor.id;
   slider.ariaLabel = descriptor.label;
   slider.setAttribute("aria-description", descriptor.description);
   const scaleExplanation = options.logarithmic
@@ -218,6 +219,7 @@ function toolControl(descriptor, target, options = {}) {
     `Changing it triggers a new on-demand render.`;
   const number = document.createElement("input");
   number.type = "number";
+  number.dataset.controlId = descriptor.id;
   number.min = descriptor.minimum;
   number.max = descriptor.maximum;
   number.step = descriptor.step;
@@ -252,11 +254,13 @@ function toolControl(descriptor, target, options = {}) {
     }
     const safe = clamp(roundToStep(value, descriptor.step), descriptor.minimum, descriptor.maximum);
     target[descriptor.id] = safe;
+    normalizeFullSegments(target, descriptor.id);
     number.value = formatControlValue(safe, descriptor.step);
     slider.value = options.logarithmic
       ? logPosition(safe, descriptor.minimum, descriptor.maximum)
       : safe;
     slider.setAttribute("aria-valuetext", `${number.value}${unit.textContent}`);
+    syncCoupledControls(target, descriptor.id);
     scheduleSelection(true);
   };
   slider.addEventListener("input", () => {
@@ -333,10 +337,12 @@ async function selectClip(preservePlayback, generation) {
       await ui.audio.play();
     }
     updateMetadata(rendered.header, settings);
-    await analyzeSelection(analysisBytes, generation);
     if (generation === state.selectionGeneration) {
       ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
     }
+    void analyzeSelection(analysisBytes, generation).catch((error) => {
+      if (generation === state.selectionGeneration) showError(error);
+    });
   } catch (error) {
     if (generation === state.selectionGeneration) {
       ui.renderStatus.textContent = "failed";
@@ -354,16 +360,26 @@ function updateMetadata(header, settings) {
   const clipASeconds = header.windows.clip_a_seconds;
   const clipBSeconds = header.windows.clip_b_seconds;
   if (clipASeconds == null) {
-    ui.windowReadout.textContent = "full 60s × 60s / final 60s retained";
+    const parameters = settings.parameters;
+    ui.windowReadout.textContent =
+      `a ${parameters.full_a_duration_seconds.toFixed(1)}s @ ` +
+      `${parameters.full_a_offset_seconds.toFixed(1)}s / ` +
+      `b ${parameters.full_b_duration_seconds.toFixed(1)}s @ ` +
+      `${parameters.full_b_offset_seconds.toFixed(1)}s / ` +
+      `out ${header.metrics.duration_seconds.toFixed(2)}s`;
   } else {
     let readout =
       `a ${clipASeconds.toFixed(2)}s / b ${clipBSeconds.toFixed(2)}s / ` +
       `hop ${header.hopSeconds.toFixed(2)}s`;
     if (state.algorithm === "chunk_crossfade") {
       const percentage = settings.parameters.chunk_crossfade_percent;
-      const duration = Math.max(clipASeconds, clipBSeconds) * percentage / 100;
-      readout += ` / fade ${duration.toFixed(2)}s (${percentage.toFixed(0)}%)`;
+      const duration = Math.min(clipASeconds, clipBSeconds) * percentage / 100;
+      readout += ` / overlap ${duration.toFixed(2)}s (${percentage.toFixed(0)}%)`;
+    } else {
+      readout += ` / overlap ${settings.parameters.window_overlap_percent.toFixed(0)}%`;
     }
+    readout += ` / b shift ${settings.parameters.window_b_offset_seconds.toFixed(1)}s`;
+    readout += ` / out ${header.metrics.duration_seconds.toFixed(2)}s`;
     ui.windowReadout.textContent = readout;
   }
 }
@@ -389,10 +405,51 @@ function selectedAlgorithm() {
 }
 
 function selectionSignature(request) {
-  const windows = request.windows.clip_a_seconds == null
-    ? "full"
-    : `${request.windows.clip_a_seconds.toFixed(2)}x${request.windows.clip_b_seconds.toFixed(2)}`;
-  return `${request.leftId}__${request.rightId}/${request.algorithm}/${windows}`;
+  if (request.windows.clip_a_seconds == null) {
+    const segments = `a${request.parameters.full_a_offset_seconds.toFixed(2)}+` +
+      `${request.parameters.full_a_duration_seconds.toFixed(2)}_` +
+      `b${request.parameters.full_b_offset_seconds.toFixed(2)}+` +
+      `${request.parameters.full_b_duration_seconds.toFixed(2)}`;
+    return `${request.leftId}__${request.rightId}/${request.algorithm}/${segments}`;
+  }
+  const windows =
+    `${request.windows.clip_a_seconds.toFixed(2)}x` +
+    `${request.windows.clip_b_seconds.toFixed(2)}`;
+  const parameters = Object.entries(request.parameters)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, value]) => `${id}=${Number(value).toFixed(2)}`)
+    .join(",");
+  return `${request.leftId}__${request.rightId}/${request.algorithm}/${windows}/${parameters}`;
+}
+
+function normalizeFullSegments(target, changedId) {
+  if (!changedId.startsWith("full_")) return;
+  const clip = changedId.startsWith("full_a_") ? "a" : "b";
+  const offsetId = `full_${clip}_offset_seconds`;
+  const durationId = `full_${clip}_duration_seconds`;
+  if (changedId === offsetId && target[offsetId] + target[durationId] > 60) {
+    target[durationId] = roundToStep(Math.max(0.1, 60 - target[offsetId]), 0.1);
+  } else if (changedId === durationId && target[offsetId] + target[durationId] > 60) {
+    target[offsetId] = roundToStep(Math.max(0, 60 - target[durationId]), 0.1);
+  }
+}
+
+function syncCoupledControls(target, changedId) {
+  if (!changedId.startsWith("full_")) return;
+  const clip = changedId.startsWith("full_a_") ? "a" : "b";
+  for (const id of [`full_${clip}_offset_seconds`, `full_${clip}_duration_seconds`]) {
+    const value = target[id];
+    const number = ui.methodTools.querySelector(
+      `input[type="number"][data-control-id="${id}"]`,
+    );
+    const slider = ui.methodTools.querySelector(
+      `input[type="range"][data-control-id="${id}"]`,
+    );
+    if (!number || !slider) continue;
+    number.value = formatControlValue(value, Number(number.step));
+    slider.value = value;
+    slider.setAttribute("aria-valuetext", `${number.value}s`);
+  }
 }
 
 function parseEnvelope(raw) {
@@ -513,8 +570,10 @@ function renderSpectrogramLayer(canvas, samples, sampleRate) {
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   const { width, height } = layer;
-  const columns = Math.min(width, 2880);
-  const fftSize = 8192;
+  // One analysis column per CSS pixel retains all visible time detail while
+  // avoiding duplicate FFT work solely for a high-DPI backing store.
+  const columns = Math.min(Math.max(1, Math.ceil(canvas.clientWidth || width)), 2880);
+  const fftSize = 16384;
   canvas.dataset.fftSize = String(fftSize);
   canvas.dataset.analysisColumns = String(columns);
   const real = new Float64Array(fftSize);

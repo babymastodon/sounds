@@ -41,6 +41,23 @@ try {
   await page.addInitScript((injectedCatalog) => {
     window.__CONV9_TEST_REQUESTS__ = [];
     window.__CONV9_TEST_LATEST__ = 0;
+    window.__CONV9_STATUS_HISTORY__ = [];
+    document.addEventListener("DOMContentLoaded", () => {
+      const status = document.querySelector("#renderStatus");
+      const record = () => {
+        window.__CONV9_STATUS_HISTORY__.push({
+          status: status?.textContent,
+          playDisabled: document.querySelector("#playButton")?.disabled,
+          seekDisabled: document.querySelector("#seek")?.disabled,
+        });
+      };
+      new MutationObserver(record).observe(status, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      record();
+    });
     window.__CONV9_TEST_BRIDGE__ = {
       loadBootstrap: async () => ({ catalog: injectedCatalog }),
       supersedeRender: (requestId) => {
@@ -103,7 +120,30 @@ try {
   });
 
   await page.goto(`${baseUrl}/app/src/`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#renderStatus")?.textContent === "rendering…" &&
+      document.querySelector("#playButton")?.disabled,
+  );
+  await page.locator("#playButton").evaluate((button) => button.click());
+  assert.equal(
+    await page.locator("#audio").evaluate((audio) => audio.paused),
+    true,
+    "startup play is inert until rendering and analysis are complete",
+  );
   await waitForReady(page);
+  assert.equal(await page.locator("#playButton").isEnabled(), true);
+  assert.equal(await page.locator("#seek").isEnabled(), true);
+  const statusHistory = await page.evaluate(() => window.__CONV9_STATUS_HISTORY__);
+  assert.ok(
+    statusHistory.some(
+      (entry) =>
+        entry.status === "analyzing…" &&
+        entry.playDisabled === true &&
+        entry.seekDisabled === true,
+    ),
+    `transport was not locked during visualization analysis: ${JSON.stringify(statusHistory)}`,
+  );
 
   assert.equal(await page.locator("#sourceASelect option").count(), 12, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 12, "clip B count");

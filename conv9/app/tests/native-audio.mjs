@@ -76,6 +76,8 @@ try {
         sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
         methodCount: document.querySelectorAll("#algorithmButtons button").length,
         windowCount: document.querySelectorAll("#methodTools .window-control").length,
+        playDisabled: document.querySelector("#playButton")?.disabled,
+        seekDisabled: document.querySelector("#seek")?.disabled,
         missingTooltips: [...document.querySelectorAll("button, select, input, canvas, a[href]")]
           .filter((control) =>
             !control.title ||
@@ -113,6 +115,8 @@ try {
   assert.equal(initial.sourceBCount, 12);
   assert.equal(initial.methodCount, 5);
   assert.equal(initial.windowCount, 2);
+  assert.equal(initial.playDisabled, false);
+  assert.equal(initial.seekDisabled, false);
   assert.deepEqual(initial.missingTooltips, []);
   assert.equal(initial.fftSize, "16384");
   assert.equal(initial.errorHidden, true, initial.error);

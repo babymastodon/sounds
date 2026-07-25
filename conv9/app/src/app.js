@@ -33,6 +33,7 @@ const state = {
   analysisSamples: null,
   analysisSampleRate: 0,
   audioObjectUrl: "",
+  audioReady: false,
   selectionGeneration: 0,
   selectionTimer: 0,
 };
@@ -153,6 +154,7 @@ function bindEvents() {
   ui.audio.volume = Number(ui.volume.value);
   for (const canvas of [ui.waveform, ui.spectrogram]) {
     canvas.addEventListener("click", (event) => {
+      if (!state.audioReady) return;
       const bounds = canvas.getBoundingClientRect();
       const phase = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
       ui.audio.currentTime = phase * (ui.audio.duration || 60);
@@ -165,8 +167,10 @@ function bindEvents() {
       event.preventDefault();
       void togglePlayback().catch(showError);
     } else if (event.code === "ArrowLeft") {
+      if (!state.audioReady) return;
       ui.audio.currentTime = Math.max(0, ui.audio.currentTime - 5);
     } else if (event.code === "ArrowRight") {
+      if (!state.audioReady) return;
       ui.audio.currentTime = Math.min(ui.audio.duration || 60, ui.audio.currentTime + 5);
     }
   });
@@ -321,6 +325,7 @@ async function selectClip(preservePlayback, generation) {
     const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
     const previousObjectUrl = state.audioObjectUrl;
     state.audioObjectUrl = objectUrl;
+    setTransportReady(false);
     ui.audio.dataset.path = selectionSignature(request);
     const metadataLoaded = once(ui.audio, "loadedmetadata");
     ui.audio.src = objectUrl;
@@ -333,16 +338,13 @@ async function selectClip(preservePlayback, generation) {
       0,
       Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration),
     );
-    if (resume) {
-      await ui.audio.play();
-    }
     updateMetadata(rendered.header, settings);
-    if (generation === state.selectionGeneration) {
-      ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
-    }
-    void analyzeSelection(analysisBytes, generation).catch((error) => {
-      if (generation === state.selectionGeneration) showError(error);
-    });
+    ui.renderStatus.textContent = "analyzing…";
+    await analyzeSelection(analysisBytes, generation);
+    if (generation !== state.selectionGeneration) return;
+    setTransportReady(true);
+    ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
+    if (resume) await ui.audio.play();
   } catch (error) {
     if (generation === state.selectionGeneration) {
       ui.renderStatus.textContent = "failed";
@@ -729,6 +731,7 @@ function refreshButtons() {
 }
 
 async function togglePlayback() {
+  if (!state.audioReady) return;
   if (ui.audio.paused) {
     await ui.audio.play();
     hideError();
@@ -738,6 +741,13 @@ async function togglePlayback() {
 }
 
 function refreshPlayButton() {
+  if (!state.audioReady) {
+    ui.playButton.textContent = "▶";
+    ui.playButton.setAttribute("aria-label", "Play");
+    ui.playButton.title =
+      "Playback becomes available after the current convolution and its visualizations are ready.";
+    return;
+  }
   ui.playButton.textContent = ui.audio.paused ? "▶" : "❚❚";
   ui.playButton.setAttribute("aria-label", ui.audio.paused ? "Play" : "Pause");
   ui.playButton.title = ui.audio.paused
@@ -745,8 +755,15 @@ function refreshPlayButton() {
     : "Pause playback at the current position. The rendered audio remains in memory and can resume from this point.";
 }
 
+function setTransportReady(ready) {
+  state.audioReady = ready;
+  ui.playButton.disabled = !ready;
+  ui.seek.disabled = !ready;
+  refreshPlayButton();
+}
+
 function refreshTransport() {
-  const duration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
+  const duration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 0;
   ui.seek.max = duration;
   if (!ui.seek.matches(":active")) ui.seek.value = ui.audio.currentTime;
   ui.currentTime.textContent = formatTime(ui.audio.currentTime);

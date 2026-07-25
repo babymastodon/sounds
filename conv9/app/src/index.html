@@ -61,21 +61,23 @@
             id="playButton"
             class="play"
             type="button"
+            disabled
             aria-label="Play"
-            title="Play the current in-memory convolution from its present position. Playback loops automatically at the end."
+            title="Playback becomes available after the first convolution and its visualizations are ready."
           >▶</button>
           <span id="currentTime">0:00.000</span>
           <input
             id="seek"
             type="range"
             min="0"
-            max="60"
+            max="0"
             value="0"
             step="0.001"
+            disabled
             aria-label="Seek"
-            title="Move the playback position through the 60-second render. The waveform and spectrogram cursors follow this exact time."
+            title="Move through the complete rendered duration once audio is ready. The waveform and spectrogram cursors follow this exact time."
           />
-          <span id="duration">1:00.000</span>
+          <span id="duration">0:00.000</span>
           <label class="volume">
             <span>vol</span>
             <input

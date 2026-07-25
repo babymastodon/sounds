@@ -320,6 +320,12 @@ h2 {
   outline: none;
 }
 
+.play:disabled {
+  color: var(--muted);
+  background: transparent;
+  cursor: default;
+}
+
 #seek {
   flex: 1;
 }
@@ -327,6 +333,10 @@ h2 {
 input[type="range"] {
   height: 2px;
   accent-color: var(--accent);
+}
+
+input[type="range"]:disabled {
+  opacity: 0.35;
 }
 
 .volume {

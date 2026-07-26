@@ -2,8 +2,6 @@ const ui = {
   renderStatus: document.querySelector("#renderStatus"),
   sourceASelect: document.querySelector("#sourceASelect"),
   sourceBSelect: document.querySelector("#sourceBSelect"),
-  sourceAMeta: document.querySelector("#sourceAMeta"),
-  sourceBMeta: document.querySelector("#sourceBMeta"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
   methodToolTitle: document.querySelector("#methodToolTitle"),
   methodTools: document.querySelector("#methodTools"),
@@ -117,18 +115,15 @@ function buildControls() {
   }
   refreshButtons();
   buildMethodTools();
-  refreshSourceMetadata();
 }
 
 function bindEvents() {
   ui.sourceASelect.addEventListener("change", () => {
     state.sourceA = ui.sourceASelect.value;
-    refreshSourceMetadata();
     scheduleSelection(true);
   });
   ui.sourceBSelect.addEventListener("change", () => {
     state.sourceB = ui.sourceBSelect.value;
-    refreshSourceMetadata();
     scheduleSelection(true);
   });
   ui.algorithmButtons.addEventListener("click", (event) => {
@@ -411,18 +406,6 @@ function updateMetadata(header, settings) {
     readout += ` / out ${header.metrics.duration_seconds.toFixed(2)}s`;
     ui.windowReadout.textContent = readout;
   }
-}
-
-function refreshSourceMetadata() {
-  const sources = new Map(state.catalog.sources.map((source) => [source.id, source]));
-  ui.sourceAMeta.innerHTML = sourceMetadata(sources.get(state.sourceA));
-  ui.sourceBMeta.innerHTML = sourceMetadata(sources.get(state.sourceB));
-}
-
-function sourceMetadata(source) {
-  return `${escapeHtml(source.creator)} / ${escapeHtml(source.license)} / ` +
-    `<a href="${escapeHtml(source.source_page)}" ` +
-    `title="Open the original source and license page for ${escapeHtml(source.category)}.">source</a>`;
 }
 
 function metricMarkup(label, value) {
@@ -867,14 +850,6 @@ function debounce(callback, delay) {
     clearTimeout(timer);
     timer = setTimeout(() => callback(...arguments_), delay);
   };
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }
 
 function showError(error) {

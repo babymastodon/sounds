@@ -79,6 +79,7 @@ try {
         },
         title: document.querySelector("#renderTitle")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
+        statusPosition: getComputedStyle(document.querySelector("#renderStatus")).position,
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
         sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
         methodCount: document.querySelectorAll("#algorithmButtons button").length,
@@ -115,6 +116,24 @@ try {
             document.querySelector("#methodTools input[type='range']")
           ).height
         },
+        undersizedFonts: [...document.querySelectorAll("body *")]
+          .filter((element) => {
+            const style = getComputedStyle(element);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              element.getClientRects().length === 0
+            ) return false;
+            const hasOwnText = [...element.childNodes].some(
+              (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+            );
+            const isTextControl = element.matches("button, select, input, output");
+            return (hasOwnText || isTextControl) && parseFloat(style.fontSize) < 16;
+          })
+          .map((element) =>
+            element.tagName.toLowerCase() + "#" +
+            (element.id || element.className || element.getAttribute("aria-label"))
+          ),
         missingTooltips: [...document.querySelectorAll("button, select, input, canvas, a[href]")]
           .filter((control) =>
             !control.title ||
@@ -159,6 +178,7 @@ try {
   });
   assert.equal(initial.title, "windowed");
   assert.match(initial.status, /^rendered \d+ ms$/);
+  assert.equal(initial.statusPosition, "absolute");
   assert.equal(initial.sourceACount, 48);
   assert.equal(initial.sourceBCount, 48);
   assert.equal(initial.methodCount, 6);
@@ -167,7 +187,7 @@ try {
   assert.equal(initial.seekDisabled, false);
   assert.deepEqual(initial.uiScale, {
     buttonFont: "16px",
-    labelFont: "12px",
+    labelFont: "16px",
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",
@@ -175,12 +195,13 @@ try {
     metricFont: "16px",
     timeFont: "16px",
     speedValueFont: "16px",
-    toolLabelFont: "12px",
-    plotLabelFont: "12px",
+    toolLabelFont: "16px",
+    plotLabelFont: "16px",
     buttonHeight: "36px",
     selectHeight: "38px",
     sliderHeight: "18px",
   });
+  assert.deepEqual(initial.undersizedFonts, []);
   assert.deepEqual(initial.missingTooltips, []);
   assert.equal(initial.fftSize, "16384");
   assert.equal(initial.errorHidden, true, initial.error);

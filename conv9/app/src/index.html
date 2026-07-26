@@ -19,25 +19,16 @@
       </header>
 
       <section class="clip-selectors" aria-label="Convolution sources">
-        <article class="clip-field">
-          <label for="sourceASelect">a / clip</label>
-          <select
-            id="sourceASelect"
-            aria-label="Clip A"
-            title="Choose the first convolution source. Changing clip A cancels stale work and renders the selected method again with this signal as input A."
-          ></select>
-          <div id="sourceAMeta" class="source-meta"></div>
-        </article>
-        <div class="convolution-mark" aria-hidden="true">∗</div>
-        <article class="clip-field">
-          <label for="sourceBSelect">b / clip</label>
-          <select
-            id="sourceBSelect"
-            aria-label="Clip B"
-            title="Choose the second convolution source. Changing clip B cancels stale work and renders the selected method again with this signal as input B."
-          ></select>
-          <div id="sourceBMeta" class="source-meta"></div>
-        </article>
+        <select
+          id="sourceASelect"
+          aria-label="Clip A"
+          title="Choose the first convolution source. Changing clip A cancels stale work and renders the selected method again with this signal as input A."
+        ></select>
+        <select
+          id="sourceBSelect"
+          aria-label="Clip B"
+          title="Choose the second convolution source. Changing clip B cancels stale work and renders the selected method again with this signal as input B."
+        ></select>
       </section>
 
       <section class="method-panel" aria-label="Selected method controls">

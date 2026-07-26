@@ -147,6 +147,11 @@ try {
 
   assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
+  assert.equal(
+    await page.locator(".clip-selectors label, .source-meta, .convolution-mark").count(),
+    0,
+    "selector row contains only the two source controls",
+  );
   assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
@@ -169,7 +174,7 @@ try {
   });
   assert.deepEqual(uiScale, {
     buttonFont: "16px",
-    labelFont: "12px",
+    labelFont: "16px",
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",
@@ -177,11 +182,34 @@ try {
     metricFont: "16px",
     timeFont: "16px",
     speedValueFont: "16px",
-    toolLabelFont: "12px",
-    plotLabelFont: "12px",
+    toolLabelFont: "16px",
+    plotLabelFont: "16px",
     buttonHeight: "36px",
     selectHeight: "38px",
     sliderHeight: "18px",
+  });
+  await assertNoUndersizedText(page);
+  await assertToolLabelsFit(page);
+  assert.equal(
+    await page.locator("#renderStatus").evaluate((status) =>
+      getComputedStyle(status).position
+    ),
+    "absolute",
+  );
+  const methodBoundsBeforeStatusChange = await page.locator(".method-field").boundingBox();
+  await page.locator("#renderStatus").evaluate((status) => {
+    status.dataset.previousText = status.textContent;
+    status.textContent = "rendered 123456789 ms";
+  });
+  const methodBoundsAfterStatusChange = await page.locator(".method-field").boundingBox();
+  assert.deepEqual(
+    methodBoundsAfterStatusChange,
+    methodBoundsBeforeStatusChange,
+    "floating render status must not move or resize method controls",
+  );
+  await page.locator("#renderStatus").evaluate((status) => {
+    status.textContent = status.dataset.previousText;
+    delete status.dataset.previousText;
   });
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 4);
@@ -374,6 +402,8 @@ try {
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
   await assertNoViewportOverflow(page);
+  await assertNoUndersizedText(page);
+  await assertToolLabelsFit(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.compact.png` });
   }
@@ -622,6 +652,52 @@ async function assertNoViewportOverflow(page) {
       layout.bodyScrollHeight <= layout.viewportHeight,
     `vertical overflow: ${JSON.stringify(layout)}`,
   );
+}
+
+async function assertNoUndersizedText(page) {
+  const undersized = await page.locator("body *").evaluateAll((elements) =>
+    elements
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          element.getClientRects().length === 0
+        ) {
+          return false;
+        }
+        const hasOwnText = [...element.childNodes].some(
+          (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim(),
+        );
+        const isTextControl = element.matches("button, select, input, output");
+        return (hasOwnText || isTextControl) && parseFloat(style.fontSize) < 16;
+      })
+      .map(
+        (element) =>
+          `${element.tagName.toLowerCase()}#${element.id || element.className || element.getAttribute("aria-label")}`,
+      ),
+  );
+  assert.deepEqual(undersized, [], `rendered text below 16px: ${undersized.join(", ")}`);
+}
+
+async function assertToolLabelsFit(page) {
+  const invalid = await page.locator(".tool-control").evaluateAll((controls) =>
+    controls
+      .filter((control) => {
+        const label = control.querySelector(":scope > span");
+        const inputs = control.querySelector(".tool-inputs");
+        if (!label || !inputs) return true;
+        const labelBounds = label.getBoundingClientRect();
+        const inputBounds = inputs.getBoundingClientRect();
+        return (
+          label.scrollWidth > label.clientWidth + 1 ||
+          label.scrollHeight > label.clientHeight + 1 ||
+          labelBounds.bottom > inputBounds.top
+        );
+      })
+      .map((control) => control.querySelector(":scope > span")?.textContent.trim()),
+  );
+  assert.deepEqual(invalid, [], `clipped or overlapping tool labels: ${invalid.join(", ")}`);
 }
 
 async function assertControlTooltips(page) {

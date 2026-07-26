@@ -8,8 +8,7 @@
   --accent: #a9b68f;
   --cursor: #c77e69;
   --background: #1d1f1e;
-  --font-small: 12px;
-  --font-control: 16px;
+  --font-base: 16px;
   --font-title: 20px;
   font-family: "Berkeley Mono", "IBM Plex Mono", "SFMono-Regular", "Cascadia Mono",
     Consolas, monospace;
@@ -32,7 +31,7 @@ body {
   min-width: 760px;
   color: var(--ink);
   background: var(--background);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 button,
@@ -68,8 +67,9 @@ select {
 }
 
 .masthead {
+  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 20px;
   align-items: end;
   min-width: 0;
@@ -82,7 +82,7 @@ label,
 .metrics dt,
 .tool-control > span {
   color: var(--muted);
-  font-size: var(--font-small);
+  font-size: var(--font-base);
   line-height: 1;
   letter-spacing: 0.1em;
   text-transform: lowercase;
@@ -97,10 +97,16 @@ h1 {
 }
 
 #renderStatus {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
   min-width: 90px;
   color: var(--muted);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
+  pointer-events: none;
   text-align: right;
+  white-space: nowrap;
 }
 
 .method-field {
@@ -126,7 +132,7 @@ h1 {
   border: 0;
   background: transparent;
   cursor: pointer;
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   text-transform: lowercase;
 }
 
@@ -139,16 +145,9 @@ h1 {
 }
 
 .clip-selectors {
-  gap: 12px;
-  min-width: 0;
-}
-
-.clip-field {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
   min-width: 0;
 }
 
@@ -163,7 +162,7 @@ select {
     linear-gradient(45deg, transparent 50%, var(--muted) 50%) calc(100% - 13px) 17px / 5px 5px no-repeat,
     linear-gradient(135deg, var(--muted) 50%, transparent 50%) calc(100% - 8px) 17px / 5px 5px no-repeat,
     var(--surface);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 select:hover,
@@ -172,55 +171,38 @@ select:focus-visible {
   background-color: var(--surface-hover);
 }
 
-.source-meta {
-  max-width: 175px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--font-small);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-meta a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.source-meta a:hover {
-  color: var(--bright);
-}
-
-.convolution-mark {
-  color: var(--muted);
-  font-size: var(--font-control);
-}
-
 .method-panel {
   min-width: 0;
 }
 
 .method-panel header {
-  height: 18px;
+  height: 20px;
 }
 
 .method-tools {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 7px 12px;
-  min-height: 46px;
+  min-height: 50px;
 }
 
 .method-summary {
   align-self: center;
   color: var(--muted);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 .tool-control {
   display: grid;
-  grid-template-rows: 14px 28px;
+  grid-template-rows: 18px 28px;
   gap: 4px;
   min-width: 0;
+}
+
+.tool-control > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-control.window-control {
@@ -245,14 +227,14 @@ input[type="number"] {
   border: 0;
   outline: none;
   background: var(--surface);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   text-align: right;
 }
 
 .tool-unit {
   min-width: 15px;
   color: var(--muted);
-  font-size: var(--font-small);
+  font-size: var(--font-base);
 }
 
 .now-playing {
@@ -265,13 +247,13 @@ input[type="number"] {
 h2 {
   margin: 0 0 2px;
   color: var(--bright);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   font-weight: 400;
 }
 
 #windowReadout {
   color: var(--muted);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   letter-spacing: 0.05em;
   text-transform: lowercase;
 }
@@ -294,7 +276,7 @@ h2 {
 .metrics dd {
   margin-top: 2px;
   color: var(--ink);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 .transport-panel {
@@ -305,7 +287,7 @@ h2 {
   gap: 11px;
   height: 38px;
   color: var(--muted);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 .play {
@@ -316,7 +298,7 @@ h2 {
   border: 0;
   background: var(--surface);
   cursor: pointer;
-  font-size: var(--font-control);
+  font-size: var(--font-base);
 }
 
 .play:hover,
@@ -387,7 +369,7 @@ input[type="range"]:disabled {
 }
 
 .playback-speed {
-  width: 174px;
+  width: 185px;
 }
 
 .playback-speed input {
@@ -397,7 +379,7 @@ input[type="range"]:disabled {
 .playback-speed output {
   width: 50px;
   color: var(--ink);
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -411,7 +393,7 @@ input[type="range"]:disabled {
 
 .visual-card {
   display: grid;
-  grid-template-rows: 20px minmax(0, 1fr);
+  grid-template-rows: 22px minmax(0, 1fr);
   overflow: hidden;
   background: #181a19;
 }
@@ -438,7 +420,7 @@ input[type="range"]:disabled {
   padding: 14px;
   color: #e3b4a8;
   background: #3a2925;
-  font-size: var(--font-control);
+  font-size: var(--font-base);
   white-space: pre-wrap;
 }
 
@@ -447,16 +429,12 @@ input[type="range"]:disabled {
     gap: 12px;
   }
 
-  .source-meta {
-    display: none;
-  }
-
   .method-field {
     gap: 8px;
   }
 
   .method-tools {
-    grid-template-columns: repeat(auto-fit, minmax(115px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   }
 
   .metrics {
@@ -472,7 +450,6 @@ input[type="range"]:disabled {
   .shell {
     padding-inline: 12px;
   }
-
 }
 
 @media (max-height: 700px) {
@@ -482,7 +459,7 @@ input[type="range"]:disabled {
   }
 
   .method-panel header {
-    height: 16px;
+    height: 20px;
   }
 
   .method-tools {
@@ -490,7 +467,7 @@ input[type="range"]:disabled {
   }
 
   .tool-control {
-    grid-template-rows: 13px 24px;
+    grid-template-rows: 18px 24px;
   }
 
   .tool-inputs input[type="number"] {

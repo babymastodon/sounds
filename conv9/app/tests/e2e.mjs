@@ -284,11 +284,39 @@ try {
   await page.locator("#sourceABrowser .source-browser-trigger").click();
   const sourceDialog = page.locator("#source-a-dialog");
   await sourceDialog.waitFor({ state: "visible" });
+  const initialDialogBounds = await sourceDialog.boundingBox();
+  const initialPreviewBounds = await sourceDialog
+    .locator(".source-preview-waveform")
+    .boundingBox();
+  assert.ok(
+    initialDialogBounds?.width >= 940 && initialDialogBounds?.height >= 580,
+    `source browser should use the available navigation space: ${JSON.stringify(initialDialogBounds)}`,
+  );
+  assert.equal(
+    await sourceDialog.locator(".source-preview-stats > div").count(),
+    4,
+    "preview reserves all four summary-stat cells while loading",
+  );
   assert.equal(await sourceDialog.getAttribute("role"), "dialog");
   assert.equal(
     await sourceDialog.locator(".source-list").getAttribute("role"),
     "listbox",
     "source results use listbox semantics",
+  );
+  const selectedOptionBounds = await sourceDialog
+    .locator("[role='option'][aria-selected='true']")
+    .boundingBox();
+  const sourceListBounds = await sourceDialog.locator(".source-list").boundingBox();
+  assert.ok(
+    selectedOptionBounds &&
+      sourceListBounds &&
+      selectedOptionBounds.y >= sourceListBounds.y &&
+      selectedOptionBounds.y + selectedOptionBounds.height <=
+        sourceListBounds.y + sourceListBounds.height,
+    `opening the browser should reveal the selected source: ${JSON.stringify({
+      selectedOptionBounds,
+      sourceListBounds,
+    })}`,
   );
   await page.waitForFunction(
     () =>
@@ -296,6 +324,19 @@ try {
         ?.getAttribute("aria-busy") === "false" &&
       window.__CONV9_TEST_PREVIEW_REQUESTS__.length === 1,
   );
+  const loadedPreviewBounds = await sourceDialog
+    .locator(".source-preview-waveform")
+    .boundingBox();
+  assert.ok(
+    initialPreviewBounds &&
+      loadedPreviewBounds &&
+      Math.abs(initialPreviewBounds.height - loadedPreviewBounds.height) < 1,
+    `preview loading must not resize the waveform: ${JSON.stringify({
+      initialPreviewBounds,
+      loadedPreviewBounds,
+    })}`,
+  );
+  await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-waveform");
   const firstPreviewPixels = await canvasFingerprint(
     page,
     "#source-a-dialog .source-preview-waveform",
@@ -939,6 +980,17 @@ try {
   assert.equal(await page.locator("#metrics").isVisible(), true, "metrics remain on compact row");
   await page.locator("#sourceBBrowser .source-browser-trigger").click();
   await page.locator("#source-b-dialog").waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#source-b-dialog .source-preview-waveform")
+        ?.getAttribute("aria-busy") === "false",
+  );
+  const compactDialogBounds = await page.locator("#source-b-dialog").boundingBox();
+  assert.ok(
+    compactDialogBounds?.width >= 860 && compactDialogBounds?.height >= 520,
+    `compact source browser should fill the usable viewport: ${JSON.stringify(compactDialogBounds)}`,
+  );
+  await assertCanvasMatchesLayout(page, "#source-b-dialog .source-preview-waveform");
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
@@ -1210,6 +1262,24 @@ async function canvasFingerprint(page, selector) {
     }
     return hash >>> 0;
   });
+}
+
+async function assertCanvasMatchesLayout(page, selector) {
+  const dimensions = await page.locator(selector).evaluate((canvas) => {
+    const bounds = canvas.getBoundingClientRect();
+    const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    return {
+      bitmapWidth: canvas.width,
+      bitmapHeight: canvas.height,
+      expectedWidth: Math.round(bounds.width * scale),
+      expectedHeight: Math.round(bounds.height * scale),
+    };
+  });
+  assert.ok(
+    Math.abs(dimensions.bitmapWidth - dimensions.expectedWidth) <= 1 &&
+      Math.abs(dimensions.bitmapHeight - dimensions.expectedHeight) <= 1,
+    `canvas bitmap is stretched away from its layout size: ${JSON.stringify(dimensions)}`,
+  );
 }
 
 async function assertNoViewportOverflow(page) {

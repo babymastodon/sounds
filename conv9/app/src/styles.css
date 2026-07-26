@@ -233,9 +233,9 @@ select:focus-visible {
   display: grid;
   grid-template-rows: 38px 36px minmax(0, 1fr);
   gap: 7px;
-  width: min(760px, calc(100vw - 40px));
-  height: min(480px, calc(100vh - 126px));
-  min-height: 340px;
+  width: min(960px, calc(100vw - 40px));
+  height: min(600px, calc(100vh - 116px));
+  min-height: min(400px, calc(100vh - 116px));
   padding: 10px;
   color: var(--ink);
   background: #202221;
@@ -358,8 +358,8 @@ select:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr) 40px;
   gap: 8px;
-  min-height: 37px;
-  padding: 8px 9px;
+  min-height: 40px;
+  padding: 9px;
   cursor: pointer;
 }
 
@@ -399,7 +399,7 @@ select:focus-visible {
 
 .source-preview {
   display: grid;
-  grid-template-rows: auto auto minmax(90px, 1fr) auto;
+  grid-template-rows: auto auto minmax(120px, 1fr) 47px;
   gap: 7px;
   min-width: 0;
   min-height: 0;
@@ -426,15 +426,17 @@ select:focus-visible {
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 90px;
+  min-height: 120px;
   background: #181a19;
 }
 
 .source-preview-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, 20px);
   gap: 7px 14px;
   margin: 0;
+  min-height: 47px;
 }
 
 .source-preview-stats div {
@@ -754,6 +756,8 @@ input[type="range"]:disabled {
   .source-browser-dialog {
     top: 94px;
     width: calc(100vw - 24px);
+    height: min(600px, calc(100vh - 106px));
+    min-height: min(400px, calc(100vh - 106px));
   }
 
   #source-a-dialog,

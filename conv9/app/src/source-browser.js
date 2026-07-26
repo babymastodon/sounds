@@ -67,6 +67,8 @@
       this.onSelect = onSelect;
       this.previewGeneration = 0;
       this.previewTimer = 0;
+      this.previewPeaks = null;
+      this.previewStatus = "";
       this.opened = false;
       this.instanceId = `source-${role.toLowerCase()}`;
       this.renderShell();
@@ -184,6 +186,12 @@
       this.root.replaceChildren(this.trigger, this.dialog);
       this.renderList();
       this.showPreviewMetadata(this.selectedSource());
+      this.previewResizeObserver = new ResizeObserver(() => {
+        if (!this.opened) return;
+        if (this.previewPeaks) this.drawWaveform(this.previewPeaks);
+        else if (this.previewStatus) this.drawStatus(this.previewStatus);
+      });
+      this.previewResizeObserver.observe(this.previewCanvas);
     }
 
     bind() {
@@ -312,6 +320,7 @@
       }
       this.list.replaceChildren(fragment);
       this.syncActive();
+      if (this.opened) this.scrollActiveIntoView("nearest");
       const source = this.sources.find((candidate) => candidate.id === this.activeId);
       if (source && this.opened) this.queuePreview(source);
     }
@@ -425,6 +434,7 @@
       }
       this.activeId = this.value;
       this.renderList();
+      this.scrollActiveIntoView("center");
       this.search.focus();
       this.queuePreview(this.selectedSource(), 0);
     }
@@ -480,7 +490,9 @@
       this.previewKind.textContent = `${source.browserGroup} / ${formatKind(source.kind)}`;
       this.previewStats.replaceChildren(
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
-        this.stat("license", source.license),
+        this.stat("rms", "…"),
+        this.stat("peak", "…"),
+        this.stat("zero-cross", "…"),
       );
     }
 
@@ -497,13 +509,14 @@
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
         this.stat("rms", `${preview.rmsDbfs.toFixed(1)} dB`),
         this.stat("peak", `${(preview.peak * 100).toFixed(0)}%`),
-        this.stat("motion", `${(preview.zeroCrossingRate * 100).toFixed(1)}%`),
+        this.stat("zero-cross", `${(preview.zeroCrossingRate * 100).toFixed(1)}%`),
       );
     }
 
     drawStatus(text) {
-      const context = this.previewCanvas.getContext("2d");
-      const { width, height } = this.previewCanvas;
+      this.previewPeaks = null;
+      this.previewStatus = text;
+      const { context, width, height } = this.canvasSurface();
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
@@ -515,8 +528,9 @@
     }
 
     drawWaveform(peaks) {
-      const context = this.previewCanvas.getContext("2d");
-      const { width, height } = this.previewCanvas;
+      this.previewPeaks = peaks;
+      this.previewStatus = "";
+      const { context, width, height } = this.canvasSurface();
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
@@ -533,6 +547,31 @@
         context.lineTo(x, (0.5 - minimum * 0.48) * height);
       });
       context.stroke();
+    }
+
+    scrollActiveIntoView(block) {
+      this.list
+        .querySelector(`[data-source-id="${CSS.escape(this.activeId)}"]`)
+        ?.scrollIntoView({ block, inline: "nearest" });
+    }
+
+    canvasSurface() {
+      const bounds = this.previewCanvas.getBoundingClientRect();
+      const width = Math.max(1, Math.round(bounds.width));
+      const height = Math.max(1, Math.round(bounds.height));
+      const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const pixelWidth = Math.round(width * scale);
+      const pixelHeight = Math.round(height * scale);
+      if (
+        this.previewCanvas.width !== pixelWidth ||
+        this.previewCanvas.height !== pixelHeight
+      ) {
+        this.previewCanvas.width = pixelWidth;
+        this.previewCanvas.height = pixelHeight;
+      }
+      const context = this.previewCanvas.getContext("2d");
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+      return { context, width, height };
     }
   }
 

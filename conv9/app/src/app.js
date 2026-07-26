@@ -187,7 +187,7 @@ function bindEvents() {
 }
 
 function applyPlaybackSpeed() {
-  const rate = Number(ui.playbackSpeed.value);
+  const rate = 2 ** Number(ui.playbackSpeed.value);
   ui.audio.defaultPlaybackRate = rate;
   ui.audio.playbackRate = rate;
   ui.audio.preservesPitch = true;

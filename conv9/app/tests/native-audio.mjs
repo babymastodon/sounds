@@ -72,6 +72,11 @@ try {
         loop: audio?.loop,
         playbackRate: audio?.playbackRate,
         playbackSpeedValue: document.querySelector("#playbackSpeedValue")?.textContent,
+        playbackSpeedScale: {
+          minimum: document.querySelector("#playbackSpeed")?.min,
+          maximum: document.querySelector("#playbackSpeed")?.max,
+          value: document.querySelector("#playbackSpeed")?.value
+        },
         title: document.querySelector("#renderTitle")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
@@ -147,6 +152,11 @@ try {
   assert.equal(initial.loop, true);
   assert.equal(initial.playbackRate, 1);
   assert.equal(initial.playbackSpeedValue, "1.00×");
+  assert.deepEqual(initial.playbackSpeedScale, {
+    minimum: "-1",
+    maximum: "1",
+    value: "0",
+  });
   assert.equal(initial.title, "windowed");
   assert.match(initial.status, /^rendered \d+ ms$/);
   assert.equal(initial.sourceACount, 48);
@@ -179,18 +189,18 @@ try {
 
   const changedPlaybackRate = await execute(port, sessionId, `
     const speed = document.querySelector("#playbackSpeed");
-    speed.value = "1.35";
+    speed.value = "0.5";
     speed.dispatchEvent(new Event("input", { bubbles: true }));
     const result = {
       rate: document.querySelector("#audio").playbackRate,
       value: document.querySelector("#playbackSpeedValue").textContent
     };
-    speed.value = "1";
+    speed.value = "0";
     speed.dispatchEvent(new Event("input", { bubbles: true }));
     return result;
   `);
-  assert.equal(changedPlaybackRate.rate, 1.35);
-  assert.equal(changedPlaybackRate.value, "1.35×");
+  assert.ok(Math.abs(changedPlaybackRate.rate - Math.SQRT2) < 1e-6);
+  assert.equal(changedPlaybackRate.value, "1.41×");
 
   await execute(
     port,

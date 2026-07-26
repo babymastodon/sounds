@@ -324,15 +324,29 @@ try {
   });
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.volume), 0.37);
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.playbackRate), 1);
+  assert.deepEqual(
+    await page.locator("#playbackSpeed").evaluate((input) => ({
+      minimum: input.min,
+      maximum: input.max,
+      value: input.value,
+      normalizedPosition: (Number(input.value) - Number(input.min)) /
+        (Number(input.max) - Number(input.min)),
+    })),
+    { minimum: "-1", maximum: "1", value: "0", normalizedPosition: 0.5 },
+  );
   await page.locator("#playbackSpeed").evaluate((input) => {
-    input.value = "1.35";
+    input.value = "0.5";
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  assert.equal(await page.locator("#audio").evaluate((audio) => audio.playbackRate), 1.35);
-  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.35×");
+  assert.ok(
+    Math.abs(
+      (await page.locator("#audio").evaluate((audio) => audio.playbackRate)) - Math.SQRT2,
+    ) < 1e-6,
+  );
+  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.41×");
   assert.equal(
     await page.locator("#playbackSpeed").getAttribute("aria-valuetext"),
-    "1.35 times",
+    "1.41 times",
   );
 
   await page.locator("#seek").evaluate((input) => {

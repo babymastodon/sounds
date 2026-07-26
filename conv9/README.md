@@ -2,7 +2,7 @@
 
 `conv9` compares two independently selected 61-second clips without retaining rendered audio. Every UI selection invokes the Rust DSP, conditions the result, encodes a mono 48 kHz PCM16 WAV in memory, and transfers it directly to the Tauri webview. Changing a clip, method, window, or method parameter starts a new render; stale work is cancelled between FFT blocks. There is no output directory or render cache.
 
-The 48 license-tracked sources each represent a distinct sound kind, spanning water, ice, wildlife, fire, machines, buildings, crowds, transport, weather, voice, music, radio, and footsteps. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
+The 96 license-tracked sources each represent a distinct sound kind. The original broad field-recording set is joined by 48 deliberately foreground-focused additions: 24 music or instrument recordings with clear notes, attacks, and phrases, and 24 non-musical recordings built around identifiable voices, impacts, vehicles, tools, alarms, or physical processes. The additions avoid drones and generic atmosphere beds, and favor recordings whose content changes substantially during the selected minute. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
 
 ```bash
 cd conv9
@@ -10,6 +10,10 @@ cd conv9
 ```
 
 Prepared inputs are exact 61-second, mono, 48 kHz PCM16 WAVs. Their raw recordings are also verified to exceed one minute. They are source material, not precomputed convolutions.
+
+For additions with more than a minute of material, `scripts/rank_eventful_trims.py` analyzes half-second level, spectral-centroid, spread, and flux changes and reports the most eventful valid cut. It remains a review tool by default; after listening and rejecting weak sources, pass `--write-manifest` to apply the reviewed offsets. Raw-source and preparation recipes include each source URL, cache source, and trim, so changing any of them refreshes only the affected local files.
+
+In `sources.tsv`, a `cache_source` of `-` means the source is downloaded directly; older entries can name a compatible raw file from a previous experiment for local reuse.
 
 ## Methods and controls
 

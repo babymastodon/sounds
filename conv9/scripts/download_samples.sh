@@ -9,6 +9,26 @@ raw_dir="$project_dir/samples/raw"
 prepared_dir="$project_dir/samples/prepared"
 mkdir -p "$raw_dir" "$prepared_dir"
 
+# Migrate prepared files made before per-source recipes were introduced. A completed
+# SOURCES.tsv is only copied after every source validates, so it is authoritative
+# for the WAVs beside it.
+if [[ -s "$prepared_dir/SOURCES.tsv" ]]; then
+    while IFS=$'\t' read -r old_id _category _kind old_seconds old_trim_start \
+        _provider _creator _license _license_url _source_page old_download_url _cache_source; do
+        [[ "$old_id" == "id" || -z "$old_id" ]] && continue
+        old_prepared="$prepared_dir/$old_id.wav"
+        old_recipe="$prepared_dir/$old_id.recipe"
+        old_raw="$raw_dir/$old_id.media"
+        old_raw_recipe="$raw_dir/$old_id.source"
+        if [[ -s "$old_prepared" && ! -e "$old_recipe" ]]; then
+            printf '%s\t%s\t%s\n' "$old_download_url" "$old_trim_start" "$old_seconds" > "$old_recipe"
+        fi
+        if [[ -s "$old_raw" && ! -e "$old_raw_recipe" ]]; then
+            printf '%s\t%s\n' "$old_download_url" "$_cache_source" > "$old_raw_recipe"
+        fi
+    done < "$prepared_dir/SOURCES.tsv"
+fi
+
 prepare_one() {
     local id=$1
     local seconds=$2
@@ -16,15 +36,25 @@ prepare_one() {
     local download_url=$4
     local cache_source=$5
     local raw_path="$raw_dir/$id.media"
+    local raw_recipe_path="$raw_dir/$id.source"
     local prepared_path="$prepared_dir/$id.wav"
     local temporary="$prepared_path.part.wav"
+    local recipe_path="$prepared_dir/$id.recipe"
+    local recipe_cache_source=$cache_source
+    [[ "$recipe_cache_source" == "-" ]] && recipe_cache_source=
+    local expected_raw_recipe="$download_url	$recipe_cache_source"
+    local expected_recipe="$download_url	$trim_start	$seconds"
     local expected_frames
     expected_frames=$(awk -v seconds="$seconds" 'BEGIN { printf "%.0f", seconds * 48000 }')
 
-    if [[ ! -s "$raw_path" ]]; then
+    local actual_raw_recipe=
+    if [[ -s "$raw_recipe_path" ]]; then
+        actual_raw_recipe=$(<"$raw_recipe_path")
+    fi
+    if [[ ! -s "$raw_path" || "$actual_raw_recipe" != "$expected_raw_recipe" ]]; then
         if [[ -n "$cache_source" && -s "$project_dir/$cache_source" ]]; then
             echo "reuse cached source $id" >&2
-            cp --reflink=auto "$project_dir/$cache_source" "$raw_path"
+            cp --reflink=auto "$project_dir/$cache_source" "$raw_path.part"
         else
             echo "download $id" >&2
             local downloaded=0
@@ -43,8 +73,10 @@ prepare_one() {
                 echo "$id: download failed after 5 attempts" >&2
                 return 1
             fi
-            mv "$raw_path.part" "$raw_path"
         fi
+        mv "$raw_path.part" "$raw_path"
+        printf '%s\n' "$expected_raw_recipe" > "$raw_recipe_path.part"
+        mv "$raw_recipe_path.part" "$raw_recipe_path"
     fi
 
     local source_duration
@@ -57,19 +89,25 @@ prepare_one() {
     fi
 
     local actual_frames=
+    local actual_recipe=
     if [[ -s "$prepared_path" ]]; then
         actual_frames=$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=duration_ts -of default=nw=1:nk=1 "$prepared_path")
     fi
-    if [[ "$actual_frames" != "$expected_frames" ]]; then
+    if [[ -s "$recipe_path" ]]; then
+        actual_recipe=$(<"$recipe_path")
+    fi
+    if [[ "$actual_frames" != "$expected_frames" || "$actual_recipe" != "$expected_recipe" ]]; then
         local fade_out
         fade_out=$(awk -v seconds="$seconds" 'BEGIN { printf "%.6f", seconds - 0.02 }')
         echo "prepare $id (${seconds}s at 48 kHz mono)" >&2
         ffmpeg -nostdin -hide_banner -loglevel error -y \
-            -ss "$trim_start" -i "$raw_path" -t "$seconds" -vn \
-            -af "highpass=f=15,lowpass=f=21000,afade=t=in:st=0:d=0.02,afade=t=out:st=$fade_out:d=0.02" \
+            -ss "$trim_start" -t "$seconds" -i "$raw_path" -vn \
+            -af "aresample=48000,highpass=f=15,lowpass=f=21000,afade=t=in:st=0:d=0.02,afade=t=out:st=$fade_out:d=0.02,apad,atrim=end_sample=$expected_frames,asetpts=PTS-STARTPTS" \
             -ar 48000 -ac 1 -c:a pcm_s16le "$temporary"
         mv "$temporary" "$prepared_path"
+        printf '%s\n' "$expected_recipe" > "$recipe_path.part"
+        mv "$recipe_path.part" "$recipe_path"
     fi
 
     actual_frames=$(ffprobe -v error -select_streams a:0 \

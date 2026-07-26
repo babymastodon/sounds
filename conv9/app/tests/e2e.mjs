@@ -165,8 +165,8 @@ try {
     `transport was not locked during visualization analysis: ${JSON.stringify(statusHistory)}`,
   );
 
-  assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
-  assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
+  assert.equal(await page.locator("#sourceASelect option").count(), 96, "clip A count");
+  assert.equal(await page.locator("#sourceBSelect option").count(), 96, "clip B count");
   assert.equal(
     await page.locator(".clip-selectors label, .source-meta, .convolution-mark").count(),
     0,
@@ -183,9 +183,26 @@ try {
     "method buttons are left-aligned without app or method captions",
   );
   assert.equal(
-    await page.locator("#renderTitle, #windowReadout, .visual-card > header").count(),
+    await page.locator("#renderTitle, #windowReadout, .visual-card > header, .now-playing").count(),
     0,
     "repeated render details and visualization headings are absent",
+  );
+  const waveformBounds = await page.locator("#waveform").boundingBox();
+  const metricBounds = await page.locator("#metrics").boundingBox();
+  assert.ok(waveformBounds && metricBounds, "waveform metrics have measurable bounds");
+  assert.ok(
+    metricBounds.x >= waveformBounds.x &&
+      metricBounds.y >= waveformBounds.y &&
+      metricBounds.x + metricBounds.width <= waveformBounds.x + waveformBounds.width &&
+      metricBounds.y + metricBounds.height <= waveformBounds.y + waveformBounds.height,
+    "RMS and peak must overlay the waveform without consuming a layout row",
+  );
+  assert.equal(
+    await page.locator("#metrics").evaluate((metrics) =>
+      getComputedStyle(metrics).backgroundColor
+    ),
+    "rgba(0, 0, 0, 0)",
+    "waveform metrics must not show a mismatched box while loading",
   );
   assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
   const uiScale = await page.evaluate(() => {
@@ -287,6 +304,15 @@ try {
   );
   await assertNoViewportOverflow(page);
   await assertControlTooltips(page);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      document: document.scrollingElement?.scrollTop ?? 0,
+      body: document.body.scrollTop,
+      shell: document.querySelector(".shell")?.scrollTop ?? 0,
+    })),
+    { document: 0, body: 0, shell: 0 },
+    "tooltip inspection must not displace the fixed viewport",
+  );
   assert.match(
     await page.getByRole("button", { name: "windowed", exact: true }).getAttribute("title"),
     /one ordinary linear FFT convolution/,

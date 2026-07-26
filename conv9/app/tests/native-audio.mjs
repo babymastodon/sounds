@@ -20,6 +20,8 @@ const driverBinary =
 const sysroot = process.env.CONV9_TAURI_SYSROOT || "/tmp/conv9-tauri-devel";
 const sinkName = `conv9_test_${process.pid}`;
 const capturePath = `/tmp/${sinkName}.wav`;
+const firstStartCapturePath = `/tmp/${sinkName}_first-start.wav`;
+const replayStartCapturePath = `/tmp/${sinkName}_replay-start.wav`;
 
 assert.ok(existsSync(application), `build the Tauri app first: missing ${application}`);
 assert.ok(
@@ -95,10 +97,23 @@ try {
           "h1, .method-field, .field-label"
         ).length,
         repeatedDetailCount: document.querySelectorAll(
-          "#renderTitle, #windowReadout, .visual-card > header"
+          "#renderTitle, #windowReadout, .visual-card > header, .now-playing"
         ).length,
         metricsVisible: getComputedStyle(document.querySelector("#metrics")).display !== "none",
         metricsText: document.querySelector("#metrics")?.textContent,
+        metricsOverlay: (() => {
+          const metrics = document.querySelector("#metrics").getBoundingClientRect();
+          const waveform = document.querySelector("#waveform").getBoundingClientRect();
+          return {
+            inside:
+              metrics.left >= waveform.left &&
+              metrics.top >= waveform.top &&
+              metrics.right <= waveform.right &&
+              metrics.bottom <= waveform.bottom,
+            position: getComputedStyle(document.querySelector("#metrics")).position,
+            background: getComputedStyle(document.querySelector("#metrics")).backgroundColor
+          };
+        })(),
         loadingTextStyles: [
           {
             fontSize: waveform?.dataset.loadingFontSize,
@@ -232,8 +247,8 @@ try {
   });
   assert.match(initial.status, /^rendered \d+ ms$/);
   assert.equal(initial.statusPosition, "absolute");
-  assert.equal(initial.sourceACount, 48);
-  assert.equal(initial.sourceBCount, 48);
+  assert.equal(initial.sourceACount, 96);
+  assert.equal(initial.sourceBCount, 96);
   assert.equal(initial.methodCount, 6);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
@@ -241,6 +256,11 @@ try {
   assert.equal(initial.metricsVisible, true);
   assert.match(initial.metricsText, /rms/);
   assert.match(initial.metricsText, /peak/);
+  assert.deepEqual(initial.metricsOverlay, {
+    inside: true,
+    position: "absolute",
+    background: "rgba(0, 0, 0, 0)",
+  });
   assert.deepEqual(initial.loadingTextStyles, [
     { fontSize: "16", alignment: "center" },
     { fontSize: "16", alignment: "center" },
@@ -267,6 +287,55 @@ try {
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");
   assert.ok(initial.viewport.scrollHeight <= initial.viewport.height, "native vertical overflow");
+
+  const renderedPrefix = await execute(port, sessionId, `
+    const samples = state.analysisSamples;
+    const sampleRate = state.analysisSampleRate;
+    const windowFrames = Math.floor(sampleRate / 10);
+    const rmsDb = [];
+    for (let window = 0; window < 20; window++) {
+      let power = 0;
+      const start = window * windowFrames;
+      const end = Math.min(samples.length, (window + 1) * windowFrames);
+      for (let index = start; index < end; index++) {
+        power += samples[index] * samples[index];
+      }
+      rmsDb.push(
+        10 * Math.log10(Math.max(Number.EPSILON, power / Math.max(1, end - start)))
+      );
+    }
+    return { sampleRate, rmsDb };
+  `);
+  assert.ok(
+    renderedPrefix.rmsDb[0] < -100 &&
+      renderedPrefix.rmsDb[4] < -50 &&
+      renderedPrefix.rmsDb[19] > -35,
+    `default render should fade in gradually: ${renderedPrefix.rmsDb
+      .map((level) => level.toFixed(1))
+      .join(" ")}`,
+  );
+
+  await capturePlaybackStart(port, sessionId, firstStartCapturePath);
+  await resetPlayback(port, sessionId);
+  await capturePlaybackStart(port, sessionId, replayStartCapturePath);
+  const firstPlayComparison = comparePlaybackStarts(
+    await readFile(firstStartCapturePath),
+    await readFile(replayStartCapturePath),
+  );
+  console.log(
+    `first-play regression: ${firstPlayComparison.earlyCorrelation.toFixed(4)} early / ` +
+      `${firstPlayComparison.lateCorrelation.toFixed(4)} late correlation, ` +
+      `${firstPlayComparison.lagFrames} frame lag`,
+  );
+  assert.ok(
+    firstPlayComparison.earlyCorrelation > 0.98,
+    `first 500 ms differs from replay: ${JSON.stringify(firstPlayComparison)}`,
+  );
+  assert.ok(
+    firstPlayComparison.lateCorrelation > 0.98,
+    `first-play continuation differs from replay: ${JSON.stringify(firstPlayComparison)}`,
+  );
+  await resetPlayback(port, sessionId);
 
   const changedPlaybackRate = await execute(port, sessionId, `
     const speed = document.querySelector("#playbackSpeed");
@@ -586,7 +655,9 @@ try {
   if (moduleId) {
     spawnSync("pactl", ["unload-module", moduleId], { stdio: "ignore" });
   }
-  await unlink(capturePath).catch(() => {});
+  for (const path of [capturePath, firstStartCapturePath, replayStartCapturePath]) {
+    await unlink(path).catch(() => {});
+  }
 }
 
 function loadNullSink() {
@@ -695,6 +766,138 @@ async function captureMonitor() {
   assert.equal(code, 0, errors || `ffmpeg exited with ${code}`);
 }
 
+async function capturePlaybackStart(port, id, path) {
+  const capture = spawn(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "pulse",
+      "-i",
+      `${sinkName}.monitor`,
+      "-t",
+      "2.6",
+      "-c:a",
+      "pcm_s16le",
+      "-y",
+      path,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let errors = "";
+  capture.stderr.on("data", (chunk) => {
+    errors += chunk.toString();
+  });
+  await delay(500);
+  await execute(port, id, `
+    document.querySelector("#playButton").click();
+    return true;
+  `);
+  await delay(1_700);
+  await execute(port, id, `
+    document.querySelector("#audio").pause();
+    return true;
+  `);
+  const code = await waitForExit(capture, 5_000);
+  assert.equal(code, 0, errors || `first-play capture exited with ${code}`);
+}
+
+async function resetPlayback(port, id) {
+  await execute(port, id, `
+    const audio = document.querySelector("#audio");
+    audio.pause();
+    audio.currentTime = 0;
+    return true;
+  `);
+  await poll(async () => {
+    const state = await playbackState(port, id);
+    return state.paused && state.readyState >= 4 && state.currentTime < 0.005
+      ? state
+      : undefined;
+  });
+}
+
+function comparePlaybackStarts(firstWav, replayWav) {
+  const first = monoPcm16(firstWav);
+  const replay = monoPcm16(replayWav);
+  const sampleRate = 48_000;
+  const lateStart = Math.floor(1.15 * sampleRate);
+  const lateEnd = Math.floor(1.9 * sampleRate);
+  let lagFrames = 0;
+  let best = -Infinity;
+  for (let lag = -12_000; lag <= 12_000; lag += 24) {
+    const correlation = sampleCorrelation(first, replay, lateStart, lateEnd, lag, 24);
+    if (correlation > best) {
+      best = correlation;
+      lagFrames = lag;
+    }
+  }
+  const coarseLag = lagFrames;
+  best = -Infinity;
+  for (let lag = coarseLag - 48; lag <= coarseLag + 48; lag++) {
+    const correlation = sampleCorrelation(first, replay, lateStart, lateEnd, lag, 4);
+    if (correlation > best) {
+      best = correlation;
+      lagFrames = lag;
+    }
+  }
+  return {
+    lagFrames,
+    earlyCorrelation: sampleCorrelation(
+      first,
+      replay,
+      Math.floor(0.55 * sampleRate),
+      Math.floor(1.05 * sampleRate),
+      lagFrames,
+      1,
+    ),
+    lateCorrelation: sampleCorrelation(
+      first,
+      replay,
+      lateStart,
+      lateEnd,
+      lagFrames,
+      1,
+    ),
+  };
+}
+
+function monoPcm16(wav) {
+  const data = pcm16Data(wav);
+  const channels = 2;
+  const frames = Math.floor(data.length / (2 * channels));
+  const samples = new Float32Array(frames);
+  for (let frame = 0; frame < frames; frame++) {
+    samples[frame] =
+      (
+        data.readInt16LE(frame * channels * 2) +
+        data.readInt16LE((frame * channels + 1) * 2)
+      ) /
+      65536;
+  }
+  return samples;
+}
+
+function sampleCorrelation(first, second, start, end, lag, stride) {
+  let dot = 0;
+  let firstPower = 0;
+  let secondPower = 0;
+  for (let index = start; index < end; index += stride) {
+    const shifted = index + lag;
+    if (index < 0 || index >= first.length || shifted < 0 || shifted >= second.length) {
+      continue;
+    }
+    const left = first[index];
+    const right = second[shifted];
+    dot += left * right;
+    firstPower += left * left;
+    secondPower += right * right;
+  }
+  return dot / Math.sqrt(Math.max(Number.EPSILON, firstPower * secondPower));
+}
+
 function analyzePcm16(wav) {
   const data = pcm16Data(wav);
   let sumSquares = 0;
@@ -757,6 +960,10 @@ function command(binary, arguments_) {
   const result = spawnSync(binary, arguments_, { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || `${binary} failed`);
   return result.stdout;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
 async function poll(check, timeout = 30_000) {

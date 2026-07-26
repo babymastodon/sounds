@@ -349,10 +349,12 @@ async function selectClip(preservePlayback, generation) {
     await metadataLoaded;
     if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
     if (generation !== state.selectionGeneration) return;
-    ui.audio.currentTime = Math.max(
+    const targetTime = Math.max(
       0,
       Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration),
     );
+    await settlePlaybackPosition(targetTime);
+    if (generation !== state.selectionGeneration) return;
     updateMetrics(rendered.header);
     ui.renderStatus.textContent = "analyzing…";
     await analyzeSelection(analysisBytes, generation);
@@ -736,6 +738,30 @@ async function togglePlayback() {
   } else {
     ui.audio.pause();
   }
+}
+
+async function settlePlaybackPosition(targetTime) {
+  const duration = ui.audio.duration;
+  const target = Math.max(0, Math.min(duration - 0.01, targetTime));
+  if (Math.abs(ui.audio.currentTime - target) < 0.001) {
+    const nudge = target + 0.25 < duration
+      ? target + 0.25
+      : Math.max(0, target - 0.25);
+    if (Math.abs(nudge - target) >= 0.001) {
+      await seekPlayback(nudge);
+    }
+  }
+  await seekPlayback(target);
+  if (ui.audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+    await once(ui.audio, "canplay");
+  }
+}
+
+async function seekPlayback(time) {
+  if (Math.abs(ui.audio.currentTime - time) < 0.001) return;
+  const seeked = once(ui.audio, "seeked");
+  ui.audio.currentTime = time;
+  await seeked;
 }
 
 function refreshPlayButton() {

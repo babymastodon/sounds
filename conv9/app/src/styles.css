@@ -46,7 +46,7 @@ select {
 
 .shell {
   display: grid;
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 8px;
   width: 100%;
   height: 100vh;
@@ -56,7 +56,6 @@ select {
 
 .masthead,
 .clip-selectors,
-.now-playing,
 .transport,
 .tool-inputs {
   display: flex;
@@ -207,16 +206,15 @@ input[type="number"] {
   font-size: var(--font-base);
 }
 
-.now-playing {
-  justify-content: flex-end;
-  min-width: 0;
-  min-height: 36px;
-}
-
 .metrics {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
   display: flex;
   gap: 22px;
   margin: 0;
+  pointer-events: none;
 }
 
 .metrics div {
@@ -347,6 +345,7 @@ input[type="range"]:disabled {
 }
 
 .visual-card {
+  position: relative;
   overflow: hidden;
   background: #181a19;
 }

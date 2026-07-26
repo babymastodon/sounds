@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-pub const SOURCE_COUNT: usize = 48;
+pub const SOURCE_COUNT: usize = 96;
 pub const SOURCE_SECONDS: f64 = 61.0;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -90,6 +90,7 @@ fn validate_entry(entry: &SourceEntry) -> Result<()> {
         "CC BY 3.0" => "https://creativecommons.org/licenses/by/3.0/",
         "CC BY 4.0" => "https://creativecommons.org/licenses/by/4.0/",
         "CC BY-SA 3.0" => "https://creativecommons.org/licenses/by-sa/3.0/",
+        "CC BY-SA 4.0" => "https://creativecommons.org/licenses/by-sa/4.0/",
         other => bail!("{} uses unsupported license {other}", entry.id),
     };
     if entry.license_url != expected_license_url {

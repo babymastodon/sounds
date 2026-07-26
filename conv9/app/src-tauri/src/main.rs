@@ -141,6 +141,22 @@ fn supersede_render(state: tauri::State<'_, AppState>, render_epoch: u64, reques
     }
 }
 
+#[tauri::command]
+async fn source_preview(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    bins: usize,
+) -> Result<conv9::SourcePreview, String> {
+    let renderer = Arc::clone(&state.renderer);
+    tauri::async_runtime::spawn_blocking(move || {
+        renderer
+            .source_preview(&id, bins)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("source preview worker failed: {error}"))?
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -157,7 +173,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_bootstrap,
             render_selection,
-            supersede_render
+            supersede_render,
+            source_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running the convolution playground");
@@ -220,5 +237,24 @@ mod tests {
             Some("sources.tsv")
         );
         assert!(input_dir.join("ambient_guitar.wav").is_file());
+    }
+
+    #[test]
+    fn lazy_source_preview_is_bounded_and_finite() {
+        let (manifest, input_dir) = locate_data().unwrap();
+        let renderer = OnDemandRenderer::load(&manifest, &input_dir).unwrap();
+        let preview = renderer.source_preview("ambient_guitar", 128).unwrap();
+        assert_eq!(preview.id, "ambient_guitar");
+        assert_eq!(preview.peaks.len(), 128);
+        assert!(preview.peak.is_finite() && preview.peak > 0.0);
+        assert!(preview.rms_dbfs.is_finite());
+        assert!((0.0..=1.0).contains(&preview.zero_crossing_rate));
+        assert!(
+            preview
+                .peaks
+                .iter()
+                .flatten()
+                .all(|sample| sample.is_finite())
+        );
     }
 }

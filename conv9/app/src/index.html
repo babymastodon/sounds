@@ -15,8 +15,10 @@
       </header>
 
       <section class="clip-selectors" aria-label="Convolution sources">
+        <div id="sourceABrowser"></div>
         <select
           id="sourceASelect"
+          hidden
           aria-label="Clip A"
           title="Choose the first convolution source. Changing clip A cancels stale work and renders the selected method again with this signal as input A."
         ></select>
@@ -31,8 +33,10 @@
             <path d="M5 7h13m0 0-3-3m3 3-3 3M19 17H6m0 0 3-3m-3 3 3 3" />
           </svg>
         </button>
+        <div id="sourceBBrowser"></div>
         <select
           id="sourceBSelect"
+          hidden
           aria-label="Clip B"
           title="Choose the second convolution source. Changing clip B cancels stale work and renders the selected method again with this signal as input B."
         ></select>
@@ -131,6 +135,7 @@
     </main>
 
     <div id="errorPanel" class="error-panel" hidden></div>
+    <script src="source-browser.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

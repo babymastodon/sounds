@@ -50,6 +50,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
   await page.addInitScript((injectedCatalog) => {
     window.__CONV9_TEST_REQUESTS__ = [];
+    window.__CONV9_TEST_PREVIEW_REQUESTS__ = [];
     window.__CONV9_TEST_LATEST__ = 0;
     window.__CONV9_STATUS_HISTORY__ = [];
     document.addEventListener("DOMContentLoaded", () => {
@@ -72,6 +73,63 @@ try {
       loadBootstrap: async () => ({ catalog: injectedCatalog, renderEpoch: 7 }),
       supersedeRender: (_renderEpoch, requestId) => {
         window.__CONV9_TEST_LATEST__ = requestId;
+      },
+      loadSourcePreview: async (id, bins) => {
+        window.__CONV9_TEST_PREVIEW_REQUESTS__.push(id);
+        const response = await fetch(`/samples/prepared/${id}.wav`);
+        if (!response.ok) throw new Error(`preview WAV failed: ${response.status}`);
+        const bytes = await response.arrayBuffer();
+        const view = new DataView(bytes);
+        let dataOffset = 44;
+        let dataLength = bytes.byteLength - dataOffset;
+        for (let offset = 12; offset + 8 <= bytes.byteLength;) {
+          const chunk = String.fromCharCode(
+            view.getUint8(offset),
+            view.getUint8(offset + 1),
+            view.getUint8(offset + 2),
+            view.getUint8(offset + 3),
+          );
+          const length = view.getUint32(offset + 4, true);
+          if (chunk === "data") {
+            dataOffset = offset + 8;
+            dataLength = length;
+            break;
+          }
+          offset += 8 + length + (length & 1);
+        }
+        const frameCount = Math.floor(dataLength / 2);
+        const peaks = [];
+        let sumSquares = 0;
+        let peak = 0;
+        let crossings = 0;
+        let previous = view.getInt16(dataOffset, true);
+        for (let index = 0; index < frameCount; index += 1) {
+          const sample = view.getInt16(dataOffset + index * 2, true) / 32768;
+          sumSquares += sample * sample;
+          peak = Math.max(peak, Math.abs(sample));
+          if ((sample < 0) !== (previous < 0)) crossings += 1;
+          previous = sample;
+        }
+        for (let bin = 0; bin < bins; bin += 1) {
+          const start = Math.floor((bin * frameCount) / bins);
+          const end = Math.max(start + 1, Math.floor(((bin + 1) * frameCount) / bins));
+          let minimum = 1;
+          let maximum = -1;
+          for (let index = start; index < end; index += 1) {
+            const sample = view.getInt16(dataOffset + index * 2, true) / 32768;
+            minimum = Math.min(minimum, sample);
+            maximum = Math.max(maximum, sample);
+          }
+          peaks.push([minimum, maximum]);
+        }
+        const rms = Math.sqrt(sumSquares / frameCount);
+        return {
+          id,
+          peaks,
+          peak,
+          rmsDbfs: 20 * Math.log10(Math.max(rms, 1e-12)),
+          zeroCrossingRate: crossings / Math.max(1, frameCount - 1),
+        };
       },
       renderSelection: async (request) => {
         window.__CONV9_TEST_REQUESTS__.push(structuredClone(request));
@@ -133,11 +191,19 @@ try {
 
   await page.goto(`${baseUrl}/app/src/`, { waitUntil: "domcontentloaded" });
   assert.equal(await page.title(), windowTitle);
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#renderStatus")?.textContent === "rendering…" &&
-      document.querySelector("#playButton")?.disabled,
-  );
+  await page
+    .waitForFunction(
+      () =>
+        document.querySelector("#renderStatus")?.textContent === "rendering…" &&
+        document.querySelector("#playButton")?.disabled,
+    )
+    .catch(async (error) => {
+      const errorText = await page.locator("#errorPanel").textContent().catch(() => "");
+      throw new Error(
+        `startup did not render: ${[...pageErrors, errorText].filter(Boolean).join("\n")}`,
+        { cause: error },
+      );
+    });
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.loading.png` });
   }
@@ -169,17 +235,22 @@ try {
 
   assert.equal(await page.locator("#sourceASelect option").count(), 96, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 96, "clip B count");
+  assert.equal(
+    await page.evaluate(() => window.__CONV9_TEST_PREVIEW_REQUESTS__.length),
+    0,
+    "source waveforms are not loaded at startup",
+  );
   const swapControl = await page.evaluate(() => {
-    const a = document.querySelector("#sourceASelect");
+    const a = document.querySelector("#sourceABrowser .source-browser-trigger");
     const swap = document.querySelector("#swapSources");
-    const b = document.querySelector("#sourceBSelect");
+    const b = document.querySelector("#sourceBBrowser .source-browser-trigger");
     const bounds = (element) => {
       const box = element.getBoundingClientRect();
       return { left: box.left, right: box.right, height: box.height };
     };
     return {
-      aValue: a.value,
-      bValue: b.value,
+      aValue: document.querySelector("#sourceASelect").value,
+      bValue: document.querySelector("#sourceBSelect").value,
       aBounds: bounds(a),
       swapBounds: bounds(swap),
       bBounds: bounds(b),
@@ -210,6 +281,108 @@ try {
     { a: swapControl.bValue, b: swapControl.aValue },
     "source swap reverses both dropdown values and the rendered source roles",
   );
+  await page.locator("#sourceABrowser .source-browser-trigger").click();
+  const sourceDialog = page.locator("#source-a-dialog");
+  await sourceDialog.waitFor({ state: "visible" });
+  assert.equal(await sourceDialog.getAttribute("role"), "dialog");
+  assert.equal(
+    await sourceDialog.locator(".source-list").getAttribute("role"),
+    "listbox",
+    "source results use listbox semantics",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#source-a-dialog .source-preview-waveform")
+        ?.getAttribute("aria-busy") === "false" &&
+      window.__CONV9_TEST_PREVIEW_REQUESTS__.length === 1,
+  );
+  const firstPreviewPixels = await canvasFingerprint(
+    page,
+    "#source-a-dialog .source-preview-waveform",
+  );
+  await sourceDialog.locator(".source-search").fill("helicopter");
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("#source-a-dialog [role='option']").length === 1 &&
+      document.querySelector("#source-a-dialog .source-match-count")?.textContent === "1 / 96",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#source-a-dialog .source-preview-waveform")
+        ?.getAttribute("aria-busy") === "false" &&
+      window.__CONV9_TEST_PREVIEW_REQUESTS__.includes("helicopter_takeoff"),
+  );
+  const helicopterPreviewPixels = await canvasFingerprint(
+    page,
+    "#source-a-dialog .source-preview-waveform",
+  );
+  assert.notEqual(
+    helicopterPreviewPixels,
+    firstPreviewPixels,
+    "highlighting a different source produces a different lazy waveform",
+  );
+  await sourceDialog.locator(".source-search").press("ArrowDown");
+  assert.equal(
+    await sourceDialog.locator(".source-list").getAttribute("aria-activedescendant"),
+    "source-a-option-helicopter_takeoff",
+  );
+  await sourceDialog.locator(".source-list").press("Enter");
+  await waitForPath(
+    page,
+    `helicopter_takeoff__${swapControl.aValue}/windowed_convolution/`,
+  );
+  assert.equal(
+    await page.locator("#sourceASelect").inputValue(),
+    "helicopter_takeoff",
+    "keyboard selection updates the hidden state mirror and render request",
+  );
+  await page.locator("#sourceABrowser .source-browser-trigger").click();
+  await sourceDialog.locator(".source-search").fill("");
+  await sourceDialog.locator("[data-group='music']").click();
+  const musicalMatches = await sourceDialog.locator("[role='option']").count();
+  assert.ok(
+    musicalMatches > 10 && musicalMatches < 96,
+    `music category should meaningfully filter the catalog: ${musicalMatches}`,
+  );
+  await assertNoViewportOverflow(page);
+  await assertNoUndersizedText(page);
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#source-a-dialog .source-preview-waveform")
+          ?.getAttribute("aria-busy") === "false",
+    );
+    await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.browser.png` });
+  }
+  await sourceDialog.locator(".source-search").press("Escape");
+  assert.equal(await sourceDialog.isHidden(), true, "Escape closes the source browser");
+  assert.equal(
+    await page.locator("#sourceABrowser .source-browser-trigger").evaluate(
+      (trigger) => document.activeElement === trigger,
+    ),
+    true,
+    "Escape restores focus to the source trigger",
+  );
+  const previewRequestsBeforeCacheCheck = await page.evaluate(
+    () => window.__CONV9_TEST_PREVIEW_REQUESTS__.length,
+  );
+  await page.locator("#sourceABrowser .source-browser-trigger").click();
+  await page.waitForTimeout(150);
+  assert.equal(
+    await page.evaluate(() => window.__CONV9_TEST_PREVIEW_REQUESTS__.length),
+    previewRequestsBeforeCacheCheck,
+    "reopening a selected source uses its cached waveform",
+  );
+  await sourceDialog.locator(".source-search").press("Escape");
+  const selectedABeforeBrowsingB = await page.locator("#sourceASelect").inputValue();
+  await page.locator("#sourceBBrowser .source-browser-trigger").click();
+  await page.locator("#source-b-dialog").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator("#sourceASelect").inputValue(),
+    selectedABeforeBrowsingB,
+    "clip B browser has independent selection state",
+  );
+  await page.locator("#source-b-dialog .source-search").press("Escape");
   assert.equal(
     await page.locator(".clip-selectors label, .source-meta, .convolution-mark").count(),
     0,
@@ -247,12 +420,12 @@ try {
     "rgba(0, 0, 0, 0)",
     "waveform metrics must not show a mismatched box while loading",
   );
-  assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
+  assert.equal(await page.locator("#algorithmButtons button").count(), 7, "algorithm count");
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
     return {
       buttonFont: style("#algorithmButtons button").fontSize,
-      selectFont: style("#sourceASelect").fontSize,
+      selectFont: style("#sourceABrowser .source-browser-trigger").fontSize,
       numberFont: style("#methodTools input[type='number']").fontSize,
       statusFont: style("#renderStatus").fontSize,
       metricFont: style("#metrics dd").fontSize,
@@ -260,7 +433,7 @@ try {
       speedValueFont: style("#playbackSpeedValue").fontSize,
       toolLabelFont: style(".tool-control > span").fontSize,
       buttonHeight: style("#algorithmButtons button").height,
-      selectHeight: style("#sourceASelect").height,
+      selectHeight: style("#sourceABrowser .source-browser-trigger").height,
       sliderHeight: style("#methodTools input[type='range']").height,
     };
   });
@@ -443,7 +616,10 @@ try {
   await expectAudioTime(page, 24, 0.5);
 
   const thirdSource = await page.locator("#sourceBSelect option").nth(2).getAttribute("value");
-  await page.locator("#sourceBSelect").selectOption(thirdSource);
+  await page.locator("#sourceBSelect").evaluate((select, value) => {
+    select.value = value;
+    select.dispatchEvent(new Event("change"));
+  }, thirdSource);
   await waitForPath(page, `${thirdSource}/windowed_convolution/1.37x5.00`);
 
   await page.getByRole("button", { name: "chunks", exact: true }).click();
@@ -532,6 +708,20 @@ try {
     requests.at(-1).algorithm,
     "source_filter_vocoder",
     "latest rapid selection wins",
+  );
+  await page.getByRole("button", { name: "resonators", exact: true }).click();
+  await waitForPath(
+    page,
+    "/predictive_resonator_bank/resonator_ring=0.75,resonator_transfer=1.00",
+  );
+  assert.equal(await page.locator("#methodTools .window-control").count(), 0);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 2);
+  await page.getByLabel("transfer exact value").fill("0.72");
+  await waitForPath(page, "resonator_transfer=0.72");
+  assert.equal(
+    await page.evaluate(() => window.__CONV9_TEST_REQUESTS__.at(-1).algorithm),
+    "predictive_resonator_bank",
+    "resonator selection retains its catalog parameters and request identity",
   );
 
   await page.getByRole("button", { name: "Pause" }).click();
@@ -747,9 +937,14 @@ try {
     "resize rescales the cached spectrum instead of running another FFT analysis",
   );
   assert.equal(await page.locator("#metrics").isVisible(), true, "metrics remain on compact row");
+  await page.locator("#sourceBBrowser .source-browser-trigger").click();
+  await page.locator("#source-b-dialog").waitFor({ state: "visible" });
+  await assertNoViewportOverflow(page);
+  await assertNoUndersizedText(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.compact.png` });
   }
+  await page.locator("#source-b-dialog .source-search").press("Escape");
 
   assert.deepEqual(pageErrors, [], `page errors: ${pageErrors.join("\n")}`);
   assert.deepEqual(failedResponses, [], `failed responses: ${failedResponses.join("\n")}`);
@@ -812,6 +1007,10 @@ async function testCatalog() {
         "Sets the frequency span used to smooth both short-time spectra before transfer.",
       vocoder_transient_protection:
         "Reduces envelope transfer during rapid spectral onsets from clip A.",
+      resonator_transfer:
+        "Moves clip B from its own response toward clip A's learned resonances while preserving B's innovation, events, and timeline.",
+      resonator_ring:
+        "Controls damping of clip A's learned stable resonances; higher values retain narrower modes and longer ringing.",
       chunk_crossfade_percent:
         "Sets power-normalized overlap as a percentage of the shorter chunk. The 50% default keeps transitions continuous; lower values expose seams.",
       chunk_crop_position:
@@ -827,7 +1026,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 8,
+    schema_version: 9,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -875,11 +1074,23 @@ async function testCatalog() {
         ],
       },
       {
+        id: "predictive_resonator_bank",
+        title: "Predictive resonator bank",
+        description:
+          "Learns stable resonances from A, recovers B's innovation signal, and drives A's acoustic body with B's events and timeline.",
+        rank: 3,
+        windows: [],
+        parameters: [
+          parameter("resonator_transfer", "transfer", 0, 1, 0.01, 1),
+          parameter("resonator_ring", "ring", 0, 1, 0.01, 0.75),
+        ],
+      },
+      {
         id: "chunk_crossfade",
         title: "Independent chunks + crossfade",
         description:
           "Convolves synchronized chunks and joins adjacent results with an equal-power crossfade of configurable length.",
-        rank: 3,
+        rank: 4,
         windows: windows(),
         parameters: [
           parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
@@ -892,7 +1103,7 @@ async function testCatalog() {
         title: "Full linear convolution",
         description:
           "Selects one segment from each clip, convolves them as the smear reference, and retains the complete linear result.",
-        rank: 4,
+        rank: 5,
         windows: [],
         parameters: [
           parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
@@ -906,7 +1117,7 @@ async function testCatalog() {
         title: "Dry source A",
         description:
           "Plays the complete conditioned clip A without convolution, output saturation, or a second level-normalization pass.",
-        rank: 5,
+        rank: 6,
         windows: [],
         parameters: [],
       },
@@ -915,7 +1126,7 @@ async function testCatalog() {
         title: "Dry source B",
         description:
           "Plays the complete conditioned clip B without convolution, output saturation, or a second level-normalization pass.",
-        rank: 6,
+        rank: 7,
         windows: [],
         parameters: [],
       },
@@ -985,6 +1196,20 @@ async function assertCanvasHasVariation(page, selector) {
     }
     return false;
   }, selector);
+}
+
+async function canvasFingerprint(page, selector) {
+  return page.locator(selector).evaluate((canvas) => {
+    const pixels = canvas
+      .getContext("2d", { willReadFrequently: true })
+      .getImageData(0, 0, canvas.width, canvas.height).data;
+    let hash = 2166136261;
+    for (let index = 0; index < pixels.length; index += 37) {
+      hash ^= pixels[index];
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  });
 }
 
 async function assertNoViewportOverflow(page) {

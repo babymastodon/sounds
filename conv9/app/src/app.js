@@ -2,6 +2,8 @@ const ui = {
   renderStatus: document.querySelector("#renderStatus"),
   sourceASelect: document.querySelector("#sourceASelect"),
   sourceBSelect: document.querySelector("#sourceBSelect"),
+  sourceABrowser: document.querySelector("#sourceABrowser"),
+  sourceBBrowser: document.querySelector("#sourceBBrowser"),
   swapSources: document.querySelector("#swapSources"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
   methodTools: document.querySelector("#methodTools"),
@@ -26,6 +28,8 @@ const state = {
   bridge: null,
   sourceA: "",
   sourceB: "",
+  sourceBrowserA: null,
+  sourceBrowserB: null,
   algorithm: "windowed_convolution",
   settings: new Map(),
   waveformLayer: null,
@@ -110,6 +114,7 @@ function runtimeBridge() {
   return {
     loadBootstrap: () => invoke("load_bootstrap"),
     renderSelection: async (request) => parseEnvelope(await invoke("render_selection", request)),
+    loadSourcePreview: (id, bins) => invoke("source_preview", { id, bins }),
     supersedeRender: (renderEpoch, requestId) =>
       invoke("supersede_render", { renderEpoch, requestId }).catch(() => {}),
   };
@@ -132,6 +137,25 @@ function buildControls() {
   }
   ui.sourceASelect.value = state.sourceA;
   ui.sourceBSelect.value = state.sourceB;
+  const selectSource = (role, id) => {
+    const select = role === "A" ? ui.sourceASelect : ui.sourceBSelect;
+    select.value = id;
+    select.dispatchEvent(new Event("change"));
+  };
+  state.sourceBrowserA = new SourceBrowser(ui.sourceABrowser, {
+    role: "A",
+    sources: state.catalog.sources,
+    value: state.sourceA,
+    loadPreview: (id, bins) => state.bridge.loadSourcePreview(id, bins),
+    onSelect: (id) => selectSource("A", id),
+  });
+  state.sourceBrowserB = new SourceBrowser(ui.sourceBBrowser, {
+    role: "B",
+    sources: state.catalog.sources,
+    value: state.sourceB,
+    loadPreview: (id, bins) => state.bridge.loadSourcePreview(id, bins),
+    onSelect: (id) => selectSource("B", id),
+  });
 
   for (const algorithm of state.catalog.algorithms) {
     const button = document.createElement("button");
@@ -150,10 +174,12 @@ function buildControls() {
 function bindEvents() {
   ui.sourceASelect.addEventListener("change", () => {
     state.sourceA = ui.sourceASelect.value;
+    state.sourceBrowserA.setValue(state.sourceA);
     scheduleSelection(true);
   });
   ui.sourceBSelect.addEventListener("change", () => {
     state.sourceB = ui.sourceBSelect.value;
+    state.sourceBrowserB.setValue(state.sourceB);
     scheduleSelection(true);
   });
   ui.swapSources.addEventListener("click", () => {
@@ -161,6 +187,8 @@ function bindEvents() {
     [state.sourceA, state.sourceB] = [state.sourceB, state.sourceA];
     ui.sourceASelect.value = state.sourceA;
     ui.sourceBSelect.value = state.sourceB;
+    state.sourceBrowserA.setValue(state.sourceA);
+    state.sourceBrowserB.setValue(state.sourceB);
     scheduleSelection(true);
   });
   ui.algorithmButtons.addEventListener("click", (event) => {
@@ -511,7 +539,7 @@ function selectionSignature(request) {
     if (request.algorithm === "dry_a" || request.algorithm === "dry_b") {
       return `${request.leftId}__${request.rightId}/${request.algorithm}/source`;
     }
-    if (request.algorithm === "source_filter_vocoder") {
+    if (request.algorithm !== "full_convolution") {
       const parameters = Object.entries(request.parameters)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([id, value]) => `${id}=${Number(value).toFixed(2)}`)
@@ -1386,6 +1414,7 @@ function shortAlgorithm(value) {
   return {
     windowed_convolution: "windowed",
     source_filter_vocoder: "vocoder",
+    predictive_resonator_bank: "resonators",
     chunk_crossfade: "chunks",
     full_convolution: "full",
     dry_a: "dry a",

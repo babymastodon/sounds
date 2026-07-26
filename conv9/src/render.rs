@@ -72,6 +72,16 @@ pub struct RenderedAudio {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SourcePreview {
+    pub id: String,
+    pub peaks: Vec<[f32; 2]>,
+    pub peak: f32,
+    pub rms_dbfs: f32,
+    pub zero_crossing_rate: f32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenderTimings {
     pub source_milliseconds: f64,
     pub dsp_milliseconds: f64,
@@ -120,7 +130,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 8,
+            schema_version: 9,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -225,6 +235,37 @@ impl OnDemandRenderer {
                 encode_milliseconds,
                 total_milliseconds: elapsed_milliseconds(total_started),
             },
+        })
+    }
+
+    pub fn source_preview(&self, id: &str, bins: usize) -> Result<SourcePreview> {
+        if !(64..=512).contains(&bins) {
+            bail!("source preview bins must be between 64 and 512");
+        }
+        let clip = self.clip(id)?;
+        let metrics = measure(&clip.samples);
+        let mut peaks = Vec::with_capacity(bins);
+        for index in 0..bins {
+            let start = index * clip.samples.len() / bins;
+            let end = ((index + 1) * clip.samples.len() / bins).max(start + 1);
+            let (minimum, maximum) = clip.samples[start..end].iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(minimum, maximum), &sample| (minimum.min(sample), maximum.max(sample)),
+            );
+            peaks.push([minimum, maximum]);
+        }
+        let crossings = clip
+            .samples
+            .windows(2)
+            .filter(|pair| pair[0].is_sign_negative() != pair[1].is_sign_negative())
+            .count();
+        Ok(SourcePreview {
+            id: clip.id.clone(),
+            peaks,
+            peak: metrics.peak,
+            rms_dbfs: metrics.rms_dbfs,
+            zero_crossing_rate: crossings as f32
+                / clip.samples.len().saturating_sub(1).max(1) as f32,
         })
     }
 
@@ -362,6 +403,34 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               and restores the selected transfer as each onset settles.",
             },
         ],
+        Algorithm::PredictiveResonatorBank => vec![
+            ParameterCatalogEntry {
+                id: "resonator_transfer",
+                label: "transfer",
+                minimum: 0.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.resonator_transfer,
+                unit: "",
+                description: "Moves the stable synthesis model from clip B's own response toward \
+                              clip A's learned resonances. 0 is an exact B identity transform before \
+                              shared output conditioning, while 1 gives A full spectral character \
+                              and keeps B's innovation, events, and complete timeline.",
+            },
+            ParameterCatalogEntry {
+                id: "resonator_ring",
+                label: "ring",
+                minimum: 0.0,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.resonator_ring,
+                unit: "",
+                description: "Controls bandwidth expansion of the learned causal models. Low values \
+                              pull every stable pole inward for a dry, quickly damped body; high \
+                              values retain narrower modes and longer ringing while remaining \
+                              strictly stable. It is neutral when transfer is 0.",
+            },
+        ],
         Algorithm::ChunkCrossfade => vec![
             input_taper(),
             ParameterCatalogEntry {
@@ -479,8 +548,12 @@ mod tests {
                 assert!(parameters.is_empty());
                 assert!(window_catalog(algorithm).is_empty());
             } else {
-                assert_eq!(algorithm, Algorithm::SourceFilterVocoder);
-                assert_eq!(parameters.len(), 3);
+                let expected_count = match algorithm {
+                    Algorithm::SourceFilterVocoder => 3,
+                    Algorithm::PredictiveResonatorBank => 2,
+                    _ => panic!("unexpected non-windowed configurable algorithm"),
+                };
+                assert_eq!(parameters.len(), expected_count);
                 assert!(window_catalog(algorithm).is_empty());
                 assert!(
                     parameters
@@ -512,6 +585,10 @@ mod tests {
                     "vocoder_envelope_width_hz",
                     "vocoder_transient_protection",
                 ][..],
+            ),
+            (
+                Algorithm::PredictiveResonatorBank,
+                &["resonator_transfer", "resonator_ring"][..],
             ),
             (
                 Algorithm::ChunkCrossfade,

@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use rayon::join;
+use rayon::{join, prelude::*};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
@@ -13,16 +13,266 @@ use crate::audio::{AudioClip, INPUT_FRAMES, INPUT_SECONDS, SAMPLE_RATE};
 pub enum Algorithm {
     WindowedConvolution,
     SourceFilterVocoder,
+    PredictiveResonatorBank,
     ChunkCrossfade,
     FullConvolution,
     DryA,
     DryB,
 }
 
+#[cfg(test)]
+mod windowed_performance_characterization {
+    use std::hint::black_box;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    #[ignore = "manual release-mode throughput characterization"]
+    fn local_fft_and_overlap_throughput() {
+        for (a_frames, b_frames, repetitions) in [
+            (4_800_usize, 240_000_usize, 20_usize),
+            (4_800, 1_440_000, 8),
+        ] {
+            let local_frames = a_frames + b_frames - 1;
+            let left = synthetic_signal(a_frames, 0.017);
+            let right = synthetic_signal(b_frames, 0.011);
+            let mut convolver = LocalConvolver::new(local_frames);
+            black_box(convolver.convolve(&left, &right).unwrap());
+            let started = Instant::now();
+            let mut outputs = Vec::with_capacity(repetitions);
+            for _ in 0..repetitions {
+                outputs.push(black_box(convolver.convolve(&left, &right).unwrap()));
+            }
+            let fft_seconds = started.elapsed().as_secs_f64();
+
+            let placements = (0..repetitions)
+                .map(|index| ((index * 2_400) as isize, local_frames))
+                .collect::<Vec<_>>();
+            let mut overlap = OverlapBuffer::for_placements(&placements);
+            let profile = vec![1.0; local_frames];
+            let started = Instant::now();
+            for (index, output) in outputs.iter().enumerate() {
+                overlap.add_crossfade_precomputed(
+                    placements[index].0,
+                    output,
+                    &profile,
+                    &profile,
+                    1.0,
+                );
+            }
+            black_box(overlap.finish());
+            let overlap_seconds = started.elapsed().as_secs_f64();
+
+            let worker_count = rayon::current_num_threads().min(repetitions).max(1);
+            let mut workers = (0..worker_count)
+                .map(|_| convolver.fresh_workspace())
+                .collect::<Vec<_>>();
+            let started = Instant::now();
+            for _ in 0..repetitions.div_ceil(worker_count) {
+                black_box(
+                    workers
+                        .par_iter_mut()
+                        .map(|worker| worker.convolve_serial_measured(&left, &right).unwrap())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let parallel_fft_seconds = started.elapsed().as_secs_f64();
+            eprintln!(
+                "local_frames={local_frames} fft_len={} repetitions={repetitions} \
+                 fft_ms_each={:.3} overlap_ms_each={:.3} fft_msamples_s={:.1} \
+                 overlap_msamples_s={:.1} batch_fft_ms_each={:.3}",
+                convolver.fft_len,
+                fft_seconds * 1_000.0 / repetitions as f64,
+                overlap_seconds * 1_000.0 / repetitions as f64,
+                repetitions as f64 * convolver.fft_len as f64 / fft_seconds / 1.0e6,
+                repetitions as f64 * local_frames as f64 / overlap_seconds / 1.0e6,
+                parallel_fft_seconds * 1_000.0
+                    / (repetitions.div_ceil(worker_count) * worker_count) as f64,
+            );
+        }
+    }
+
+    #[test]
+    fn batched_windowed_render_matches_sequential_reference_and_is_deterministic() {
+        let frames = 16_384;
+        let clip_a = synthetic_signal(frames, 0.017);
+        let clip_b = synthetic_signal(frames, 0.011);
+        let settings = (512, 1_024, 128, DEFAULT_INPUT_TAPER);
+        let reference = render_sequential_reference(
+            &clip_a, &clip_b, settings.0, settings.1, settings.2, settings.3,
+        );
+        let first = render_windowed_samples(
+            &clip_a,
+            &clip_b,
+            settings.0,
+            settings.1,
+            settings.2,
+            settings.3,
+            &|| false,
+        )
+        .unwrap();
+        let second = render_windowed_samples(
+            &clip_a,
+            &clip_b,
+            settings.0,
+            settings.1,
+            settings.2,
+            settings.3,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(first.start_frame, reference.start_frame);
+        assert_eq!(first.samples.len(), reference.samples.len());
+        assert_eq!(
+            first
+                .samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            second
+                .samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            "parallel render was not bit deterministic",
+        );
+        let maximum_error = first
+            .samples
+            .iter()
+            .zip(&reference.samples)
+            .map(|(&actual, &expected)| (actual - expected).abs())
+            .fold(0.0_f32, f32::max);
+        let reference_rms = (reference
+            .samples
+            .iter()
+            .map(|&sample| f64::from(sample).powi(2))
+            .sum::<f64>()
+            / reference.samples.len() as f64)
+            .sqrt() as f32;
+        eprintln!(
+            "windowed reference comparison: max_error={maximum_error:e} reference_rms={reference_rms:e}"
+        );
+        assert!(
+            maximum_error <= reference_rms * 2.0e-4 + 1.0e-7,
+            "batched render diverged from reference by {maximum_error:e}",
+        );
+    }
+
+    #[test]
+    fn batched_windowed_render_honors_cancellation_between_small_batches() {
+        let frames = 32_768;
+        let clip_a = synthetic_signal(frames, 0.017);
+        let clip_b = synthetic_signal(frames, 0.011);
+        let checks = AtomicUsize::new(0);
+        let result = render_windowed_samples(
+            &clip_a,
+            &clip_b,
+            256,
+            1_024,
+            64,
+            DEFAULT_INPUT_TAPER,
+            &|| checks.fetch_add(1, Ordering::Relaxed) >= 2,
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().expect("render should cancel").to_string(),
+            "render cancelled"
+        );
+        assert!(checks.load(Ordering::Relaxed) <= 4);
+    }
+
+    #[test]
+    fn worker_pool_uses_all_local_cores_without_exceeding_memory_budget() {
+        let local_frames = 4_800_usize + 1_440_000 - 1;
+        let fft_frames = local_frames.next_power_of_two();
+        assert_eq!(windowed_worker_count(8, fft_frames, local_frames, 2_442), 8);
+        let count = windowed_worker_count(128, fft_frames, local_frames, 2_442);
+        let bytes_per_worker = fft_frames * 20 + local_frames * 8;
+        assert!(count < 128);
+        assert!(count * bytes_per_worker <= WINDOWED_WORKSPACE_BUDGET_BYTES);
+    }
+
+    fn render_sequential_reference(
+        clip_a: &[f32],
+        clip_b: &[f32],
+        a_frames: usize,
+        b_frames: usize,
+        hop_frames: usize,
+        input_taper: f32,
+    ) -> TimelineRender {
+        let local_frames = a_frames + b_frames - 1;
+        let source_centers = centers_for_length(clip_a.len(), hop_frames);
+        let placements = source_centers
+            .iter()
+            .map(|&center| (convolution_center(center), local_frames))
+            .collect::<Vec<_>>();
+        let mut convolver = LocalConvolver::new(local_frames);
+        let a_taper = tukey_window(a_frames, input_taper);
+        let b_taper = tukey_window(b_frames, input_taper);
+        let power_profile =
+            convolution_power_profile_from_tapers(&mut convolver, &a_taper, &b_taper).unwrap();
+        let synthesis_profile = (0..local_frames)
+            .map(|index| synthesis_weight(index, local_frames))
+            .collect::<Vec<_>>();
+        let power_amplitude = synthesis_profile
+            .iter()
+            .zip(&power_profile)
+            .map(|(&weight, &power)| weight * power.sqrt())
+            .collect::<Vec<_>>();
+        let mut overlap = OverlapBuffer::for_placements(&placements);
+        let mut previous_gain = None;
+        let mut previous_local: Option<(isize, Vec<f32>)> = None;
+        let level_smoothing = gain_smoothing_for_hop(hop_frames);
+        for source_center in source_centers {
+            let center = convolution_center(source_center);
+            let (a, b) =
+                extract_pair_samples_with_tapers(clip_a, clip_b, source_center, &a_taper, &b_taper);
+            let mut local = convolver.convolve(&a, &b).unwrap();
+            previous_gain = Some(level_local(
+                &mut local,
+                previous_gain,
+                0.085,
+                level_smoothing,
+            ));
+            overlap.add_crossfade_precomputed(
+                center,
+                &local,
+                &synthesis_profile,
+                &power_amplitude,
+                1.0,
+            );
+            if let Some((previous_center, previous)) = previous_local.take() {
+                let coherence =
+                    aligned_positive_coherence(&previous, previous_center, &local, center);
+                overlap.add_coherence_pair_precomputed(
+                    previous_center,
+                    center,
+                    &power_amplitude,
+                    coherence,
+                );
+            }
+            previous_local = Some((center, local));
+        }
+        overlap.finish()
+    }
+
+    fn synthetic_signal(frames: usize, phase_step: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|index| {
+                0.15 * (index as f32 * phase_step).sin()
+                    + 0.05 * (index as f32 * phase_step * 1.731).cos()
+            })
+            .collect()
+    }
+}
+
 impl Algorithm {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::WindowedConvolution,
         Self::SourceFilterVocoder,
+        Self::PredictiveResonatorBank,
         Self::ChunkCrossfade,
         Self::FullConvolution,
         Self::DryA,
@@ -33,6 +283,7 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => "windowed_convolution",
             Self::SourceFilterVocoder => "source_filter_vocoder",
+            Self::PredictiveResonatorBank => "predictive_resonator_bank",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
             Self::DryA => "dry_a",
@@ -44,6 +295,7 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => "Windowed convolution",
             Self::SourceFilterVocoder => "Source-filter vocoder",
+            Self::PredictiveResonatorBank => "Predictive resonator bank",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
             Self::DryA => "Dry source A",
@@ -64,6 +316,12 @@ impl Algorithm {
                  short-time spectral envelope. A's phase, amplitude motion, and protected transients \
                  remain in place as B's time-varying broad-band color is transferred by a dense \
                  overlap-add source-filter vocoder."
+            }
+            Self::PredictiveResonatorBank => {
+                "Learns a stable 64-state causal resonance model from each complete clip, removes \
+                 clip B's predictable response to recover its innovation signal, then drives an \
+                 interpolation toward clip A's learned acoustic system. B supplies the exact \
+                 61-second event timeline while A supplies reusable resonances and spectral body."
             }
             Self::ChunkCrossfade => {
                 "Convolves independent synchronized chunks, crops each result to its timeline slot, \
@@ -92,10 +350,11 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => 1,
             Self::SourceFilterVocoder => 2,
-            Self::ChunkCrossfade => 3,
-            Self::FullConvolution => 4,
-            Self::DryA => 5,
-            Self::DryB => 6,
+            Self::PredictiveResonatorBank => 3,
+            Self::ChunkCrossfade => 4,
+            Self::FullConvolution => 5,
+            Self::DryA => 6,
+            Self::DryB => 7,
         }
     }
 
@@ -134,6 +393,8 @@ pub struct AlgorithmParameters {
     pub vocoder_transfer: f32,
     pub vocoder_envelope_width_hz: f32,
     pub vocoder_transient_protection: f32,
+    pub resonator_transfer: f32,
+    pub resonator_ring: f32,
     pub window_overlap_percent: f32,
     pub chunk_crossfade_percent: f32,
     pub chunk_crop_position: f32,
@@ -150,6 +411,8 @@ impl Default for AlgorithmParameters {
             vocoder_transfer: 0.85,
             vocoder_envelope_width_hz: 900.0,
             vocoder_transient_protection: 0.65,
+            resonator_transfer: 1.0,
+            resonator_ring: 0.75,
             window_overlap_percent: 75.0,
             chunk_crossfade_percent: 50.0,
             chunk_crop_position: 0.50,
@@ -182,6 +445,10 @@ impl AlgorithmParameters {
                     0.0,
                     1.0,
                 )?;
+            }
+            Algorithm::PredictiveResonatorBank => {
+                validate_range("resonator transfer", self.resonator_transfer, 0.0, 1.0)?;
+                validate_range("resonator ring", self.resonator_ring, 0.0, 1.0)?;
             }
             Algorithm::ChunkCrossfade => {
                 validate_range("input taper", self.input_taper, 0.05, 1.0)?;
@@ -294,6 +561,13 @@ pub fn render_algorithm_cancellable(
         Algorithm::SourceFilterVocoder => {
             render_source_filter_vocoder(clip_a, clip_b, parameters, cancelled)?
         }
+        Algorithm::PredictiveResonatorBank => crate::convbank::render_predictive_resonator_bank(
+            &clip_a.samples,
+            &clip_b.samples,
+            parameters.resonator_transfer,
+            parameters.resonator_ring,
+            cancelled,
+        )?,
         Algorithm::ChunkCrossfade => render_chunk_crossfade(
             clip_a,
             clip_b,
@@ -410,10 +684,11 @@ fn render_windowed_samples(
         .iter()
         .map(|&center| (convolution_center(center), local_frames))
         .collect::<Vec<_>>();
-    let mut convolver = LocalConvolver::new(local_frames);
+    let mut profile_convolver = LocalConvolver::new(local_frames);
     let a_taper = tukey_window(a_frames, input_taper);
     let b_taper = tukey_window(b_frames, input_taper);
-    let power_profile = convolution_power_profile_from_tapers(&mut convolver, &a_taper, &b_taper)?;
+    let power_profile =
+        convolution_power_profile_from_tapers(&mut profile_convolver, &a_taper, &b_taper)?;
     let synthesis_profile = (0..local_frames)
         .map(|index| synthesis_weight(index, local_frames))
         .collect::<Vec<_>>();
@@ -424,42 +699,123 @@ fn render_windowed_samples(
         .collect::<Vec<_>>();
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
-    let mut previous_local: Option<(isize, Vec<f32>)> = None;
+    let mut previous_local: Option<WindowedGrain> = None;
     let level_smoothing = gain_smoothing_for_hop(hop_frames);
-    for source_center in source_centers {
+    let worker_count = windowed_worker_count(
+        rayon::current_num_threads(),
+        profile_convolver.fft_len,
+        local_frames,
+        source_centers.len(),
+    );
+    let mut convolvers = (0..worker_count)
+        .map(|_| profile_convolver.fresh_workspace())
+        .collect::<Vec<_>>();
+    drop(profile_convolver);
+
+    for center_batch in source_centers.chunks(worker_count) {
         if cancelled() {
             bail!("render cancelled");
         }
-        let output_center = convolution_center(source_center);
-        let (a, b) =
-            extract_pair_samples_with_tapers(clip_a, clip_b, source_center, &a_taper, &b_taper);
-        let mut local = convolver.convolve(&a, &b)?;
-        previous_gain = Some(level_local(
-            &mut local,
-            previous_gain,
-            0.085,
-            level_smoothing,
-        ));
-        overlap.add_crossfade_precomputed(
-            output_center,
-            &local,
+        // The batch is bounded by one persistent FFT workspace per Rayon
+        // worker. Indexed parallel collection retains source order, so the
+        // sequential gain follower and every per-sample addition remain
+        // deterministic even though the independent FFTs use all safe cores.
+        let mut grains = convolvers[..center_batch.len()]
+            .par_iter_mut()
+            .zip(center_batch.par_iter())
+            .map(|(convolver, &source_center)| {
+                let (a, b) = extract_pair_samples_with_tapers(
+                    clip_a,
+                    clip_b,
+                    source_center,
+                    &a_taper,
+                    &b_taper,
+                );
+                let convolution = convolver.convolve_serial_measured(&a, &b)?;
+                Ok(WindowedGrain {
+                    center: convolution_center(source_center),
+                    samples: convolution.samples,
+                    rms: convolution.rms,
+                    gain: 1.0,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if cancelled() {
+            bail!("render cancelled");
+        }
+
+        for grain in &mut grains {
+            let gain = level_gain(grain.rms, previous_gain, 0.085, level_smoothing);
+            grain.gain = gain;
+            previous_gain = Some(gain);
+        }
+        let mut coherence_pairs = Vec::with_capacity(grains.len());
+        if let (Some(previous), Some(current)) = (previous_local.as_ref(), grains.first()) {
+            coherence_pairs.push(CoherencePlacement {
+                previous_center: previous.center,
+                current_center: current.center,
+                coherence: aligned_positive_coherence(
+                    &previous.samples,
+                    previous.center,
+                    &current.samples,
+                    current.center,
+                ),
+            });
+        }
+        coherence_pairs.extend(grains.windows(2).map(|pair| CoherencePlacement {
+            previous_center: pair[0].center,
+            current_center: pair[1].center,
+            coherence: aligned_positive_coherence(
+                &pair[0].samples,
+                pair[0].center,
+                &pair[1].samples,
+                pair[1].center,
+            ),
+        }));
+        overlap.add_windowed_batch(
+            &grains,
+            &coherence_pairs,
             &synthesis_profile,
             &power_amplitude,
-            1.0,
         );
-        if let Some((previous_center, previous)) = previous_local.take() {
-            let coherence =
-                aligned_positive_coherence(&previous, previous_center, &local, output_center);
-            overlap.add_coherence_pair_precomputed(
-                previous_center,
-                output_center,
-                &power_amplitude,
-                coherence,
-            );
-        }
-        previous_local = Some((output_center, local));
+        previous_local = grains.pop();
     }
     Ok(overlap.finish())
+}
+
+const WINDOWED_WORKSPACE_BUDGET_BYTES: usize = 768 * 1024 * 1024;
+
+fn windowed_worker_count(
+    available_threads: usize,
+    fft_frames: usize,
+    local_frames: usize,
+    grain_count: usize,
+) -> usize {
+    // Three real time buffers, two half-complex spectra, extracted inputs,
+    // and one local result. This is deliberately conservative so a many-core
+    // machine cannot turn a 30-second window into unbounded transient memory.
+    let bytes_per_worker = fft_frames
+        .saturating_mul(20)
+        .saturating_add(local_frames.saturating_mul(8))
+        .max(1);
+    let memory_limited = (WINDOWED_WORKSPACE_BUDGET_BYTES / bytes_per_worker).max(1);
+    available_threads
+        .max(1)
+        .min(memory_limited)
+        .min(grain_count.max(1))
+}
+
+struct WindowedGrain {
+    center: isize,
+    samples: Vec<f32>,
+    rms: f32,
+    gain: f32,
+}
+
+struct CoherencePlacement {
+    previous_center: isize,
+    current_center: isize,
+    coherence: f32,
 }
 
 fn convolution_center(source_center: usize) -> isize {
@@ -545,10 +901,11 @@ struct SourceFilterVocoder {
     a_envelope: Vec<f32>,
     b_envelope: Vec<f32>,
     previous_a_magnitude: Vec<f32>,
-    previous_log_ratio: Vec<f32>,
     prefix: Vec<f64>,
     transient_state: f32,
     transient_hold_frames: usize,
+    transient_flux_floor: f32,
+    analysis_frames_seen: usize,
     initialized: bool,
 }
 
@@ -569,10 +926,11 @@ impl SourceFilterVocoder {
             a_envelope: vec![0.0; bins],
             b_envelope: vec![0.0; bins],
             previous_a_magnitude: vec![0.0; bins],
-            previous_log_ratio: vec![0.0; bins],
             prefix: vec![0.0; bins + 1],
             transient_state: 0.0,
             transient_hold_frames: 0,
+            transient_flux_floor: 0.0,
+            analysis_frames_seen: 0,
             forward,
             inverse,
             initialized: false,
@@ -593,14 +951,13 @@ impl SourceFilterVocoder {
     ) -> Result<()> {
         for (index, &window_sample) in window.iter().enumerate() {
             let source_index = frame_start + index as isize;
-            let (a, b) = if (0..source_a.len() as isize).contains(&source_index) {
-                (
-                    source_a[source_index as usize],
-                    source_b[source_index as usize],
-                )
-            } else {
-                (0.0, 0.0)
-            };
+            // Reflect analysis across the global edges. Zero padding makes the
+            // first several overlapping frames appear to be a sequence of
+            // artificial onsets, which audibly modulates the transfer during
+            // startup. Reflection gives the envelope follower complete local
+            // context while overlap-add still writes only in-range samples.
+            let a = source_a[reflect_index(source_index, source_a.len())];
+            let b = source_b[reflect_index(source_index, source_b.len())];
             self.a_time[index] = a * window_sample;
             self.b_time[index] = b * window_sample;
         }
@@ -634,10 +991,42 @@ impl SourceFilterVocoder {
             &mut self.prefix,
         );
 
-        let detected_transient = if a_power > 1.0e-16 {
+        // The first frame establishes the detector's spectral history. Comparing
+        // it with an all-zero buffer would manufacture a maximum-strength onset
+        // and keep transient protection active well into otherwise steady audio.
+        let raw_flux = if self.initialized && a_power > 1.0e-16 {
             (positive_flux / a_power).sqrt().min(1.0) as f32
         } else {
             0.0
+        };
+        let detector_warmup_frames = VOCODER_FRAME_FRAMES.div_ceil(VOCODER_HOP_FRAMES);
+        let detected_transient = if !self.initialized {
+            0.0
+        } else if self.analysis_frames_seen < detector_warmup_frames {
+            // Learn the ordinary frame-to-frame flux of the source across one
+            // complete overlap span before arming onset protection. This avoids
+            // mistaking the changing global-edge support for an audible attack.
+            let observation = self.analysis_frames_seen as f32;
+            self.transient_flux_floor +=
+                (raw_flux - self.transient_flux_floor) / observation.max(1.0);
+            0.0
+        } else {
+            // Stationary noise has substantial positive flux even though it is
+            // not a stream of transients. Detect only excursions above a slowly
+            // tracked source-specific floor; otherwise protection becomes a
+            // hop-rate gain modulator—the scratchy/buzzy failure this control is
+            // intended to prevent.
+            let threshold = (0.05 + 1.5 * self.transient_flux_floor).min(0.90);
+            let detected = ((raw_flux - threshold) / (1.0 - threshold)).clamp(0.0, 1.0);
+            let time_constant = if raw_flux > self.transient_flux_floor {
+                0.500
+            } else {
+                0.100
+            };
+            let follow =
+                1.0 - (-(VOCODER_HOP_FRAMES as f32) / (time_constant * SAMPLE_RATE as f32)).exp();
+            self.transient_flux_floor += follow * (raw_flux - self.transient_flux_floor);
+            detected
         };
         // A single onset contributes to every overlapping analysis frame. Holding
         // the peak flux for one complete frame prevents later frames in that same
@@ -657,26 +1046,38 @@ impl SourceFilterVocoder {
         let transient = detected_transient.max(self.transient_state);
         let transient_transfer = parameters.vocoder_transfer
             * (1.0 - parameters.vocoder_transient_protection * transient);
-        let attack = 1.0 - (-(VOCODER_HOP_FRAMES as f32) / (0.008 * SAMPLE_RATE as f32)).exp();
-        let release = 1.0 - (-(VOCODER_HOP_FRAMES as f32) / (0.040 * SAMPLE_RATE as f32)).exp();
         let maximum_log_ratio = 8.0_f32.ln();
+        let mut shaped_power = 0.0_f64;
         for bin in 0..self.a_spectrum.len() {
             let target = (self.b_envelope[bin] - self.a_envelope[bin])
                 .clamp(-maximum_log_ratio, maximum_log_ratio);
-            if !self.initialized {
-                self.previous_log_ratio[bin] = target;
-            } else {
-                let amount = if target > self.previous_log_ratio[bin] {
-                    attack
-                } else {
-                    release
-                };
-                self.previous_log_ratio[bin] += amount * (target - self.previous_log_ratio[bin]);
-            }
-            let applied = (self.previous_log_ratio[bin] * transient_transfer)
-                .clamp(-maximum_log_ratio, maximum_log_ratio);
-            self.a_spectrum[bin] *= applied.exp();
+            // Eight overlapping root-Hann frames already interpolate adjacent
+            // spectral gains continuously. A second causal attack/release stage
+            // made the gain applied to one frame lag its own phase/magnitude
+            // analysis, creating audible sidebands and long scratchy recovery
+            // after spectral changes. Keep each ratio local to its analysis
+            // frame and let overlap-add provide the temporal interpolation.
+            let applied =
+                (target * transient_transfer).clamp(-maximum_log_ratio, maximum_log_ratio);
+            let gain = applied.exp();
+            self.a_log_magnitude[bin] = gain;
+            shaped_power += f64::from(self.a_spectrum[bin].norm_sqr() * gain * gain);
         }
+        // B supplies spectral *shape*, while A remains the loudness and event
+        // source. Without frame-power normalization, every level change or
+        // click in B becomes a broad gain pulse on A; degenerate amplitude-step
+        // tests measured nearly 5x peak overshoot. Normalizing the shaped frame
+        // also makes a silent or globally quieter B a neutral timbre reference
+        // rather than an unintended amplitude control.
+        let power_normalization = if a_power > 1.0e-16 && shaped_power > 1.0e-16 {
+            (a_power / shaped_power).sqrt() as f32
+        } else {
+            1.0
+        };
+        for (bin, gain) in self.a_log_magnitude.iter().copied().enumerate() {
+            self.a_spectrum[bin] *= gain * power_normalization;
+        }
+        self.analysis_frames_seen += 1;
         self.initialized = true;
         self.inverse
             .process(&mut self.a_spectrum, &mut self.output_time)?;
@@ -967,18 +1368,27 @@ fn level_local(
         .sum::<f64>()
         / samples.len().max(1) as f64)
         .sqrt() as f32;
+    let gain = level_gain(rms, previous_gain, target_rms, smoothing);
+    for sample in samples {
+        *sample *= gain;
+    }
+    gain
+}
+
+fn level_gain(rms: f32, previous_gain: Option<f32>, target_rms: f32, smoothing: f32) -> f32 {
     let desired = (target_rms / rms.max(1.0e-10)).min(128.0);
-    let gain = if let Some(previous) = previous_gain {
+    if let Some(previous) = previous_gain {
         let log_gain = previous.max(1.0e-12).ln()
             + smoothing.clamp(0.0, 1.0) * (desired.max(1.0e-12).ln() - previous.max(1.0e-12).ln());
         log_gain.exp()
     } else {
         desired
-    };
-    for sample in samples {
-        *sample *= gain;
     }
-    gain
+}
+
+struct LocalConvolution {
+    samples: Vec<f32>,
+    rms: f32,
 }
 
 struct LocalConvolver {
@@ -1015,7 +1425,42 @@ impl LocalConvolver {
         }
     }
 
+    fn fresh_workspace(&self) -> Self {
+        let left_time = self.forward.make_input_vec();
+        let right_time = self.forward.make_input_vec();
+        let output_time = self.inverse.make_output_vec();
+        let left_spectrum = self.forward.make_output_vec();
+        let right_spectrum = self.forward.make_output_vec();
+        Self {
+            fft_len: self.fft_len,
+            forward: std::sync::Arc::clone(&self.forward),
+            inverse: std::sync::Arc::clone(&self.inverse),
+            left_time,
+            right_time,
+            output_time,
+            left_spectrum,
+            right_spectrum,
+        }
+    }
+
     fn convolve(&mut self, left: &[f32], right: &[f32]) -> Result<Vec<f32>> {
+        Ok(self.convolve_internal(left, right, true)?.samples)
+    }
+
+    fn convolve_serial_measured(
+        &mut self,
+        left: &[f32],
+        right: &[f32],
+    ) -> Result<LocalConvolution> {
+        self.convolve_internal(left, right, false)
+    }
+
+    fn convolve_internal(
+        &mut self,
+        left: &[f32],
+        right: &[f32],
+        parallel_forwards: bool,
+    ) -> Result<LocalConvolution> {
         let output_frames = left.len() + right.len() - 1;
         if output_frames > self.fft_len {
             bail!("local convolution exceeds planned FFT");
@@ -1025,23 +1470,36 @@ impl LocalConvolver {
         self.left_time[..left.len()].copy_from_slice(left);
         self.right_time[..right.len()].copy_from_slice(right);
         let forward = &self.forward;
-        let (left_result, right_result) = join(
-            || forward.process(&mut self.left_time, &mut self.left_spectrum),
-            || forward.process(&mut self.right_time, &mut self.right_spectrum),
-        );
-        left_result?;
-        right_result?;
+        if parallel_forwards {
+            let (left_result, right_result) = join(
+                || forward.process(&mut self.left_time, &mut self.left_spectrum),
+                || forward.process(&mut self.right_time, &mut self.right_spectrum),
+            );
+            left_result?;
+            right_result?;
+        } else {
+            forward.process(&mut self.left_time, &mut self.left_spectrum)?;
+            forward.process(&mut self.right_time, &mut self.right_spectrum)?;
+        }
         for (left, right) in self.left_spectrum.iter_mut().zip(&self.right_spectrum) {
             *left *= *right;
         }
         self.inverse
             .process(&mut self.left_spectrum, &mut self.output_time)?;
         let scale = 1.0 / self.fft_len as f32;
-        let output = self.output_time[..output_frames]
+        let mut sum_squares = 0.0_f64;
+        let samples = self.output_time[..output_frames]
             .iter()
-            .map(|sample| sample * scale)
+            .map(|sample| {
+                let sample = sample * scale;
+                sum_squares += f64::from(sample) * f64::from(sample);
+                sample
+            })
             .collect();
-        Ok(output)
+        Ok(LocalConvolution {
+            samples,
+            rms: (sum_squares / output_frames.max(1) as f64).sqrt() as f32,
+        })
     }
 }
 
@@ -1091,6 +1549,7 @@ impl OverlapBuffer {
         self.add_crossfade_precomputed(center, local, &synthesis_profile, &power_amplitude, mix);
     }
 
+    #[cfg(test)]
     fn add_crossfade_precomputed(
         &mut self,
         center: isize,
@@ -1115,6 +1574,79 @@ impl OverlapBuffer {
         }
     }
 
+    fn add_windowed_batch(
+        &mut self,
+        grains: &[WindowedGrain],
+        coherence_pairs: &[CoherencePlacement],
+        synthesis_profile: &[f32],
+        power_amplitude: &[f32],
+    ) {
+        const TILE_FRAMES: usize = 32 * 1024;
+
+        let start_frame = self.start_frame;
+        self.samples
+            .par_chunks_mut(TILE_FRAMES)
+            .zip(self.power_weights.par_chunks_mut(TILE_FRAMES))
+            .zip(self.amplitude_weights.par_chunks_mut(TILE_FRAMES))
+            .zip(self.coherence_sum.par_chunks_mut(TILE_FRAMES))
+            .zip(self.coherence_weights.par_chunks_mut(TILE_FRAMES))
+            .enumerate()
+            .for_each(
+                |(
+                    tile_index,
+                    (
+                        (((samples, power_weights), amplitude_weights), coherence_sum),
+                        coherence_weights,
+                    ),
+                )| {
+                    let tile_offset = tile_index * TILE_FRAMES;
+                    let tile_start = start_frame + tile_offset as isize;
+                    let tile_end = tile_start + samples.len() as isize;
+
+                    // Grain order is unchanged within every output sample.
+                    // Splitting only by disjoint output tiles therefore gives
+                    // deterministic sums without atomics or reduction drift.
+                    for grain in grains {
+                        let grain_start = grain.center - grain.samples.len() as isize / 2;
+                        let overlap_start = grain_start.max(tile_start);
+                        let overlap_end =
+                            (grain_start + grain.samples.len() as isize).min(tile_end);
+                        for frame in overlap_start..overlap_end {
+                            let local_index = (frame - grain_start) as usize;
+                            let tile_sample = (frame - tile_start) as usize;
+                            let amplitude = power_amplitude[local_index];
+                            samples[tile_sample] += grain.samples[local_index]
+                                * grain.gain
+                                * synthesis_profile[local_index];
+                            power_weights[tile_sample] += amplitude * amplitude;
+                            amplitude_weights[tile_sample] += amplitude;
+                        }
+                    }
+
+                    for pair in coherence_pairs {
+                        let length = power_amplitude.len();
+                        let previous_start =
+                            pair.previous_center - power_amplitude.len() as isize / 2;
+                        let current_start =
+                            pair.current_center - power_amplitude.len() as isize / 2;
+                        let overlap_start = previous_start.max(current_start).max(tile_start);
+                        let overlap_end = (previous_start + length as isize)
+                            .min(current_start + length as isize)
+                            .min(tile_end);
+                        for frame in overlap_start..overlap_end {
+                            let previous_index = (frame - previous_start) as usize;
+                            let current_index = (frame - current_start) as usize;
+                            let pair_weight =
+                                power_amplitude[previous_index] * power_amplitude[current_index];
+                            let tile_sample = (frame - tile_start) as usize;
+                            coherence_sum[tile_sample] += pair.coherence * pair_weight;
+                            coherence_weights[tile_sample] += pair_weight;
+                        }
+                    }
+                },
+            );
+    }
+
     #[cfg(test)]
     fn add_coherence_pair(
         &mut self,
@@ -1134,6 +1666,7 @@ impl OverlapBuffer {
         );
     }
 
+    #[cfg(test)]
     fn add_coherence_pair_precomputed(
         &mut self,
         previous_center: isize,
@@ -1180,8 +1713,8 @@ impl OverlapBuffer {
     fn finish(mut self) -> TimelineRender {
         let raw_coherence = self
             .coherence_sum
-            .iter()
-            .zip(&self.coherence_weights)
+            .par_iter()
+            .zip(self.coherence_weights.par_iter())
             .map(|(&sum, &weight)| {
                 if weight > 1.0e-12 {
                     (sum / weight).clamp(0.0, 1.0)
@@ -1191,21 +1724,20 @@ impl OverlapBuffer {
             })
             .collect::<Vec<_>>();
         let coherence = smooth_coherence(raw_coherence);
-        for (((sample, independent_power), amplitude), coherence) in self
-            .samples
-            .iter_mut()
-            .zip(self.power_weights)
-            .zip(self.amplitude_weights)
-            .zip(coherence)
-        {
-            let denominator_squared =
-                (1.0 - coherence) * independent_power + coherence * amplitude * amplitude;
-            if denominator_squared > 1.0e-14 {
-                *sample /= denominator_squared.sqrt();
-            } else {
-                *sample = 0.0;
-            }
-        }
+        self.samples
+            .par_iter_mut()
+            .zip(self.power_weights.into_par_iter())
+            .zip(self.amplitude_weights.into_par_iter())
+            .zip(coherence.into_par_iter())
+            .for_each(|(((sample, independent_power), amplitude), coherence)| {
+                let denominator_squared =
+                    (1.0 - coherence) * independent_power + coherence * amplitude * amplitude;
+                if denominator_squared > 1.0e-14 {
+                    *sample /= denominator_squared.sqrt();
+                } else {
+                    *sample = 0.0;
+                }
+            });
         TimelineRender {
             samples: self.samples,
             start_frame: self.start_frame,
@@ -1351,6 +1883,21 @@ mod tests {
         parameters = AlgorithmParameters::default();
         parameters.vocoder_envelope_width_hz = 50.0;
         assert!(parameters.validate(Algorithm::SourceFilterVocoder).is_err());
+
+        parameters = AlgorithmParameters::default();
+        parameters.resonator_transfer = f32::NAN;
+        assert!(
+            parameters
+                .validate(Algorithm::PredictiveResonatorBank)
+                .is_err()
+        );
+        parameters = AlgorithmParameters::default();
+        parameters.resonator_ring = 1.01;
+        assert!(
+            parameters
+                .validate(Algorithm::PredictiveResonatorBank)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1906,7 +2453,7 @@ mod tests {
     }
 
     #[test]
-    fn vocoder_silence_and_extreme_level_mismatches_are_bounded() {
+    fn vocoder_silence_and_extreme_level_mismatches_preserve_a_power() {
         let frames = SAMPLE_RATE as usize / 2;
         let noise = deterministic_noise(frames, 0x8765_4321);
         let silence = vec![0.0; frames];
@@ -1926,25 +2473,32 @@ mod tests {
         let attenuated = render_test_vocoder(&noise, &silence, parameters);
         let attenuation = rms(&attenuated) / rms(&noise);
         assert!(
-            (attenuation - 0.125).abs() < 2.0e-3,
-            "maximum attenuation escaped the deliberate 1/8 bound: {attenuation}"
+            (attenuation - 1.0).abs() < 2.0e-3,
+            "silent B incorrectly changed A's power by {attenuation}x"
         );
 
         let amplified = render_test_vocoder(&near_silence, &noise, parameters);
         let gain = rms(&amplified) / rms(&near_silence);
         assert!(
-            (gain - 8.0).abs() < 0.02,
-            "maximum gain escaped the deliberate 8x bound: {gain}"
+            (gain - 1.0).abs() < 0.02,
+            "B's absolute level incorrectly changed A's power by {gain}x"
         );
         assert!(amplified.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
-    fn vocoder_full_transient_protection_exactly_preserves_an_isolated_impulse() {
+    fn vocoder_full_transient_protection_exactly_preserves_an_impulse_train() {
         let frames = SAMPLE_RATE as usize / 2;
-        let impulse_index = frames / 2;
         let mut impulse = vec![0.0; frames];
-        impulse[impulse_index] = 0.5;
+        let impulses = [
+            (frames / 5, 0.5),
+            (frames * 2 / 5, -0.35),
+            (frames * 3 / 5, 0.20),
+            (frames * 4 / 5, -0.45),
+        ];
+        for &(index, amplitude) in &impulses {
+            impulse[index] = amplitude;
+        }
         let spectrally_unlike_b = synthetic_tone(frames, 1_800.0, 0.4);
         let parameters = AlgorithmParameters {
             vocoder_transfer: 1.0,
@@ -1953,16 +2507,16 @@ mod tests {
             ..AlgorithmParameters::default()
         };
         let output = render_test_vocoder(&impulse, &spectrally_unlike_b, parameters);
-        let peak_index = output
-            .iter()
-            .enumerate()
-            .max_by(|left, right| left.1.abs().total_cmp(&right.1.abs()))
-            .unwrap()
-            .0;
-        assert_eq!(peak_index, impulse_index);
+        for &(index, amplitude) in &impulses {
+            assert!(
+                (output[index] - amplitude).abs() < 1.0e-6,
+                "impulse at {index} changed from {amplitude} to {}",
+                output[index]
+            );
+        }
         assert!(
             rms_difference(&output, &impulse) < 1.0e-6,
-            "full protection recolored or smeared the impulse"
+            "full protection recolored, echoed, or smeared the impulse train"
         );
     }
 
@@ -2027,6 +2581,138 @@ mod tests {
             "spectral gain clamp did not bound a simple sine: input peak {input_peak}, \
              output peak {output_peak}"
         );
+    }
+
+    #[test]
+    fn vocoder_stationary_inputs_do_not_acquire_hop_rate_scratch() {
+        let frames = SAMPLE_RATE as usize * 2;
+        let frequency = 997.0;
+        let sine = synthetic_tone(frames, frequency, 0.25);
+        let noise = deterministic_noise(frames, 0x5ca7_c401);
+        let other_sine = synthetic_tone(frames, 1_801.0, 0.35);
+        let trim = VOCODER_FRAME_FRAMES * 2;
+        for (label, b) in [
+            ("noise envelope", noise.as_slice()),
+            ("off-frequency sine envelope", other_sine.as_slice()),
+        ] {
+            let output = render_test_vocoder(
+                &sine,
+                b,
+                AlgorithmParameters {
+                    vocoder_transfer: 0.85,
+                    vocoder_envelope_width_hz: 900.0,
+                    vocoder_transient_protection: 0.65,
+                    ..AlgorithmParameters::default()
+                },
+            );
+            let interior = &output[trim..frames - trim];
+            let levels = block_rms(interior, VOCODER_HOP_FRAMES * 4);
+            let ripple = percentile_spread_db(&levels, 0.05, 0.95);
+            let residual = tone_residual_ratio(interior, frequency);
+            let seam_ratio = periodic_difference_ratio(interior, VOCODER_HOP_FRAMES);
+            assert!(
+                ripple < 0.35,
+                "{label} created {ripple:.3} dB stationary level ripple"
+            );
+            assert!(
+                residual < 0.01,
+                "{label} added {:.3}% non-tonal sideband energy",
+                100.0 * residual
+            );
+            assert!(
+                (0.80..1.20).contains(&seam_ratio),
+                "{label} made hop-boundary derivatives {seam_ratio:.3}x ordinary derivatives"
+            );
+        }
+    }
+
+    #[test]
+    fn vocoder_stationary_noise_is_not_misclassified_as_perpetual_transients() {
+        let frames = SAMPLE_RATE as usize * 2;
+        let a = deterministic_noise(frames, 0x5157_4a71);
+        let b = synthetic_tone(frames, 2_401.0, 0.25);
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.0,
+            vocoder_envelope_width_hz: 600.0,
+            vocoder_transient_protection: 0.85,
+            ..AlgorithmParameters::default()
+        };
+        let protected = render_test_vocoder(&a, &b, parameters);
+        let unprotected = render_test_vocoder(
+            &a,
+            &b,
+            AlgorithmParameters {
+                vocoder_transient_protection: 0.0,
+                ..parameters
+            },
+        );
+        let trim = VOCODER_FRAME_FRAMES * 2;
+        let protected = &protected[trim..frames - trim];
+        let unprotected = &unprotected[trim..frames - trim];
+        let relative_difference =
+            rms_difference(protected, unprotected) / rms(unprotected).max(1.0e-12);
+        assert!(
+            relative_difference < 1.0e-5,
+            "stationary noise kept modulating transient protection by {:.3}%",
+            100.0 * relative_difference
+        );
+    }
+
+    #[test]
+    fn vocoder_amplitude_step_is_smooth_local_and_does_not_ring() {
+        let frames = SAMPLE_RATE as usize * 2;
+        let midpoint = frames / 2;
+        let frequency = 997.0;
+        let a = synthetic_tone(frames, frequency, 0.25);
+        let mut b = synthetic_tone(frames, frequency, 0.08);
+        for (index, sample) in b[midpoint..].iter_mut().enumerate() {
+            *sample = 0.40
+                * (2.0 * PI * frequency * (midpoint + index) as f32 / SAMPLE_RATE as f32).sin();
+        }
+        let output = render_test_vocoder(
+            &a,
+            &b,
+            AlgorithmParameters {
+                vocoder_transfer: 1.0,
+                vocoder_envelope_width_hz: 900.0,
+                vocoder_transient_protection: 0.0,
+                ..AlgorithmParameters::default()
+            },
+        );
+        let guard = SAMPLE_RATE as usize / 10;
+        let low = tone_amplitude(&output[guard..midpoint - guard], frequency);
+        let high = tone_amplitude(&output[midpoint + guard..frames - guard], frequency);
+        assert!((low - 0.25).abs() < 0.005, "low side amplitude was {low}");
+        assert!(
+            (high - 0.25).abs() < 0.005,
+            "high side amplitude was {high}"
+        );
+
+        // The transition is allowed to span one analysis frame, but it must not
+        // overshoot, pre-ring far ahead of the step, or keep recovering after it.
+        let transition = &output[midpoint - VOCODER_FRAME_FRAMES..midpoint + VOCODER_FRAME_FRAMES];
+        let transition_peak = transition.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert!(
+            transition_peak < 0.27,
+            "amplitude step overshot to {transition_peak}"
+        );
+        let before = tone_amplitude(
+            &output[midpoint - guard..midpoint - VOCODER_FRAME_FRAMES],
+            frequency,
+        );
+        let after = tone_amplitude(
+            &output[midpoint + VOCODER_FRAME_FRAMES..midpoint + guard],
+            frequency,
+        );
+        assert!(
+            (before - low).abs() < 0.005,
+            "step pre-rang: {before} vs {low}"
+        );
+        assert!(
+            (after - high).abs() < 0.01,
+            "step kept recovering: {after} vs {high}"
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
@@ -2137,6 +2823,52 @@ mod tests {
             .sum::<f64>()
             / a.len().max(1) as f64)
             .sqrt() as f32
+    }
+
+    fn percentile_spread_db(values: &[f32], low: f32, high: f32) -> f32 {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f32::total_cmp);
+        let index = |quantile: f32| {
+            ((sorted.len().saturating_sub(1)) as f32 * quantile)
+                .round()
+                .clamp(0.0, sorted.len().saturating_sub(1) as f32) as usize
+        };
+        20.0 * (sorted[index(high)] / sorted[index(low)].max(1.0e-12)).log10()
+    }
+
+    fn tone_residual_ratio(samples: &[f32], frequency: f32) -> f32 {
+        let (real, imaginary) = tone_projection(samples, frequency);
+        let scale = 2.0 / samples.len().max(1) as f64;
+        let residual_power = samples
+            .iter()
+            .enumerate()
+            .map(|(index, &sample)| {
+                let phase = 2.0 * std::f64::consts::PI * f64::from(frequency) * index as f64
+                    / f64::from(SAMPLE_RATE);
+                let predicted = scale * (real * phase.cos() - imaginary * phase.sin());
+                let error = f64::from(sample) - predicted;
+                error * error
+            })
+            .sum::<f64>()
+            / samples.len().max(1) as f64;
+        residual_power.sqrt() as f32 / rms(samples).max(1.0e-12)
+    }
+
+    fn periodic_difference_ratio(samples: &[f32], period: usize) -> f32 {
+        let differences = samples
+            .windows(2)
+            .map(|pair| f64::from(pair[1] - pair[0]).powi(2))
+            .collect::<Vec<_>>();
+        let all = (differences.iter().sum::<f64>() / differences.len().max(1) as f64).sqrt();
+        let boundary = (differences
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| (index + 1) % period == 0)
+            .map(|(_, difference)| difference)
+            .sum::<f64>()
+            / (differences.len() / period).max(1) as f64)
+            .sqrt();
+        (boundary / all.max(1.0e-20)) as f32
     }
 
     fn assert_expected_power(a_frames: usize, b_frames: usize, hop: usize) {

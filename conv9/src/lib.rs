@@ -1,4 +1,5 @@
 mod audio;
+mod convbank;
 mod dsp;
 mod manifest;
 mod render;
@@ -10,5 +11,5 @@ pub use dsp::{
 };
 pub use render::{
     AlgorithmCatalogEntry, Catalog, OnDemandRenderer, ParameterCatalogEntry, RenderSelection,
-    RenderTimings, RenderedAudio, WindowCatalogEntry,
+    RenderTimings, RenderedAudio, SourcePreview, WindowCatalogEntry,
 };

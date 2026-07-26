@@ -134,7 +134,9 @@ try {
           buttonFont: getComputedStyle(
             document.querySelector("#algorithmButtons button")
           ).fontSize,
-          selectFont: getComputedStyle(document.querySelector("#sourceASelect")).fontSize,
+          selectFont: getComputedStyle(
+            document.querySelector("#sourceABrowser .source-browser-trigger")
+          ).fontSize,
           numberFont: getComputedStyle(
             document.querySelector("#methodTools input[type='number']")
           ).fontSize,
@@ -150,7 +152,9 @@ try {
           buttonHeight: getComputedStyle(
             document.querySelector("#algorithmButtons button")
           ).height,
-          selectHeight: getComputedStyle(document.querySelector("#sourceASelect")).height,
+          selectHeight: getComputedStyle(
+            document.querySelector("#sourceABrowser .source-browser-trigger")
+          ).height,
           sliderHeight: getComputedStyle(
             document.querySelector("#methodTools input[type='range']")
           ).height
@@ -253,7 +257,7 @@ try {
   assert.equal(initial.statusPosition, "absolute");
   assert.equal(initial.sourceACount, 96);
   assert.equal(initial.sourceBCount, 96);
-  assert.equal(initial.methodCount, 6);
+  assert.equal(initial.methodCount, 7);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
   assert.equal(initial.repeatedDetailCount, 0);
@@ -291,6 +295,48 @@ try {
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");
   assert.ok(initial.viewport.scrollHeight <= initial.viewport.height, "native vertical overflow");
+
+  await execute(port, sessionId, `
+    document.querySelector("#sourceABrowser .source-browser-trigger").click();
+    return true;
+  `);
+  const nativePreview = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const dialog = document.querySelector("#source-a-dialog");
+      const canvas = dialog.querySelector(".source-preview-waveform");
+      const pixels = canvas.getContext("2d").getImageData(
+        0, 0, canvas.width, canvas.height
+      ).data;
+      let variation = 0;
+      for (let index = 4; index < pixels.length; index += 97) {
+        variation += Math.abs(pixels[index] - pixels[index - 4]);
+      }
+      const bounds = dialog.getBoundingClientRect();
+      return {
+        open: !dialog.hidden,
+        busy: canvas.getAttribute("aria-busy"),
+        stats: dialog.querySelector(".source-preview-stats").textContent,
+        variation,
+        inViewport:
+          bounds.left >= 0 && bounds.top >= 0 &&
+          bounds.right <= innerWidth && bounds.bottom <= innerHeight,
+        expanded:
+          document.querySelector("#sourceABrowser .source-browser-trigger")
+            .getAttribute("aria-expanded")
+      };
+    `);
+    return value.open && value.busy === "false" ? value : undefined;
+  }, 30_000);
+  assert.match(nativePreview.stats, /rms/);
+  assert.match(nativePreview.stats, /peak/);
+  assert.ok(nativePreview.variation > 0, "native source preview waveform must vary");
+  assert.equal(nativePreview.inViewport, true, "native source browser stays inside viewport");
+  assert.equal(nativePreview.expanded, "true");
+  await execute(port, sessionId, `
+    document.querySelector("#source-a-dialog .source-search")
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return document.querySelector("#source-a-dialog").hidden;
+  `);
 
   const renderedPrefix = await execute(port, sessionId, `
     const samples = state.analysisSamples;

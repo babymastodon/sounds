@@ -107,17 +107,17 @@ try {
       : undefined;
   }, 180_000);
   assert.ok(
-    Math.abs(initial.duration - 67) < 0.02,
-    `default multiresolution duration was ${initial.duration}`,
+    Math.abs(initial.duration - 132) < 0.02,
+    `default windowed-convolution duration was ${initial.duration}`,
   );
   assert.match(initial.source, /^blob:tauri:/);
-  assert.match(initial.path, /multiresolution\/5\.00x5\.00\//);
+  assert.match(initial.path, /windowed_convolution\/5\.00x5\.00\//);
   assert.equal(initial.loop, true);
-  assert.equal(initial.title, "multi");
+  assert.equal(initial.title, "windowed");
   assert.match(initial.status, /^rendered \d+ ms$/);
   assert.equal(initial.sourceACount, 48);
   assert.equal(initial.sourceBCount, 48);
-  assert.equal(initial.methodCount, 5);
+  assert.equal(initial.methodCount, 4);
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
   assert.equal(initial.seekDisabled, false);
@@ -182,23 +182,63 @@ try {
         errorHidden: document.querySelector("#errorPanel")?.hidden
       };
     `);
-    return value.path.includes("/multiresolution/0.25x0.25/") &&
+    return value.path.includes("/windowed_convolution/0.25x0.25/") &&
       value.status?.startsWith("rendered ") ? value : undefined;
   }, 90_000);
   assert.ok(
-    Math.abs(shortWindow.duration - 61.3) < 0.02,
-    `short-window multiresolution duration was ${shortWindow.duration}`,
+    Math.abs(shortWindow.duration - 122.5) < 0.02,
+    `short-window convolution duration was ${shortWindow.duration}`,
   );
   assert.match(shortWindow.readout, /overlap 75%/);
   assert.equal(shortWindow.errorHidden, true, shortWindow.error);
   await captureMonitor();
   const shortWindowWav = await readFile(capturePath);
   const shortWindowSignal = analyzePcm16(shortWindowWav);
-  const shortWindowRipple = phaseModulationDb(shortWindowWav, 3_000);
+  const shortWindowRipple = phaseModulationDb(shortWindowWav, 6_000);
   assert.ok(shortWindowSignal.rms > 0.003, "short-window convolution is silent");
   assert.ok(
     shortWindowRipple < 2.5,
-    `0.25-second multiresolution pulse ripple was ${shortWindowRipple.toFixed(2)} dB`,
+    `0.25-second windowed pulse ripple was ${shortWindowRipple.toFixed(2)} dB`,
+  );
+
+  await execute(port, sessionId, `
+    const a = document.querySelector('input[aria-label="A window exact value"]');
+    const b = document.querySelector('input[aria-label="B window exact value"]');
+    a.value = "0.1";
+    a.dispatchEvent(new Event("input", { bubbles: true }));
+    b.value = "5";
+    b.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  `);
+  const unequalWindow = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const audio = document.querySelector("#audio");
+      return {
+        duration: audio.duration,
+        path: audio.dataset.path,
+        status: document.querySelector("#renderStatus")?.textContent,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.path.includes("/windowed_convolution/0.10x5.00/") &&
+      value.status?.startsWith("rendered ") ? value : undefined;
+  }, 180_000);
+  assert.ok(
+    Math.abs(unequalWindow.duration - 127.1) < 0.02,
+    `0.1x5-second windowed duration was ${unequalWindow.duration}`,
+  );
+  assert.equal(unequalWindow.errorHidden, true, unequalWindow.error);
+  await captureMonitor();
+  const unequalWindowWav = await readFile(capturePath);
+  const unequalWindowSignal = analyzePcm16(unequalWindowWav);
+  const unequalWindowRipple = phaseModulationDb(unequalWindowWav, 2_400);
+  const unequalRenderMs = Number(unequalWindow.status.match(/\d+/)?.[0]);
+  assert.ok(Number.isFinite(unequalRenderMs), unequalWindow.status);
+  assert.ok(unequalWindowSignal.rms > 0.003, "0.1x5 convolution is silent");
+  assert.ok(
+    unequalWindowRipple < 2.5,
+    `0.1x5 windowed pulse ripple was ${unequalWindowRipple.toFixed(2)} dB`,
   );
 
   await execute(port, sessionId, `
@@ -237,10 +277,7 @@ try {
   assert.match(chunked.readout, /40%/);
   assert.equal(chunked.errorHidden, true, chunked.error);
 
-  for (const [algorithm, expectedDuration] of [
-    ["sliding_wola", 71],
-    ["evolving_ir", 66],
-  ]) {
+  for (const [algorithm, expectedDuration] of [["evolving_ir", 66]]) {
     await execute(
       port,
       sessionId,
@@ -352,6 +389,7 @@ try {
   console.log(
     `conv9 native audio passed: windowed ${decibels(signal.rms).toFixed(2)} dBFS RMS, ` +
       `0.25s ripple ${shortWindowRipple.toFixed(2)} dB, ` +
+      `0.1x5s ripple ${unequalWindowRipple.toFixed(2)} dB in ${unequalRenderMs} ms, ` +
       `full ${decibels(fullSignal.rms).toFixed(2)} dBFS RMS`,
   );
 } finally {

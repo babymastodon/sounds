@@ -108,7 +108,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 5,
+            schema_version: 6,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -280,9 +280,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
         step: 1.0,
         default: defaults.window_overlap_percent,
         unit: "%",
-        description: "Sets scan overlap from the shorter A/B analysis window. The 75% default gives \
-                      four positions per short window for continuous power-normalized synthesis. \
-                      Lower values expose grain and pulse; higher values cost more FFT blocks.",
+        description: "Sets source-scan overlap from the shorter A/B analysis window. The 75% \
+                      default provides four-way synthesis coverage after each result is placed at \
+                      tA+tB. Lower values expose grain and buzz; higher values cost more FFT blocks.",
     };
     let timeline_offset = || ParameterCatalogEntry {
         id: "window_b_offset_seconds",
@@ -297,96 +297,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                       preserve a continuous source without adding dry audio.",
     };
     match algorithm {
-        Algorithm::Multiresolution => vec![
-            analysis_taper(),
-            overlap(),
-            timeline_offset(),
-            ParameterCatalogEntry {
-                id: "multires_low_scale",
-                label: "low scale",
-                minimum: 1.0,
-                maximum: 3.0,
-                step: 0.05,
-                default: defaults.multires_low_scale,
-                unit: "×",
-                description: "Multiplies both selected A/B window lengths for the low-frequency \
-                              band. Larger values stabilize bass and preserve slower motion, at the \
-                              cost of more smear and computation.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_high_scale",
-                label: "high scale",
-                minimum: 0.15,
-                maximum: 1.0,
-                step: 0.01,
-                default: defaults.multires_high_scale,
-                unit: "×",
-                description: "Multiplies both selected A/B window lengths for the high-frequency \
-                              band. Smaller values sharpen transients and timing; larger values \
-                              retain more high-frequency context.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_low_mix",
-                label: "low gain",
-                minimum: 0.0,
-                maximum: 2.0,
-                step: 0.01,
-                default: defaults.multires_low_mix,
-                unit: "×",
-                description: "Scales the low-frequency convolution band before it is recombined \
-                              with the mid and high bands. Final conditioning still enforces the \
-                              shared output level and peak ceiling.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_high_mix",
-                label: "high gain",
-                minimum: 0.0,
-                maximum: 2.0,
-                step: 0.01,
-                default: defaults.multires_high_mix,
-                unit: "×",
-                description: "Scales the high-frequency convolution band before recombination. \
-                              Raise it for more texture and attack, or lower it for a darker result; \
-                              final output power is still conditioned.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_low_split_hz",
-                label: "low split",
-                minimum: 80.0,
-                maximum: 800.0,
-                step: 5.0,
-                default: defaults.multires_low_split_hz,
-                unit: "hz",
-                description: "Sets the center frequency of the raised-cosine low-to-mid band split. \
-                              The split-width control sets how broadly the neighboring bands blend \
-                              around this frequency.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_high_split_hz",
-                label: "high split",
-                minimum: 800.0,
-                maximum: 8_000.0,
-                step: 25.0,
-                default: defaults.multires_high_split_hz,
-                unit: "hz",
-                description: "Sets the center frequency of the raised-cosine mid-to-high band split. \
-                              The split-width control sets how broadly the neighboring bands blend \
-                              around this frequency.",
-            },
-            ParameterCatalogEntry {
-                id: "multires_transition_width",
-                label: "split width",
-                minimum: 0.05,
-                maximum: 0.75,
-                step: 0.01,
-                default: defaults.multires_transition_width,
-                unit: "",
-                description: "Sets the fractional width of both raised-cosine crossover regions. \
-                              Smaller values isolate bands more sharply; larger values blend them \
-                              broadly while normalized band masks keep their sum equal to one.",
-            },
-        ],
-        Algorithm::SlidingWola => vec![analysis_taper(), overlap(), timeline_offset()],
+        Algorithm::WindowedConvolution => {
+            vec![analysis_taper(), overlap(), timeline_offset()]
+        }
         Algorithm::EvolvingIr => vec![
             analysis_taper(),
             overlap(),
@@ -551,16 +464,7 @@ mod tests {
 
         let required = [
             (
-                Algorithm::Multiresolution,
-                &[
-                    "taper",
-                    "window_overlap_percent",
-                    "window_b_offset_seconds",
-                    "multires_transition_width",
-                ][..],
-            ),
-            (
-                Algorithm::SlidingWola,
+                Algorithm::WindowedConvolution,
                 &["taper", "window_overlap_percent", "window_b_offset_seconds"][..],
             ),
             (

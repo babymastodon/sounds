@@ -26,7 +26,7 @@ const state = {
   bridge: null,
   sourceA: "",
   sourceB: "",
-  algorithm: "multiresolution",
+  algorithm: "windowed_convolution",
   settings: new Map(),
   waveformLayer: null,
   spectrumLayer: null,
@@ -378,7 +378,7 @@ function updateMetadata(header, settings) {
   } else {
     let readout =
       `a ${clipASeconds.toFixed(2)}s / b ${clipBSeconds.toFixed(2)}s / ` +
-      `hop ${header.hopSeconds.toFixed(2)}s`;
+      `scan ${header.hopSeconds.toFixed(2)}s`;
     if (state.algorithm === "chunk_crossfade") {
       const percentage = settings.parameters.chunk_crossfade_percent;
       const duration = Math.min(clipASeconds, clipBSeconds) * percentage / 100;
@@ -795,8 +795,7 @@ function formatTime(seconds) {
 
 function shortAlgorithm(value) {
   return {
-    multiresolution: "multi",
-    sliding_wola: "wola",
+    windowed_convolution: "windowed",
     evolving_ir: "ir",
     chunk_crossfade: "chunks",
     full_convolution: "full",

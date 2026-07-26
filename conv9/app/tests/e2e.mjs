@@ -147,9 +147,9 @@ try {
 
   assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
-  assert.equal(await page.locator("#algorithmButtons button").count(), 5, "algorithm count");
+  assert.equal(await page.locator("#algorithmButtons button").count(), 4, "algorithm count");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
-  assert.equal(await page.locator("#methodTools .tool-control").count(), 12);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 5);
   assert.equal(
     await page.getByLabel("A window exact value").getAttribute("min"),
     "0.1",
@@ -169,7 +169,7 @@ try {
     `soft-log 5-second position is unexpected: ${defaultSliderPosition}`,
   );
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.loop), true);
-  await assertAudioReady(page, "/multiresolution/5.00x5.00");
+  await assertAudioReady(page, "/windowed_convolution/5.00x5.00");
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
   assert.equal(await page.locator("#spectrogram").getAttribute("data-fft-size"), "16384");
@@ -180,8 +180,8 @@ try {
   await assertNoViewportOverflow(page);
   await assertControlTooltips(page);
   assert.match(
-    await page.getByRole("button", { name: "multi", exact: true }).getAttribute("title"),
-    /low, mid, and high bands/,
+    await page.getByRole("button", { name: "windowed", exact: true }).getAttribute("title"),
+    /one ordinary linear FFT convolution/,
   );
   assert.match(
     await page.locator("input[type='range'][aria-label='A window']").getAttribute("title"),
@@ -200,7 +200,7 @@ try {
 
   const thirdSource = await page.locator("#sourceBSelect option").nth(2).getAttribute("value");
   await page.locator("#sourceBSelect").selectOption(thirdSource);
-  await waitForPath(page, `${thirdSource}/multiresolution/1.37x5.00`);
+  await waitForPath(page, `${thirdSource}/windowed_convolution/1.37x5.00`);
 
   await page.getByRole("button", { name: "chunks", exact: true }).click();
   await waitForPath(page, "/chunk_crossfade/5.00x5.00");
@@ -249,7 +249,7 @@ try {
   await page.getByRole("button", { name: "Play" }).click();
   await page.waitForFunction(() => !document.querySelector("#audio").paused);
   const beforeSwitch = await audioTime(page);
-  await page.getByRole("button", { name: "wola", exact: true }).click();
+  await page.getByRole("button", { name: "chunks", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelector("#renderStatus")?.textContent === "rendering…",
   );
@@ -367,20 +367,6 @@ async function testCatalog() {
     default: defaultValue,
     unit,
     description: {
-      multires_low_scale:
-        "Multiplies both windows for the low-frequency band. Larger values stabilize bass but add smear.",
-      multires_high_scale:
-        "Multiplies both windows for the high-frequency band. Smaller values sharpen transients and timing.",
-      multires_low_mix:
-        "Scales the low-frequency convolution band before all bands are recombined and conditioned.",
-      multires_high_mix:
-        "Scales the high-frequency convolution band before all bands are recombined and conditioned.",
-      multires_low_split_hz:
-        "Sets the smooth low-to-mid frequency split center used by the multiresolution method.",
-      multires_high_split_hz:
-        "Sets the smooth mid-to-high frequency split center used by the multiresolution method.",
-      multires_transition_width:
-        "Sets the normalized raised-cosine crossover width; wider values blend neighboring bands more broadly.",
       window_overlap_percent:
         "Sets how much of the shorter analysis window overlaps its next position and controls render density.",
       window_b_offset_seconds:
@@ -406,7 +392,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 5,
+    schema_version: 6,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -414,31 +400,11 @@ async function testCatalog() {
     sources,
     algorithms: [
       {
-        id: "multiresolution",
-        title: "Multiresolution convolution",
+        id: "windowed_convolution",
+        title: "Windowed convolution",
         description:
-          "Splits local convolution into complementary low, mid, and high bands, uses different window scales, then recombines them.",
+          "Extracts synchronized windows, performs one ordinary linear FFT convolution for each pair, and coherence-normalizes their root-Hann crossfades.",
         rank: 1,
-        windows: windows(),
-        parameters: [
-          crossfadeShape,
-          parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
-          parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
-          parameter("multires_low_scale", "low scale", 1, 3, 0.05, 1.6, "×"),
-          parameter("multires_high_scale", "high scale", 0.15, 1, 0.01, 0.6, "×"),
-          parameter("multires_low_mix", "low gain", 0, 2, 0.01, 0.9, "×"),
-          parameter("multires_high_mix", "high gain", 0, 2, 0.01, 0.62, "×"),
-          parameter("multires_low_split_hz", "low split", 80, 800, 5, 230, "hz"),
-          parameter("multires_high_split_hz", "high split", 800, 8000, 25, 2100, "hz"),
-          parameter("multires_transition_width", "split width", 0.05, 0.75, 0.01, 0.3),
-        ],
-      },
-      {
-        id: "sliding_wola",
-        title: "Sliding WOLA convolution",
-        description:
-          "Convolves synchronized windows and merges them with normalized raised-cosine overlap-add for a neutral local baseline.",
-        rank: 2,
         windows: windows(),
         parameters: [
           crossfadeShape,
@@ -451,7 +417,7 @@ async function testCatalog() {
         title: "Dual evolving impulse response",
         description:
           "Crops every local convolution into A-sized and B-sized carriers, blends them, and overlap-adds the result.",
-        rank: 3,
+        rank: 2,
         windows: windows(),
         parameters: [
           crossfadeShape,
@@ -467,7 +433,7 @@ async function testCatalog() {
         title: "Independent chunks + crossfade",
         description:
           "Convolves synchronized chunks and joins adjacent results with an equal-power crossfade of configurable length.",
-        rank: 4,
+        rank: 3,
         windows: windows(),
         parameters: [
           analysisTaper,
@@ -481,7 +447,7 @@ async function testCatalog() {
         title: "Full linear convolution",
         description:
           "Selects one segment from each clip, convolves them as the smear reference, and retains the complete linear result.",
-        rank: 5,
+        rank: 4,
         windows: [],
         parameters: [
           parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),

@@ -515,11 +515,18 @@ try {
     await page.locator("#playbackSpeed").evaluate((input) => ({
       minimum: input.min,
       maximum: input.max,
+      step: input.step,
       value: input.value,
       normalizedPosition: (Number(input.value) - Number(input.min)) /
         (Number(input.max) - Number(input.min)),
     })),
-    { minimum: "-1", maximum: "1", value: "0", normalizedPosition: 0.5 },
+    {
+      minimum: "-1",
+      maximum: "1",
+      step: "any",
+      value: "0",
+      normalizedPosition: 0.5,
+    },
   );
   await page.locator("#playbackSpeed").evaluate((input) => {
     input.value = "0.5";
@@ -527,14 +534,25 @@ try {
   });
   assert.ok(
     Math.abs(
-      (await page.evaluate(() => transportSnapshot().playbackRate)) - Math.SQRT2,
+      (await page.evaluate(() => transportSnapshot().playbackRate)) - 1.5,
     ) < 1e-6,
   );
-  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.41×");
+  assert.ok(
+    Math.abs(
+      Number(await page.locator("#playbackSpeed").inputValue()) - Math.log2(1.5),
+    ) < 1e-6,
+    "slider thumb snaps to the logarithmic position for 1.5×",
+  );
+  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.50×");
   assert.equal(
     await page.locator("#playbackSpeed").getAttribute("aria-valuetext"),
-    "1.41 times",
+    "1.50 times",
   );
+  await page.locator("#playbackSpeed").press("ArrowRight");
+  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.75×");
+  await page.locator("#playbackSpeed").press("ArrowLeft");
+  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.50×");
+  await page.locator("#playbackSpeed").evaluate((input) => input.blur());
 
   await page.locator("#seek").evaluate((input) => {
     input.value = "11";

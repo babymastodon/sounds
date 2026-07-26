@@ -398,8 +398,8 @@ try {
     speed.dispatchEvent(new Event("input", { bubbles: true }));
     return result;
   `);
-  assert.ok(Math.abs(changedPlaybackRate.rate - Math.SQRT2) < 1e-6);
-  assert.equal(changedPlaybackRate.value, "1.41×");
+  assert.ok(Math.abs(changedPlaybackRate.rate - 1.5) < 1e-6);
+  assert.equal(changedPlaybackRate.value, "1.50×");
 
   await execute(
     port,

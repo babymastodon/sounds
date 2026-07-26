@@ -55,6 +55,7 @@ const state = {
 };
 
 const LOADING_FONT_CSS_PIXELS = 16;
+const COMMON_PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 async function boot() {
   try {
@@ -167,6 +168,29 @@ function bindEvents() {
   });
   ui.playbackSpeed.addEventListener("input", () => applyPlaybackSpeed(true));
   ui.playbackSpeed.addEventListener("change", () => applyPlaybackSpeed(false));
+  ui.playbackSpeed.addEventListener("keydown", (event) => {
+    const direction = {
+      ArrowLeft: -1,
+      ArrowDown: -1,
+      ArrowRight: 1,
+      ArrowUp: 1,
+    }[event.key];
+    if (!direction && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const current = closestPlaybackRate(state.transport.rate);
+    const currentIndex = COMMON_PLAYBACK_RATES.indexOf(current);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? COMMON_PLAYBACK_RATES.length - 1
+        : clamp(
+            currentIndex + direction,
+            0,
+            COMMON_PLAYBACK_RATES.length - 1,
+          );
+    ui.playbackSpeed.value = Math.log2(COMMON_PLAYBACK_RATES[nextIndex]);
+    applyPlaybackSpeed(false);
+  });
   applyPlaybackVolume();
   applyPlaybackSpeed();
   for (const canvas of [ui.waveform, ui.spectrogram]) {
@@ -195,7 +219,8 @@ function bindEvents() {
 }
 
 function applyPlaybackSpeed(deferRestart = false) {
-  const rate = 2 ** Number(ui.playbackSpeed.value);
+  const rate = closestPlaybackRate(2 ** Number(ui.playbackSpeed.value));
+  ui.playbackSpeed.value = Math.log2(rate);
   const shouldResume = state.transport.desiredPlaying;
   if (state.transport.playing) stopTransport(true);
   cancelScheduledTransportStart();
@@ -206,6 +231,14 @@ function applyPlaybackSpeed(deferRestart = false) {
     scheduleTransportStart(deferRestart ? 50 : 0);
   }
   refreshTransport();
+}
+
+function closestPlaybackRate(rate) {
+  return COMMON_PLAYBACK_RATES.reduce((closest, candidate) =>
+    Math.abs(candidate - rate) < Math.abs(closest - rate)
+      ? candidate
+      : closest
+  );
 }
 
 function applyPlaybackVolume() {

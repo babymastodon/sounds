@@ -164,7 +164,9 @@
         "aria-live": "polite",
       });
       this.previewHeading = createElement("div", { className: "source-preview-heading" });
-      this.previewKind = createElement("div", { className: "source-preview-kind" });
+      this.previewWaveformFrame = createElement("div", {
+        className: "source-preview-waveform-frame",
+      });
       this.previewCanvas = createElement("canvas", {
         className: "source-preview-waveform",
         width: "420",
@@ -174,11 +176,11 @@
           "Shows a lazily loaded peak waveform for the highlighted source; " +
           "moving to another result replaces stale preview work.",
       });
+      this.previewWaveformFrame.append(this.previewCanvas);
       this.previewStats = createElement("dl", { className: "source-preview-stats" });
       this.preview.append(
         this.previewHeading,
-        this.previewKind,
-        this.previewCanvas,
+        this.previewWaveformFrame,
         this.previewStats,
       );
       body.append(this.list, this.preview);
@@ -487,7 +489,6 @@
     showPreviewMetadata(source) {
       if (!source) return;
       this.previewHeading.textContent = source.category;
-      this.previewKind.textContent = `${source.browserGroup} / ${formatKind(source.kind)}`;
       this.previewStats.replaceChildren(
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
         this.stat("rms", "…"),

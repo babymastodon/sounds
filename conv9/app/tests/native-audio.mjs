@@ -312,11 +312,23 @@ try {
         variation += Math.abs(pixels[index] - pixels[index - 4]);
       }
       const bounds = dialog.getBoundingClientRect();
+      const preview = dialog.querySelector(".source-preview").getBoundingClientRect();
+      const frame = dialog
+        .querySelector(".source-preview-waveform-frame")
+        .getBoundingClientRect();
+      const canvasBounds = canvas.getBoundingClientRect();
       return {
         open: !dialog.hidden,
         busy: canvas.getAttribute("aria-busy"),
         stats: dialog.querySelector(".source-preview-stats").textContent,
         variation,
+        waveformContained:
+          frame.top >= preview.top && frame.bottom <= preview.bottom &&
+          canvasBounds.top >= frame.top && canvasBounds.bottom <= frame.bottom &&
+          getComputedStyle(
+            dialog.querySelector(".source-preview-waveform-frame")
+          ).overflow === "hidden",
+        subtitleCount: dialog.querySelectorAll(".source-preview-kind").length,
         inViewport:
           bounds.left >= 0 && bounds.top >= 0 &&
           bounds.right <= innerWidth && bounds.bottom <= innerHeight,
@@ -330,6 +342,8 @@ try {
   assert.match(nativePreview.stats, /rms/);
   assert.match(nativePreview.stats, /peak/);
   assert.ok(nativePreview.variation > 0, "native source preview waveform must vary");
+  assert.equal(nativePreview.waveformContained, true, "native waveform stays inside preview");
+  assert.equal(nativePreview.subtitleCount, 0, "native preview has no subtitle");
   assert.equal(nativePreview.inViewport, true, "native source browser stays inside viewport");
   assert.equal(nativePreview.expanded, "true");
   await execute(port, sessionId, `

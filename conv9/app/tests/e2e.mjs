@@ -337,6 +337,12 @@ try {
     })}`,
   );
   await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-waveform");
+  await assertPreviewWaveformContained(page, "#source-a-dialog");
+  assert.equal(
+    await sourceDialog.locator(".source-preview-kind").count(),
+    0,
+    "source preview has no redundant subtitle",
+  );
   const firstPreviewPixels = await canvasFingerprint(
     page,
     "#source-a-dialog .source-preview-waveform",
@@ -991,6 +997,7 @@ try {
     `compact source browser should fill the usable viewport: ${JSON.stringify(compactDialogBounds)}`,
   );
   await assertCanvasMatchesLayout(page, "#source-b-dialog .source-preview-waveform");
+  await assertPreviewWaveformContained(page, "#source-b-dialog");
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
@@ -1279,6 +1286,41 @@ async function assertCanvasMatchesLayout(page, selector) {
     Math.abs(dimensions.bitmapWidth - dimensions.expectedWidth) <= 1 &&
       Math.abs(dimensions.bitmapHeight - dimensions.expectedHeight) <= 1,
     `canvas bitmap is stretched away from its layout size: ${JSON.stringify(dimensions)}`,
+  );
+}
+
+async function assertPreviewWaveformContained(page, dialogSelector) {
+  const layout = await page.locator(dialogSelector).evaluate((dialog) => {
+    const preview = dialog.querySelector(".source-preview").getBoundingClientRect();
+    const frame = dialog
+      .querySelector(".source-preview-waveform-frame")
+      .getBoundingClientRect();
+    const canvas = dialog.querySelector(".source-preview-waveform").getBoundingClientRect();
+    return {
+      preview: {
+        top: preview.top,
+        bottom: preview.bottom,
+      },
+      frame: {
+        top: frame.top,
+        bottom: frame.bottom,
+        overflow: getComputedStyle(
+          dialog.querySelector(".source-preview-waveform-frame"),
+        ).overflow,
+      },
+      canvas: {
+        top: canvas.top,
+        bottom: canvas.bottom,
+      },
+    };
+  });
+  assert.ok(
+    layout.frame.top >= layout.preview.top &&
+      layout.frame.bottom <= layout.preview.bottom &&
+      layout.canvas.top >= layout.frame.top &&
+      layout.canvas.bottom <= layout.frame.bottom &&
+      layout.frame.overflow === "hidden",
+    `preview waveform escaped its vertical frame: ${JSON.stringify(layout)}`,
   );
 }
 

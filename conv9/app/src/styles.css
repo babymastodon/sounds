@@ -399,34 +399,38 @@ select:focus-visible {
 
 .source-preview {
   display: grid;
-  grid-template-rows: auto auto minmax(120px, 1fr) 47px;
+  grid-template-rows: auto minmax(0, 1fr) 47px;
   gap: 7px;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding: 9px;
   background: #181a19;
 }
 
-.source-preview-heading,
-.source-preview-kind {
+.source-preview-heading {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.source-preview-heading {
   color: var(--bright);
 }
 
-.source-preview-kind {
-  color: var(--muted);
+.source-preview-waveform-frame {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #181a19;
 }
 
 .source-preview-waveform {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  min-height: 120px;
+  min-width: 0;
+  min-height: 0;
   background: #181a19;
 }
 

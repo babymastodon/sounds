@@ -5,7 +5,6 @@ const ui = {
   algorithmButtons: document.querySelector("#algorithmButtons"),
   methodTools: document.querySelector("#methodTools"),
   metrics: document.querySelector("#metrics"),
-  audio: document.querySelector("#audio"),
   playButton: document.querySelector("#playButton"),
   seek: document.querySelector("#seek"),
   volume: document.querySelector("#volume"),
@@ -29,10 +28,30 @@ const state = {
   spectrumLayer: null,
   analysisSamples: null,
   analysisSampleRate: 0,
-  audioObjectUrl: "",
   audioReady: false,
+  renderEpoch: 0,
   selectionGeneration: 0,
   selectionTimer: 0,
+  renderTransitionActive: false,
+  pendingPosition: 0,
+  currentSignature: "",
+  bufferRevision: 0,
+  transport: {
+    context: null,
+    gain: null,
+    buffer: null,
+    source: null,
+    sourceGain: null,
+    position: 0,
+    startedAt: 0,
+    nextStartAt: 0,
+    rate: 1,
+    playing: false,
+    desiredPlaying: false,
+    operation: 0,
+    lastOutputClock: 0,
+    restartTimer: 0,
+  },
 };
 
 const LOADING_FONT_CSS_PIXELS = 16;
@@ -42,6 +61,7 @@ async function boot() {
     state.bridge = runtimeBridge();
     const bootstrap = await state.bridge.loadBootstrap();
     state.catalog = bootstrap.catalog;
+    state.renderEpoch = bootstrap.renderEpoch;
     if (state.catalog.mode !== "on_demand") {
       throw new Error("The backend did not provide an on-demand catalog.");
     }
@@ -63,7 +83,7 @@ async function boot() {
     buildControls();
     bindEvents();
     ui.renderStatus.textContent = "on demand";
-    await selectClip(false, ++state.selectionGeneration);
+    await selectClip(false, nextSelectionGeneration());
     requestAnimationFrame(animateCursor);
   } catch (error) {
     showError(error);
@@ -79,8 +99,8 @@ function runtimeBridge() {
   return {
     loadBootstrap: () => invoke("load_bootstrap"),
     renderSelection: async (request) => parseEnvelope(await invoke("render_selection", request)),
-    supersedeRender: (requestId) =>
-      invoke("supersede_render", { requestId }).catch(() => {}),
+    supersedeRender: (renderEpoch, requestId) =>
+      invoke("supersede_render", { renderEpoch, requestId }).catch(() => {}),
   };
 }
 
@@ -136,29 +156,25 @@ function bindEvents() {
   ui.playButton.addEventListener("click", () => {
     void togglePlayback().catch(showError);
   });
-  ui.audio.addEventListener("play", refreshPlayButton);
-  ui.audio.addEventListener("pause", refreshPlayButton);
-  ui.audio.addEventListener("loadedmetadata", () => {
-    applyPlaybackSpeed();
-    refreshTransport();
-  });
-  ui.audio.addEventListener("timeupdate", refreshTransport);
-  ui.audio.addEventListener("ended", refreshPlayButton);
   ui.seek.addEventListener("input", () => {
-    ui.audio.currentTime = Number(ui.seek.value);
+    seekTransport(Number(ui.seek.value), true);
+  });
+  ui.seek.addEventListener("change", () => {
+    seekTransport(Number(ui.seek.value), false);
   });
   ui.volume.addEventListener("input", () => {
-    ui.audio.volume = Number(ui.volume.value);
+    applyPlaybackVolume();
   });
-  ui.playbackSpeed.addEventListener("input", applyPlaybackSpeed);
-  ui.audio.volume = Number(ui.volume.value);
+  ui.playbackSpeed.addEventListener("input", () => applyPlaybackSpeed(true));
+  ui.playbackSpeed.addEventListener("change", () => applyPlaybackSpeed(false));
+  applyPlaybackVolume();
   applyPlaybackSpeed();
   for (const canvas of [ui.waveform, ui.spectrogram]) {
     canvas.addEventListener("click", (event) => {
       if (!state.audioReady) return;
       const bounds = canvas.getBoundingClientRect();
       const phase = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-      ui.audio.currentTime = phase * (ui.audio.duration || state.catalog.input_seconds);
+      seekTransport(phase * transportDuration());
     });
   }
   window.addEventListener("resize", debounce(resizeVisualizations, 180));
@@ -169,24 +185,36 @@ function bindEvents() {
       void togglePlayback().catch(showError);
     } else if (event.code === "ArrowLeft") {
       if (!state.audioReady) return;
-      ui.audio.currentTime = Math.max(0, ui.audio.currentTime - 5);
+      seekTransport(transportCurrentTime() - 5);
     } else if (event.code === "ArrowRight") {
       if (!state.audioReady) return;
-      ui.audio.currentTime = Math.min(
-        ui.audio.duration || state.catalog.input_seconds,
-        ui.audio.currentTime + 5,
-      );
+      seekTransport(transportCurrentTime() + 5);
     }
   });
+  window.addEventListener("pagehide", shutdownTransport, { once: true });
 }
 
-function applyPlaybackSpeed() {
+function applyPlaybackSpeed(deferRestart = false) {
   const rate = 2 ** Number(ui.playbackSpeed.value);
-  ui.audio.defaultPlaybackRate = rate;
-  ui.audio.playbackRate = rate;
-  ui.audio.preservesPitch = true;
+  const shouldResume = state.transport.desiredPlaying;
+  if (state.transport.playing) stopTransport(true);
+  cancelScheduledTransportStart();
+  state.transport.rate = rate;
   ui.playbackSpeedValue.value = `${rate.toFixed(2)}×`;
   ui.playbackSpeed.setAttribute("aria-valuetext", `${rate.toFixed(2)} times`);
+  if (shouldResume && state.audioReady) {
+    scheduleTransportStart(deferRestart ? 50 : 0);
+  }
+  refreshTransport();
+}
+
+function applyPlaybackVolume() {
+  const gain = Number(ui.volume.value);
+  if (state.transport.gain) {
+    const now = state.transport.context.currentTime;
+    state.transport.gain.gain.cancelScheduledValues(now);
+    state.transport.gain.gain.setTargetAtTime(gain, now, 0.008);
+  }
 }
 
 function buildMethodTools() {
@@ -298,26 +326,28 @@ function toolControl(descriptor, target, options = {}) {
 }
 
 function scheduleSelection(preservePlayback) {
-  const generation = ++state.selectionGeneration;
+  const generation = nextSelectionGeneration();
   clearTimeout(state.selectionTimer);
-  state.bridge.supersedeRender?.(generation);
+  state.bridge.supersedeRender?.(state.renderEpoch, generation);
+  beginRenderTransition(preservePlayback);
   ui.renderStatus.textContent = "queued";
   state.selectionTimer = setTimeout(() => {
     void selectClip(preservePlayback, generation);
   }, 140);
 }
 
+function nextSelectionGeneration() {
+  return ++state.selectionGeneration;
+}
+
 async function selectClip(preservePlayback, generation) {
   try {
     hideError();
-    const oldDuration = Number.isFinite(ui.audio.duration)
-      ? ui.audio.duration
-      : state.catalog.input_seconds;
-    const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
-    const resume = preservePlayback && !ui.audio.paused;
+    if (!state.renderTransitionActive) beginRenderTransition(preservePlayback);
     const algorithm = selectedAlgorithm();
     const settings = state.settings.get(algorithm.id);
     const request = {
+      renderEpoch: state.renderEpoch,
       requestId: generation,
       leftId: state.sourceA,
       rightId: state.sourceB,
@@ -335,39 +365,49 @@ async function selectClip(preservePlayback, generation) {
     const rendered = await state.bridge.renderSelection(request);
     if (generation !== state.selectionGeneration) return;
     const bytes = normalizeBytes(rendered.wav);
-    const analysisBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
-    const previousObjectUrl = state.audioObjectUrl;
-    state.audioObjectUrl = objectUrl;
-    setTransportReady(false);
-    ui.audio.pause();
-    ui.audio.dataset.path = selectionSignature(request);
-    const metadataLoaded = once(ui.audio, "loadedmetadata");
-    ui.audio.src = objectUrl;
-    ui.audio.loop = true;
-    ui.audio.load();
-    await metadataLoaded;
-    if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
-    if (generation !== state.selectionGeneration) return;
-    const targetTime = Math.max(
-      0,
-      Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration),
-    );
-    await settlePlaybackPosition(targetTime);
-    if (generation !== state.selectionGeneration) return;
+    validateRenderedSelection(rendered.header, bytes, request);
     updateMetrics(rendered.header);
     ui.renderStatus.textContent = "analyzing…";
-    await analyzeSelection(analysisBytes, generation);
-    if (generation !== state.selectionGeneration) return;
+    const decoded = await analyzeSelection(bytes, generation);
+    if (generation !== state.selectionGeneration || !decoded) return;
+    installTransportBuffer(
+      decoded,
+      preservePlayback ? state.pendingPosition : 0,
+      selectionSignature(request),
+    );
+    state.renderTransitionActive = false;
     setTransportReady(true);
     ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
-    if (resume) await ui.audio.play();
+    if (state.transport.desiredPlaying) {
+      try {
+        await startTransport();
+      } catch (error) {
+        handlePlaybackFailure(error);
+      }
+    }
   } catch (error) {
     if (generation === state.selectionGeneration) {
+      state.renderTransitionActive = false;
       ui.renderStatus.textContent = "failed";
       showError(error);
     }
   }
+}
+
+function beginRenderTransition(preservePlayback) {
+  if (!state.renderTransitionActive) {
+    state.pendingPosition = preservePlayback ? transportRenderTime() : 0;
+    state.transport.desiredPlaying =
+      preservePlayback &&
+      (state.transport.playing || state.transport.desiredPlaying);
+    state.renderTransitionActive = true;
+  }
+  stopTransport(true);
+  setTransportReady(false);
+  state.analysisSamples = null;
+  state.analysisSampleRate = 0;
+  state.waveformLayer = null;
+  state.spectrumLayer = null;
 }
 
 function updateMetrics(header) {
@@ -467,6 +507,44 @@ function parseEnvelope(raw) {
   return { header, wav: bytes.subarray(wavOffset) };
 }
 
+function validateRenderedSelection(header, wav, request) {
+  const expected = {
+    renderEpoch: request.renderEpoch,
+    requestId: request.requestId,
+    leftId: request.leftId,
+    rightId: request.rightId,
+    algorithm: request.algorithm,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (header[key] !== value) {
+      throw new Error(
+        `The renderer returned stale audio (${key} was ${JSON.stringify(header[key])}, expected ${JSON.stringify(value)}).`,
+      );
+    }
+  }
+  for (const [key, value] of Object.entries(request.windows)) {
+    if (!Number.isFinite(header.windows?.[key]) || Math.abs(header.windows[key] - value) > 0.001) {
+      throw new Error(`The renderer returned stale audio for window ${key}.`);
+    }
+  }
+  if (!header.parameters || typeof header.parameters !== "object") {
+    throw new Error("The renderer returned audio without parameter identity.");
+  }
+  for (const [key, value] of Object.entries(request.parameters)) {
+    if (
+      !Number.isFinite(header.parameters[key]) ||
+      Math.abs(header.parameters[key] - value) > 0.001
+    ) {
+      throw new Error(`The renderer returned stale audio for parameter ${key}.`);
+    }
+  }
+  const ascii = (offset, length) =>
+    String.fromCharCode(...wav.subarray(offset, offset + length));
+  if (wav.length < 44 || ascii(0, 4) !== "RIFF" || ascii(8, 4) !== "WAVE") {
+    throw new Error("The renderer returned bytes that are not a RIFF/WAVE file.");
+  }
+}
+
 function normalizeBytes(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -512,16 +590,15 @@ function clamp(value, minimum, maximum) {
 async function analyzeSelection(bytes, generation) {
   drawLoading(ui.waveform, "drawing waveform…");
   drawLoading(ui.spectrogram, "computing spectrum…");
-  const context = new AudioContext();
-  try {
-    const decoded = await context.decodeAudioData(bytes);
-    if (generation !== state.selectionGeneration) return;
-    state.analysisSamples = decoded.getChannelData(0);
-    state.analysisSampleRate = decoded.sampleRate;
-    resizeVisualizations();
-  } finally {
-    await context.close();
-  }
+  const context = ensureAudioContext();
+  const audioBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const decoded = await context.decodeAudioData(audioBytes);
+  if (generation !== state.selectionGeneration) return null;
+  // Analysis and playback deliberately share this exact decoded AudioBuffer.
+  state.analysisSamples = decoded.getChannelData(0);
+  state.analysisSampleRate = decoded.sampleRate;
+  resizeVisualizations();
+  return decoded;
 }
 
 function resizeVisualizations() {
@@ -667,8 +744,10 @@ function fft(real, imaginary) {
 }
 
 function animateCursor() {
-  const duration = ui.audio.duration || state.catalog.input_seconds;
-  const phase = Math.max(0, Math.min(1, ui.audio.currentTime / duration));
+  const snapshot = refreshTransport();
+  const phase = snapshot.duration > 0
+    ? Math.max(0, Math.min(1, snapshot.currentTime / snapshot.duration))
+    : 0;
   drawLayerWithCursor(ui.waveform, state.waveformLayer, phase);
   drawLayerWithCursor(ui.spectrogram, state.spectrumLayer, phase);
   requestAnimationFrame(animateCursor);
@@ -732,36 +811,280 @@ function refreshButtons() {
 
 async function togglePlayback() {
   if (!state.audioReady) return;
-  if (ui.audio.paused) {
-    await ui.audio.play();
-    hideError();
+  if (!state.transport.desiredPlaying) {
+    state.transport.desiredPlaying = true;
+    refreshPlayButton();
+    try {
+      await startTransport();
+      hideError();
+    } catch (error) {
+      state.transport.desiredPlaying = false;
+      stopTransport(true);
+      throw error;
+    }
   } else {
-    ui.audio.pause();
+    state.transport.desiredPlaying = false;
+    stopTransport(true);
   }
+  refreshPlayButton();
 }
 
-async function settlePlaybackPosition(targetTime) {
-  const duration = ui.audio.duration;
-  const target = Math.max(0, Math.min(duration - 0.01, targetTime));
-  if (Math.abs(ui.audio.currentTime - target) < 0.001) {
-    const nudge = target + 0.25 < duration
-      ? target + 0.25
-      : Math.max(0, target - 0.25);
-    if (Math.abs(nudge - target) >= 0.001) {
-      await seekPlayback(nudge);
+function ensureAudioContext() {
+  if (state.transport.context) return state.transport.context;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    throw new Error("This WebView does not support Web Audio playback.");
+  }
+  const context = new AudioContextClass({ latencyHint: "interactive" });
+  const gain = context.createGain();
+  gain.gain.value = Number(ui.volume.value);
+  gain.connect(context.destination);
+  state.transport.context = context;
+  state.transport.gain = gain;
+  context.addEventListener("statechange", () => {
+    if (context.state === "closed") {
+      state.transport.playing = false;
+      state.transport.desiredPlaying = false;
+    }
+    refreshPlayButton();
+    refreshTransport();
+  });
+  return context;
+}
+
+function installTransportBuffer(buffer, position, signature) {
+  stopTransport(false);
+  state.transport.buffer = buffer;
+  state.transport.position = clampTransportTime(position, buffer.duration, buffer.sampleRate);
+  state.currentSignature = signature;
+  state.bufferRevision++;
+  refreshTransport();
+}
+
+function transportDuration() {
+  return state.transport.buffer?.duration || 0;
+}
+
+function transportClockTime() {
+  const context = state.transport.context;
+  if (!context) return 0;
+  if (typeof context.getOutputTimestamp === "function") {
+    const timestamp = context.getOutputTimestamp();
+    const performanceDelta =
+      performance.now() - Number(timestamp?.performanceTime);
+    if (
+      Number.isFinite(timestamp?.contextTime) &&
+      timestamp.contextTime > 0 &&
+      Number.isFinite(performanceDelta) &&
+      performanceDelta >= -100 &&
+      performanceDelta <= 1000
+    ) {
+      const candidate = Math.min(
+        context.currentTime,
+        timestamp.contextTime + Math.max(0, performanceDelta / 1000),
+      );
+      state.transport.lastOutputClock = Math.max(
+        state.transport.lastOutputClock,
+        candidate,
+      );
+      return state.transport.lastOutputClock;
     }
   }
-  await seekPlayback(target);
-  if (ui.audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
-    await once(ui.audio, "canplay");
+  const latency =
+    Math.max(0, Number(context.outputLatency) || 0) +
+    Math.max(0, Number(context.baseLatency) || 0);
+  state.transport.lastOutputClock = Math.max(
+    state.transport.lastOutputClock,
+    Math.max(0, context.currentTime - latency),
+  );
+  return state.transport.lastOutputClock;
+}
+
+function transportCurrentTime() {
+  const duration = transportDuration();
+  if (!duration) return 0;
+  if (!state.transport.playing) {
+    return clampTransportTime(state.transport.position, duration);
+  }
+  const elapsed = Math.max(
+    0,
+    transportClockTime() - state.transport.startedAt,
+  ) * state.transport.rate;
+  return modulo(state.transport.position + elapsed, duration);
+}
+
+function transportRenderTime(contextTime = state.transport.context?.currentTime) {
+  const duration = transportDuration();
+  if (!duration) return 0;
+  if (!state.transport.playing || !state.transport.context) {
+    return clampTransportTime(state.transport.position, duration);
+  }
+  const elapsed = Math.max(
+    0,
+    contextTime - state.transport.startedAt,
+  ) * state.transport.rate;
+  return modulo(state.transport.position + elapsed, duration);
+}
+
+async function startTransport() {
+  if (
+    !state.audioReady ||
+    !state.transport.buffer ||
+    !state.transport.desiredPlaying ||
+    state.transport.playing
+  ) {
+    return;
+  }
+  const context = ensureAudioContext();
+  const operation = ++state.transport.operation;
+  if (context.state !== "running") await context.resume();
+  if (
+    operation !== state.transport.operation ||
+    !state.audioReady ||
+    !state.transport.desiredPlaying ||
+    state.transport.playing
+  ) {
+    return;
+  }
+  const source = context.createBufferSource();
+  const sourceGain = context.createGain();
+  const duration = transportDuration();
+  const position = clampTransportTime(state.transport.position, duration);
+  source.buffer = state.transport.buffer;
+  source.loop = true;
+  source.loopStart = 0;
+  source.loopEnd = duration;
+  source.playbackRate.value = state.transport.rate;
+  source.connect(sourceGain);
+  sourceGain.connect(state.transport.gain);
+  const startAt = Math.max(context.currentTime, state.transport.nextStartAt);
+  sourceGain.gain.setValueAtTime(0, startAt);
+  sourceGain.gain.linearRampToValueAtTime(1, startAt + 0.005);
+  state.transport.source = source;
+  state.transport.sourceGain = sourceGain;
+  state.transport.position = position;
+  // Keep the UI on the sample currently reaching the output device. The graph
+  // begins at context.currentTime; transportClockTime trails it by output latency.
+  state.transport.startedAt = startAt;
+  state.transport.nextStartAt = 0;
+  state.transport.playing = true;
+  source.start(startAt, position);
+  refreshPlayButton();
+}
+
+function stopTransport(preservePosition) {
+  // Source.stop() acts at the graph render head, not at the latency-compensated
+  // presentation head. Saving the render position prevents a latency-sized
+  // section from being replayed after pause, rate change, or render replacement.
+  cancelScheduledTransportStart();
+  const context = state.transport.context;
+  const stopAt = context ? context.currentTime + 0.005 : 0;
+  const position = preservePosition ? transportRenderTime(stopAt) : 0;
+  state.transport.operation++;
+  const source = state.transport.source;
+  const sourceGain = state.transport.sourceGain;
+  state.transport.source = null;
+  state.transport.sourceGain = null;
+  state.transport.playing = false;
+  if (source) {
+    try {
+      if (context && sourceGain) {
+        sourceGain.gain.cancelScheduledValues(context.currentTime);
+        sourceGain.gain.setValueAtTime(sourceGain.gain.value, context.currentTime);
+        sourceGain.gain.linearRampToValueAtTime(0, stopAt);
+        source.stop(stopAt);
+        state.transport.nextStartAt = stopAt;
+      } else {
+        source.stop();
+      }
+    } catch {
+      // A source may already have stopped while a rapid control change is handled.
+    }
+    source.addEventListener("ended", () => {
+      source.disconnect();
+      sourceGain?.disconnect();
+    }, { once: true });
+  }
+  if (preservePosition) state.transport.position = position;
+  refreshPlayButton();
+}
+
+function seekTransport(time, deferRestart = false) {
+  if (!state.transport.buffer) return;
+  const shouldResume = state.transport.desiredPlaying;
+  if (state.transport.playing) stopTransport(false);
+  cancelScheduledTransportStart();
+  state.transport.position = clampTransportTime(time, transportDuration());
+  if (shouldResume && state.audioReady) {
+    scheduleTransportStart(deferRestart ? 50 : 0);
+  }
+  refreshTransport();
+}
+
+function clampTransportTime(
+  time,
+  duration = transportDuration(),
+  sampleRate = state.transport.buffer?.sampleRate || 48_000,
+) {
+  if (!duration) return 0;
+  const finalSample = Math.max(
+    0,
+    duration - 1 / sampleRate,
+  );
+  return clamp(Number.isFinite(time) ? time : 0, 0, finalSample);
+}
+
+function modulo(value, modulus) {
+  return ((value % modulus) + modulus) % modulus;
+}
+
+function transportSnapshot() {
+  return {
+    paused: !state.transport.playing,
+    playing: state.transport.playing,
+    desiredPlaying: state.transport.desiredPlaying,
+    currentTime: transportCurrentTime(),
+    duration: transportDuration(),
+    readyState: state.audioReady ? 4 : 0,
+    loop: true,
+    playbackRate: state.transport.rate,
+    volume: Number(ui.volume.value),
+    path: state.currentSignature,
+    bufferRevision: state.bufferRevision,
+    contextState: state.transport.context?.state || "uninitialized",
+  };
+}
+
+function shutdownTransport() {
+  state.transport.desiredPlaying = false;
+  stopTransport(false);
+  state.transport.buffer = null;
+  state.transport.gain?.disconnect();
+  const context = state.transport.context;
+  state.transport.gain = null;
+  state.transport.context = null;
+  if (context && context.state !== "closed") {
+    void context.close().catch(() => {});
   }
 }
 
-async function seekPlayback(time) {
-  if (Math.abs(ui.audio.currentTime - time) < 0.001) return;
-  const seeked = once(ui.audio, "seeked");
-  ui.audio.currentTime = time;
-  await seeked;
+function scheduleTransportStart(delay) {
+  cancelScheduledTransportStart();
+  state.transport.restartTimer = window.setTimeout(() => {
+    state.transport.restartTimer = 0;
+    void startTransport().catch(handlePlaybackFailure);
+  }, delay);
+}
+
+function cancelScheduledTransportStart() {
+  clearTimeout(state.transport.restartTimer);
+  state.transport.restartTimer = 0;
+}
+
+function handlePlaybackFailure(error) {
+  state.transport.desiredPlaying = false;
+  stopTransport(true);
+  showError(error);
 }
 
 function refreshPlayButton() {
@@ -772,9 +1095,10 @@ function refreshPlayButton() {
       "Playback becomes available after the current convolution and its visualizations are ready.";
     return;
   }
-  ui.playButton.textContent = ui.audio.paused ? "▶" : "❚❚";
-  ui.playButton.setAttribute("aria-label", ui.audio.paused ? "Play" : "Pause");
-  ui.playButton.title = ui.audio.paused
+  const active = state.transport.playing || state.transport.desiredPlaying;
+  ui.playButton.textContent = active ? "❚❚" : "▶";
+  ui.playButton.setAttribute("aria-label", active ? "Pause" : "Play");
+  ui.playButton.title = !active
     ? "Play the current in-memory convolution from its present position. Playback loops automatically at the end."
     : "Pause playback at the current position. The rendered audio remains in memory and can resume from this point.";
 }
@@ -787,11 +1111,13 @@ function setTransportReady(ready) {
 }
 
 function refreshTransport() {
-  const duration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 0;
+  const snapshot = transportSnapshot();
+  const { duration, currentTime } = snapshot;
   ui.seek.max = duration;
-  if (!ui.seek.matches(":active")) ui.seek.value = ui.audio.currentTime;
-  ui.currentTime.textContent = formatTime(ui.audio.currentTime);
+  if (!ui.seek.matches(":active")) ui.seek.value = currentTime;
+  ui.currentTime.textContent = formatTime(currentTime);
   ui.duration.textContent = formatTime(duration);
+  return snapshot;
 }
 
 function formatTime(seconds) {
@@ -810,39 +1136,6 @@ function shortAlgorithm(value) {
     dry_a: "dry a",
     dry_b: "dry b",
   }[value];
-}
-
-function once(target, eventName) {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      target.removeEventListener(eventName, resolveEvent);
-      target.removeEventListener("error", rejectEvent);
-    };
-    const resolveEvent = (event) => {
-      cleanup();
-      resolve(event);
-    };
-    const rejectEvent = () => {
-      cleanup();
-      const code = target.error?.code;
-      const reason = {
-        1: "playback was aborted",
-        2: "a network error interrupted the media load",
-        3: "the WAV could not be decoded",
-        4: "the media source is not supported",
-      }[code];
-      reject(
-        new Error(
-          target.error?.message ||
-            (reason
-              ? `Audio failed: ${reason} (media error ${code})`
-              : `Failed while waiting for ${eventName}`),
-        ),
-      );
-    };
-    target.addEventListener(eventName, resolveEvent, { once: true });
-    target.addEventListener("error", rejectEvent, { once: true });
-  });
 }
 
 function debounce(callback, delay) {

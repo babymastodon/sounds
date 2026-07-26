@@ -68,17 +68,20 @@ try {
 
   const initial = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       const waveform = document.querySelector("#waveform");
       const spectrum = document.querySelector("#spectrogram");
       return {
-        readyState: audio?.readyState,
+        readyState: transport.readyState,
         documentTitle: document.title,
-        duration: audio?.duration,
-        source: audio?.currentSrc,
-        path: audio?.dataset.path,
-        loop: audio?.loop,
-        playbackRate: audio?.playbackRate,
+        duration: transport.duration,
+        path: transport.path,
+        loop: transport.loop,
+        playbackRate: transport.playbackRate,
+        renderEpoch: state.renderEpoch,
+        contextState: transport.contextState,
+        bufferRevision: transport.bufferRevision,
+        mediaElementCount: document.querySelectorAll("audio, video").length,
         playbackSpeedValue: document.querySelector("#playbackSpeedValue")?.textContent,
         playbackSpeedScale: {
           minimum: document.querySelector("#playbackSpeed")?.min,
@@ -235,9 +238,10 @@ try {
     },
     "Tauri must embed the 512px convolution icon",
   );
-  assert.match(initial.source, /^blob:tauri:/);
   assert.match(initial.path, /windowed_convolution\/5\.00x5\.00\//);
   assert.equal(initial.loop, true);
+  assert.equal(initial.mediaElementCount, 0, "playback must not use native media-element queues");
+  assert.equal(initial.bufferRevision, 1);
   assert.equal(initial.playbackRate, 1);
   assert.equal(initial.playbackSpeedValue, "1.00×");
   assert.deepEqual(initial.playbackSpeedScale, {
@@ -304,7 +308,13 @@ try {
         10 * Math.log10(Math.max(Number.EPSILON, power / Math.max(1, end - start)))
       );
     }
-    return { sampleRate, rmsDb };
+    const decimation = 12;
+    const referenceFrames = Math.min(samples.length, sampleRate * 2);
+    const reference = new Array(Math.floor(referenceFrames / decimation));
+    for (let index = 0; index < reference.length; index++) {
+      reference[index] = samples[index * decimation];
+    }
+    return { sampleRate, rmsDb, decimation, reference };
   `);
   assert.ok(
     renderedPrefix.rmsDb[0] < -100 &&
@@ -318,22 +328,61 @@ try {
   await capturePlaybackStart(port, sessionId, firstStartCapturePath);
   await resetPlayback(port, sessionId);
   await capturePlaybackStart(port, sessionId, replayStartCapturePath);
-  const firstPlayComparison = comparePlaybackStarts(
+  const firstPlayComparison = compareCapturedToReference(
     await readFile(firstStartCapturePath),
+    renderedPrefix.reference,
+    renderedPrefix.decimation,
+    renderedPrefix.sampleRate,
+  );
+  const replayComparison = compareCapturedToReference(
     await readFile(replayStartCapturePath),
+    renderedPrefix.reference,
+    renderedPrefix.decimation,
+    renderedPrefix.sampleRate,
   );
   console.log(
     `first-play regression: ${firstPlayComparison.earlyCorrelation.toFixed(4)} early / ` +
       `${firstPlayComparison.lateCorrelation.toFixed(4)} late correlation, ` +
-      `${firstPlayComparison.lagFrames} frame lag`,
+      `${firstPlayComparison.lagFrames} frame capture alignment`,
   );
+  for (const [name, comparison] of [
+    ["first play", firstPlayComparison],
+    ["replay", replayComparison],
+  ]) {
+    assert.ok(
+      comparison.prefixRmsDb[0] < -80,
+      `${name} emitted a burst in its first 100 ms: ${comparison.prefixRmsDb.join(" ")}`,
+    );
+    assert.ok(
+      Math.max(...comparison.prefixRmsDb) < -45,
+      `${name} did not preserve the quiet 0–500 ms fade: ${comparison.prefixRmsDb.join(" ")}`,
+    );
+  }
   assert.ok(
     firstPlayComparison.earlyCorrelation > 0.98,
-    `first 500 ms differs from replay: ${JSON.stringify(firstPlayComparison)}`,
+    `first playback does not match the decoded buffer: ${JSON.stringify(firstPlayComparison)}`,
   );
   assert.ok(
     firstPlayComparison.lateCorrelation > 0.98,
-    `first-play continuation differs from replay: ${JSON.stringify(firstPlayComparison)}`,
+    `first-play continuation does not match the decoded buffer: ${JSON.stringify(firstPlayComparison)}`,
+  );
+  assert.ok(
+    replayComparison.earlyCorrelation > 0.98 &&
+      replayComparison.lateCorrelation > 0.98,
+    `replay does not match the decoded buffer: ${JSON.stringify(replayComparison)}`,
+  );
+  assert.ok(
+    Math.abs(firstPlayComparison.lagFrames - replayComparison.lagFrames) < 2_400,
+    `first start and replay output latencies diverged: ${JSON.stringify({
+      firstPlayComparison,
+      replayComparison,
+    })}`,
+  );
+  assert.ok(
+    Math.abs(
+      firstPlayComparison.earlyLagFrames - firstPlayComparison.lateLagFrames,
+    ) < 480,
+    `capture clock drifted by more than 10 ms: ${JSON.stringify(firstPlayComparison)}`,
   );
   await resetPlayback(port, sessionId);
 
@@ -342,7 +391,7 @@ try {
     speed.value = "0.5";
     speed.dispatchEvent(new Event("input", { bubbles: true }));
     const result = {
-      rate: document.querySelector("#audio").playbackRate,
+      rate: transportSnapshot().playbackRate,
       value: document.querySelector("#playbackSpeedValue").textContent
     };
     speed.value = "0";
@@ -387,20 +436,34 @@ try {
   assert.equal(afterCapture.paused, false);
   assert.equal(afterCapture.errorHidden, true, afterCapture.error);
 
-  await execute(port, sessionId, `
+  const shortWindowStart = await playbackState(port, sessionId);
+  const shortWindowTransition = await execute(port, sessionId, `
     for (const label of ["A window", "B window"]) {
       const input = document.querySelector(\`input[aria-label="\${label} exact value"]\`);
       input.value = "0.25";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    return true;
+    return transportSnapshot();
   `);
+  assert.equal(shortWindowTransition.paused, true, "stale audio must stop while rendering");
+  assert.equal(shortWindowTransition.readyState, 0, "transport locks while rendering");
+  assert.equal(
+    shortWindowTransition.desiredPlaying,
+    true,
+    "render transition retains playing intent",
+  );
+  assert.ok(
+    Math.abs(shortWindowTransition.currentTime - shortWindowStart.currentTime) < 0.2,
+    "render transition freezes the audible sample clock",
+  );
   const shortWindow = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return {
-        duration: audio.duration,
-        path: audio.dataset.path,
+        duration: transport.duration,
+        path: transport.path,
+        paused: transport.paused,
+        currentTime: transport.currentTime,
         status: document.querySelector("#renderStatus")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -414,6 +477,11 @@ try {
     `short-window convolution duration was ${shortWindow.duration}`,
   );
   assert.equal(shortWindow.errorHidden, true, shortWindow.error);
+  assert.equal(shortWindow.paused, false, "new buffer resumes only after it is installed");
+  assert.ok(
+    shortWindow.currentTime >= shortWindowStart.currentTime - 0.2,
+    "new duration preserves absolute time rather than normalized phase",
+  );
   await captureMonitor();
   const shortWindowWav = await readFile(capturePath);
   const shortWindowSignal = analyzePcm16(shortWindowWav);
@@ -435,10 +503,10 @@ try {
   `);
   const unequalWindow = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return {
-        duration: audio.duration,
-        path: audio.dataset.path,
+        duration: transport.duration,
+        path: transport.path,
         status: document.querySelector("#renderStatus")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -477,11 +545,11 @@ try {
   `);
   const chunked = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return {
-        duration: audio.duration,
-        source: audio.currentSrc,
-        path: audio.dataset.path,
+        duration: transport.duration,
+        bufferRevision: transport.bufferRevision,
+        path: transport.path,
         status: document.querySelector("#renderStatus")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -506,10 +574,10 @@ try {
     );
     const rendered = await poll(async () => {
       const value = await execute(port, sessionId, `
-        const audio = document.querySelector("#audio");
+        const transport = transportSnapshot();
         return {
-          duration: audio.duration,
-          path: audio.dataset.path,
+          duration: transport.duration,
+          path: transport.path,
           status: document.querySelector("#renderStatus")?.textContent,
           error: document.querySelector("#errorPanel")?.textContent,
           errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -538,12 +606,12 @@ try {
   );
   const full = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return {
-        duration: audio.duration,
-        paused: audio.paused,
-        source: audio.currentSrc,
-        path: audio.dataset.path,
+        duration: transport.duration,
+        paused: transport.paused,
+        bufferRevision: transport.bufferRevision,
+        path: transport.path,
         status: document.querySelector("#renderStatus")?.textContent,
         toolInputs: document.querySelectorAll("#methodTools input").length,
         error: document.querySelector("#errorPanel")?.textContent,
@@ -562,7 +630,10 @@ try {
   assert.equal(full.paused, false);
   assert.equal(full.toolInputs, 8);
   assert.equal(full.errorHidden, true, full.error);
-  assert.notEqual(full.source, initial.source, "full convolution received a new in-memory WAV");
+  assert.ok(
+    full.bufferRevision > initial.bufferRevision,
+    "full convolution received a newly decoded AudioBuffer",
+  );
 
   await execute(port, sessionId, `
     const setValue = (label, value) => {
@@ -577,10 +648,10 @@ try {
   `);
   const segmentedFull = await poll(async () => {
     const value = await execute(port, sessionId, `
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return {
-        duration: audio.duration,
-        path: audio.dataset.path,
+        duration: transport.duration,
+        path: transport.path,
         status: document.querySelector("#renderStatus")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -596,10 +667,78 @@ try {
   );
   assert.equal(segmentedFull.errorHidden, true, segmentedFull.error);
 
+  await execute(port, sessionId, `
+    const setValue = (label, value) => {
+      const input = document.querySelector(\`input[aria-label="\${label} exact value"]\`);
+      input.value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setValue("A duration", 0.5);
+    setValue("B duration", 0.5);
+    return true;
+  `);
+  const shortLoop = await poll(async () => {
+    const value = await playbackState(port, sessionId);
+    return value.path.endsWith(
+      "/full_convolution/a10.00+0.50_b0.00+0.50",
+    ) && value.readyState >= 4 ? value : undefined;
+  }, 90_000);
+  assert.ok(
+    Math.abs(shortLoop.duration - 1) < 0.02,
+    `short loop duration was ${shortLoop.duration}`,
+  );
+  const loopClockSamples = [];
+  for (let index = 0; index < 24; index++) {
+    loopClockSamples.push(await execute(port, sessionId, `
+      return {
+        ...transportSnapshot(),
+        label: document.querySelector("#currentTime").textContent,
+        seek: Number(document.querySelector("#seek").value)
+      };
+    `));
+    await delay(70);
+  }
+  let observedWrap = false;
+  for (let index = 0; index < loopClockSamples.length; index++) {
+    const sample = loopClockSamples[index];
+    assert.ok(
+      circularTimeDistance(
+        parseTimeLabel(sample.label),
+        sample.currentTime,
+        sample.duration,
+      ) < 0.08,
+      `time label diverged from played sample clock: ${JSON.stringify(sample)}`,
+    );
+    assert.ok(
+      circularTimeDistance(sample.seek, sample.currentTime, sample.duration) < 0.08,
+      `seek indicator diverged from played sample clock: ${JSON.stringify(sample)}`,
+    );
+    if (
+      index > 0 &&
+      loopClockSamples[index - 1].currentTime - sample.currentTime > 0.5
+    ) {
+      observedWrap = true;
+    }
+  }
+  assert.equal(
+    observedWrap,
+    true,
+    `native sample-clock playback did not visibly loop: ${JSON.stringify(loopClockSamples)}`,
+  );
+
   await captureMonitor();
-  const fullSignal = analyzePcm16(await readFile(capturePath));
+  const fullWav = await readFile(capturePath);
+  const fullSignal = analyzePcm16(fullWav);
+  const audibleLoopCorrelation = periodCorrelation(
+    fullWav,
+    Math.round(shortLoop.duration * 48_000),
+  );
   assert.ok(fullSignal.rms > 0.003, `full convolution is silent: RMS ${fullSignal.rms}`);
   assert.ok(fullSignal.peak > 0.01, `full convolution peak is too low: ${fullSignal.peak}`);
+  assert.ok(
+    audibleLoopCorrelation > 0.98,
+    `speaker output did not repeat the decoded one-second loop cleanly: ${audibleLoopCorrelation}`,
+  );
 
   for (const algorithm of ["dry_a", "dry_b"]) {
     await execute(
@@ -611,10 +750,10 @@ try {
     );
     const dry = await poll(async () => {
       const value = await execute(port, sessionId, `
-        const audio = document.querySelector("#audio");
+        const transport = transportSnapshot();
         return {
-          duration: audio.duration,
-          path: audio.dataset.path,
+          duration: transport.duration,
+          path: transport.path,
           toolInputs: document.querySelectorAll("#methodTools input").length,
           tools: document.querySelector("#methodTools")?.textContent,
           status: document.querySelector("#renderStatus")?.textContent,
@@ -634,6 +773,31 @@ try {
   const drySignal = analyzePcm16(await readFile(capturePath));
   assert.ok(drySignal.rms > 0.003, `dry source is silent: RMS ${drySignal.rms}`);
   assert.ok(drySignal.peak > 0.01, `dry source peak is too low: ${drySignal.peak}`);
+
+  const previousEpoch = await execute(port, sessionId, "return state.renderEpoch;");
+  await execute(port, sessionId, "location.reload(); return true;");
+  const reloaded = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      if (typeof transportSnapshot !== "function") return null;
+      const transport = transportSnapshot();
+      return {
+        ...transport,
+        renderEpoch: state.renderEpoch,
+        status: document.querySelector("#renderStatus")?.textContent,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value?.readyState >= 4 &&
+      value.status?.startsWith("rendered ") ? value : undefined;
+  }, 180_000);
+  assert.ok(
+    reloaded.renderEpoch > previousEpoch,
+    `WebView reload reused render epoch ${reloaded.renderEpoch}`,
+  );
+  assert.match(reloaded.path, /windowed_convolution\/5\.00x5\.00\//);
+  assert.equal(reloaded.paused, true, "reload must not retain stale playback intent");
+  assert.equal(reloaded.errorHidden, true, reloaded.error);
 
   assert.equal(existsSync(retiredOutputDir), false, "native renders must not create outputs");
   console.log(
@@ -697,12 +861,14 @@ function nativeEnvironment() {
 
 async function playbackState(port, id) {
   return execute(port, id, `
-    const audio = document.querySelector("#audio");
+    const transport = transportSnapshot();
     return {
-      paused: audio.paused,
-      currentTime: audio.currentTime,
-      readyState: audio.readyState,
-      errorCode: audio.error?.code,
+      paused: transport.paused,
+      currentTime: transport.currentTime,
+      duration: transport.duration,
+      readyState: transport.readyState,
+      path: transport.path,
+      contextState: transport.contextState,
       error: document.querySelector("#errorPanel")?.textContent,
       errorHidden: document.querySelector("#errorPanel")?.hidden
     };
@@ -778,7 +944,7 @@ async function capturePlaybackStart(port, id, path) {
       "-i",
       `${sinkName}.monitor`,
       "-t",
-      "2.6",
+      "3.2",
       "-c:a",
       "pcm_s16le",
       "-y",
@@ -795,9 +961,10 @@ async function capturePlaybackStart(port, id, path) {
     document.querySelector("#playButton").click();
     return true;
   `);
-  await delay(1_700);
+  await delay(2_200);
   await execute(port, id, `
-    document.querySelector("#audio").pause();
+    state.transport.desiredPlaying = false;
+    stopTransport(true);
     return true;
   `);
   const code = await waitForExit(capture, 5_000);
@@ -806,9 +973,9 @@ async function capturePlaybackStart(port, id, path) {
 
 async function resetPlayback(port, id) {
   await execute(port, id, `
-    const audio = document.querySelector("#audio");
-    audio.pause();
-    audio.currentTime = 0;
+    state.transport.desiredPlaying = false;
+    stopTransport(true);
+    seekTransport(0);
     return true;
   `);
   await poll(async () => {
@@ -819,49 +986,130 @@ async function resetPlayback(port, id) {
   });
 }
 
-function comparePlaybackStarts(firstWav, replayWav) {
-  const first = monoPcm16(firstWav);
-  const replay = monoPcm16(replayWav);
-  const sampleRate = 48_000;
-  const lateStart = Math.floor(1.15 * sampleRate);
-  const lateEnd = Math.floor(1.9 * sampleRate);
+function compareCapturedToReference(
+  capturedWav,
+  referenceValues,
+  decimation,
+  referenceSampleRate,
+) {
+  const captured = monoPcm16(capturedWav);
+  const reference = Float32Array.from(referenceValues);
+  const captureSampleRate = 48_000;
+  const reducedRate = referenceSampleRate / decimation;
+  const searchStart = Math.floor(0.35 * captureSampleRate);
+  const searchEnd = Math.floor(0.85 * captureSampleRate);
+  const referenceStart = Math.floor(0.75 * reducedRate);
+  const referenceEnd = Math.floor(1.8 * reducedRate);
   let lagFrames = 0;
   let best = -Infinity;
-  for (let lag = -12_000; lag <= 12_000; lag += 24) {
-    const correlation = sampleCorrelation(first, replay, lateStart, lateEnd, lag, 24);
+  for (let captureLag = searchStart; captureLag <= searchEnd; captureLag += 24) {
+    const correlation = decimatedCorrelation(
+      reference,
+      captured,
+      referenceStart,
+      referenceEnd,
+      captureLag,
+      decimation,
+      referenceSampleRate,
+      captureSampleRate,
+    );
     if (correlation > best) {
       best = correlation;
-      lagFrames = lag;
+      lagFrames = captureLag;
     }
   }
   const coarseLag = lagFrames;
-  best = -Infinity;
-  for (let lag = coarseLag - 48; lag <= coarseLag + 48; lag++) {
-    const correlation = sampleCorrelation(first, replay, lateStart, lateEnd, lag, 4);
+  for (let captureLag = coarseLag - 24; captureLag <= coarseLag + 24; captureLag++) {
+    const correlation = decimatedCorrelation(
+      reference,
+      captured,
+      referenceStart,
+      referenceEnd,
+      captureLag,
+      decimation,
+      referenceSampleRate,
+      captureSampleRate,
+    );
     if (correlation > best) {
       best = correlation;
-      lagFrames = lag;
+      lagFrames = captureLag;
     }
   }
+  const early = bestCorrelationNear(
+    reference,
+    captured,
+    Math.floor(0.50 * reducedRate),
+    Math.floor(1.05 * reducedRate),
+    lagFrames,
+    240,
+    decimation,
+    referenceSampleRate,
+    captureSampleRate,
+  );
+  const late = bestCorrelationNear(
+    reference,
+    captured,
+    Math.floor(1.10 * reducedRate),
+    Math.floor(1.85 * reducedRate),
+    lagFrames,
+    240,
+    decimation,
+    referenceSampleRate,
+    captureSampleRate,
+  );
   return {
     lagFrames,
-    earlyCorrelation: sampleCorrelation(
-      first,
-      replay,
-      Math.floor(0.55 * sampleRate),
-      Math.floor(1.05 * sampleRate),
-      lagFrames,
-      1,
-    ),
-    lateCorrelation: sampleCorrelation(
-      first,
-      replay,
-      lateStart,
-      lateEnd,
-      lagFrames,
-      1,
-    ),
+    earlyLagFrames: early.lagFrames,
+    lateLagFrames: late.lagFrames,
+    earlyCorrelation: early.correlation,
+    lateCorrelation: late.correlation,
+    prefixRmsDb: alignedRmsDb(captured, lagFrames, captureSampleRate, 0.1, 5),
   };
+}
+
+function alignedRmsDb(samples, startFrame, sampleRate, windowSeconds, count) {
+  const frames = Math.round(sampleRate * windowSeconds);
+  const levels = [];
+  for (let window = 0; window < count; window++) {
+    let power = 0;
+    const start = startFrame + window * frames;
+    const end = Math.min(samples.length, start + frames);
+    for (let index = Math.max(0, start); index < end; index++) {
+      power += samples[index] * samples[index];
+    }
+    levels.push(
+      10 * Math.log10(Math.max(Number.EPSILON, power / Math.max(1, end - start))),
+    );
+  }
+  return levels;
+}
+
+function bestCorrelationNear(
+  reference,
+  captured,
+  start,
+  end,
+  centerLag,
+  radius,
+  decimation,
+  referenceSampleRate,
+  captureSampleRate,
+) {
+  let result = { lagFrames: centerLag, correlation: -Infinity };
+  for (let lagFrames = centerLag - radius; lagFrames <= centerLag + radius; lagFrames++) {
+    const correlation = decimatedCorrelation(
+      reference,
+      captured,
+      start,
+      end,
+      lagFrames,
+      decimation,
+      referenceSampleRate,
+      captureSampleRate,
+    );
+    if (correlation > result.correlation) result = { lagFrames, correlation };
+  }
+  return result;
 }
 
 function monoPcm16(wav) {
@@ -880,22 +1128,39 @@ function monoPcm16(wav) {
   return samples;
 }
 
-function sampleCorrelation(first, second, start, end, lag, stride) {
+function decimatedCorrelation(
+  reference,
+  captured,
+  start,
+  end,
+  captureLag,
+  decimation,
+  referenceSampleRate,
+  captureSampleRate,
+) {
   let dot = 0;
-  let firstPower = 0;
-  let secondPower = 0;
-  for (let index = start; index < end; index += stride) {
-    const shifted = index + lag;
-    if (index < 0 || index >= first.length || shifted < 0 || shifted >= second.length) {
+  let referencePower = 0;
+  let capturedPower = 0;
+  for (let index = start; index < end; index++) {
+    const referenceFrame = index * decimation;
+    const capturedIndex =
+      captureLag +
+      Math.round((referenceFrame * captureSampleRate) / referenceSampleRate);
+    if (
+      index < 0 ||
+      index >= reference.length ||
+      capturedIndex < 0 ||
+      capturedIndex >= captured.length
+    ) {
       continue;
     }
-    const left = first[index];
-    const right = second[shifted];
-    dot += left * right;
-    firstPower += left * left;
-    secondPower += right * right;
+    const expected = reference[index];
+    const actual = captured[capturedIndex];
+    dot += expected * actual;
+    referencePower += expected * expected;
+    capturedPower += actual * actual;
   }
-  return dot / Math.sqrt(Math.max(Number.EPSILON, firstPower * secondPower));
+  return dot / Math.sqrt(Math.max(Number.EPSILON, referencePower * capturedPower));
 }
 
 function analyzePcm16(wav) {
@@ -936,6 +1201,26 @@ function phaseModulationDb(wav, periodFrames) {
   return Math.max(...levels) - Math.min(...levels);
 }
 
+function periodCorrelation(wav, periodFrames) {
+  const samples = monoPcm16(wav);
+  const start = Math.floor(0.25 * 48_000);
+  const end = Math.min(
+    samples.length - periodFrames,
+    Math.floor(2.5 * 48_000),
+  );
+  let dot = 0;
+  let leftPower = 0;
+  let rightPower = 0;
+  for (let index = start; index < end; index++) {
+    const left = samples[index];
+    const right = samples[index + periodFrames];
+    dot += left * right;
+    leftPower += left * left;
+    rightPower += right * right;
+  }
+  return dot / Math.sqrt(Math.max(Number.EPSILON, leftPower * rightPower));
+}
+
 function pcm16Data(wav) {
   let offset = 12;
   let data;
@@ -954,6 +1239,16 @@ function pcm16Data(wav) {
 
 function decibels(amplitude) {
   return 20 * Math.log10(Math.max(amplitude, Number.EPSILON));
+}
+
+function parseTimeLabel(label) {
+  const [minutes, seconds] = label.split(":");
+  return Number(minutes) * 60 + Number(seconds);
+}
+
+function circularTimeDistance(left, right, duration) {
+  const distance = Math.abs(left - right);
+  return Math.min(distance, Math.max(0, duration - distance));
 }
 
 function command(binary, arguments_) {

@@ -69,8 +69,8 @@ try {
       record();
     });
     window.__CONV9_TEST_BRIDGE__ = {
-      loadBootstrap: async () => ({ catalog: injectedCatalog }),
-      supersedeRender: (requestId) => {
+      loadBootstrap: async () => ({ catalog: injectedCatalog, renderEpoch: 7 }),
+      supersedeRender: (_renderEpoch, requestId) => {
         window.__CONV9_TEST_LATEST__ = requestId;
       },
       renderSelection: async (request) => {
@@ -87,11 +87,13 @@ try {
             : 61;
         return {
           header: {
+            renderEpoch: request.renderEpoch,
             requestId: request.requestId,
             leftId: request.leftId,
             rightId: request.rightId,
             algorithm: request.algorithm,
             windows: structuredClone(request.windows),
+            parameters: structuredClone(request.parameters),
             hopSeconds:
               request.windows.clip_a_seconds == null
                 ? null
@@ -141,7 +143,7 @@ try {
   }
   await page.locator("#playButton").evaluate((button) => button.click());
   assert.equal(
-    await page.locator("#audio").evaluate((audio) => audio.paused),
+    await page.evaluate(() => transportSnapshot().paused),
     true,
     "startup play is inert until rendering and analysis are complete",
   );
@@ -293,8 +295,47 @@ try {
     defaultSliderPosition >= 580 && defaultSliderPosition <= 640,
     `soft-log 5-second position is unexpected: ${defaultSliderPosition}`,
   );
-  assert.equal(await page.locator("#audio").evaluate((audio) => audio.loop), true);
+  assert.equal(await page.evaluate(() => transportSnapshot().loop), true);
   await assertAudioReady(page, "/windowed_convolution/5.00x5.00");
+  const identityValidation = await page.evaluate(() => {
+    const request = window.__CONV9_TEST_REQUESTS__.at(-1);
+    const base = {
+      renderEpoch: request.renderEpoch,
+      requestId: request.requestId,
+      leftId: request.leftId,
+      rightId: request.rightId,
+      algorithm: request.algorithm,
+      windows: structuredClone(request.windows),
+      parameters: structuredClone(request.parameters),
+    };
+    const wav = new Uint8Array(44);
+    wav.set(new TextEncoder().encode("RIFF"), 0);
+    wav.set(new TextEncoder().encode("WAVE"), 8);
+    const mutations = [
+      (header) => { header.renderEpoch++; },
+      (header) => { header.requestId++; },
+      (header) => { header.leftId += "_stale"; },
+      (header) => { header.algorithm = "dry_a"; },
+      (header) => { header.windows.clip_a_seconds += 1; },
+      (header) => { header.parameters.input_taper += 0.1; },
+      (header) => { delete header.parameters; },
+    ];
+    return mutations.map((mutate) => {
+      const header = structuredClone(base);
+      mutate(header);
+      try {
+        validateRenderedSelection(header, wav, request);
+        return "";
+      } catch (error) {
+        return error.message;
+      }
+    });
+  });
+  assert.equal(identityValidation.length, 7);
+  assert.ok(
+    identityValidation.every((message) => message.includes("renderer returned")),
+    `stale response identity was accepted: ${JSON.stringify(identityValidation)}`,
+  );
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
   assert.equal(await page.locator("#spectrogram").getAttribute("data-fft-size"), "16384");
@@ -391,32 +432,85 @@ try {
   await waitForPath(page, "/dry_b/source");
 
   await page.getByRole("button", { name: "Play" }).click();
-  await page.waitForFunction(() => !document.querySelector("#audio").paused);
+  await page.waitForFunction(() => transportSnapshot().playing);
   const beforeSwitch = await audioTime(page);
   await page.getByRole("button", { name: "chunks", exact: true }).click();
+  const duringSwitch = await page.evaluate(() => transportSnapshot());
+  assert.equal(duringSwitch.paused, true, "old audio stops as soon as a new render is queued");
+  assert.equal(duringSwitch.readyState, 0, "transport is unavailable during a render");
+  assert.equal(
+    duringSwitch.desiredPlaying,
+    true,
+    "playing intent is retained without playing stale audio",
+  );
+  assert.ok(
+    Math.abs(duringSwitch.currentTime - beforeSwitch) < 0.15,
+    "render transition freezes the absolute playback position",
+  );
   await page.waitForFunction(
     () => document.querySelector("#renderStatus")?.textContent === "rendering…",
   );
   await page.getByRole("button", { name: "ir", exact: true }).click();
   await waitForPath(page, "/evolving_ir/5.00x5.00");
   assert.ok((await audioTime(page)) >= beforeSwitch - 0.5, "switch preserves position");
-  assert.equal(await page.locator("#audio").evaluate((audio) => audio.paused), false);
+  assert.equal(await page.evaluate(() => transportSnapshot().paused), false);
   assert.match(await page.locator("#playButton").getAttribute("title"), /Pause playback/);
   const requests = await page.evaluate(() => window.__CONV9_TEST_REQUESTS__);
   assert.equal(requests.at(-1).algorithm, "evolving_ir", "latest rapid selection wins");
 
   await page.getByRole("button", { name: "Pause" }).click();
   await page.locator("body").press("Space");
-  await page.waitForFunction(() => !document.querySelector("#audio").paused);
+  await page.waitForFunction(() => transportSnapshot().playing);
   await page.locator("body").press("Space");
-  await page.waitForFunction(() => document.querySelector("#audio").paused);
+  await page.waitForFunction(() => transportSnapshot().paused);
+  await page.getByRole("button", { name: "Play" }).click();
+  await page.waitForTimeout(150);
+  const pauseBoundary = await page.evaluate(() => ({
+    presentation: transportCurrentTime(),
+    render: transportRenderTime(state.transport.context.currentTime + 0.005),
+    paused: (() => {
+      state.transport.desiredPlaying = false;
+      stopTransport(true);
+      return transportSnapshot();
+    })(),
+  }));
+  assert.ok(
+    circularDistance(
+      pauseBoundary.paused.currentTime,
+      pauseBoundary.render,
+      pauseBoundary.paused.duration,
+    ) < 0.005,
+    "pause resumes from the graph render head rather than replaying queued audio",
+  );
+  assert.ok(
+    circularDistance(
+      pauseBoundary.paused.currentTime,
+      pauseBoundary.presentation,
+      pauseBoundary.paused.duration,
+    ) < 0.08,
+    "render-head preservation stays within a small output-latency interval",
+  );
+  const rapidToggle = await page.evaluate(async () => {
+    await state.transport.context.suspend();
+    const play = togglePlayback();
+    const pause = togglePlayback();
+    await Promise.allSettled([play, pause]);
+    return transportSnapshot();
+  });
+  assert.equal(rapidToggle.paused, true, "a pause cancels an in-flight play request");
+  assert.equal(rapidToggle.desiredPlaying, false, "rapid play/pause leaves no stale autoplay intent");
+  assert.equal(
+    await page.getByRole("button", { name: "Play" }).count(),
+    1,
+    "button reflects cancelled play intent",
+  );
 
   await page.locator("#volume").evaluate((input) => {
     input.value = "0.37";
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  assert.equal(await page.locator("#audio").evaluate((audio) => audio.volume), 0.37);
-  assert.equal(await page.locator("#audio").evaluate((audio) => audio.playbackRate), 1);
+  assert.equal(await page.evaluate(() => transportSnapshot().volume), 0.37);
+  assert.equal(await page.evaluate(() => transportSnapshot().playbackRate), 1);
   assert.deepEqual(
     await page.locator("#playbackSpeed").evaluate((input) => ({
       minimum: input.min,
@@ -433,7 +527,7 @@ try {
   });
   assert.ok(
     Math.abs(
-      (await page.locator("#audio").evaluate((audio) => audio.playbackRate)) - Math.SQRT2,
+      (await page.evaluate(() => transportSnapshot().playbackRate)) - Math.SQRT2,
     ) < 1e-6,
   );
   assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.41×");
@@ -451,6 +545,34 @@ try {
   await expectAudioTime(page, 16, 0.2);
   await page.locator("body").press("ArrowLeft");
   await expectAudioTime(page, 11, 0.2);
+
+  await setAudioTime(page, 61);
+  const endpoint = await page.evaluate(() => transportSnapshot());
+  assert.ok(endpoint.currentTime < endpoint.duration, "endpoint seeks clamp to a playable sample");
+  assert.ok(
+    endpoint.duration - endpoint.currentTime < 0.001,
+    "endpoint clamp stays within one millisecond of the final sample",
+  );
+  await page.getByRole("button", { name: "Play" }).click();
+  await page.waitForTimeout(900);
+  const afterLoop = await page.evaluate(() => ({
+    transport: transportSnapshot(),
+    label: document.querySelector("#currentTime").textContent,
+    seek: Number(document.querySelector("#seek").value),
+  }));
+  assert.ok(
+    afterLoop.transport.currentTime > 0.2 && afterLoop.transport.currentTime < 2,
+    `sample-clock loop did not wrap cleanly: ${JSON.stringify(afterLoop)}`,
+  );
+  assert.ok(
+    Math.abs(parseTimeLabel(afterLoop.label) - afterLoop.transport.currentTime) < 0.05,
+    "numeric time follows the same loop clock as playback",
+  );
+  assert.ok(
+    Math.abs(afterLoop.seek - afterLoop.transport.currentTime) < 0.05,
+    "seek indicator follows the same loop clock as playback",
+  );
+  await page.getByRole("button", { name: "Pause" }).click();
 
   const waveform = page.locator("#waveform");
   const bounds = await waveform.boundingBox();
@@ -639,11 +761,10 @@ function numeric(name, value) {
 
 async function waitForReady(page) {
   await page.waitForFunction(() => {
-    const audio = document.querySelector("#audio");
     const waveform = document.querySelector("#waveform");
     const spectrum = document.querySelector("#spectrogram");
     return (
-      audio?.readyState >= HTMLMediaElement.HAVE_METADATA &&
+      transportSnapshot().readyState >= 4 &&
       waveform?.getAttribute("aria-busy") === "false" &&
       spectrum?.getAttribute("aria-busy") === "false" &&
       document.querySelector("#renderStatus")?.textContent.startsWith("rendered ")
@@ -654,7 +775,7 @@ async function waitForReady(page) {
 async function waitForPath(page, pathPart) {
   await page.waitForFunction(
     (part) =>
-      document.querySelector("#audio").dataset.path.includes(part) &&
+      transportSnapshot().path.includes(part) &&
       document.querySelector("#renderStatus")?.textContent.startsWith("rendered "),
     pathPart,
     { timeout: 120_000 },
@@ -671,12 +792,11 @@ async function expectContains(page, selector, expected) {
 async function assertAudioReady(page, pathPart) {
   await page.waitForFunction(
     (part) => {
-      const audio = document.querySelector("#audio");
+      const transport = transportSnapshot();
       return (
-        audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
-        Math.abs(audio.duration - 61) < 0.01 &&
-        audio.currentSrc.startsWith("blob:") &&
-        audio.dataset.path.includes(part)
+        transport.readyState >= 4 &&
+        Math.abs(transport.duration - 61) < 0.01 &&
+        transport.path.includes(part)
       );
     },
     pathPart,
@@ -785,24 +905,32 @@ async function assertControlTooltips(page) {
 }
 
 async function setAudioTime(page, seconds) {
-  await page.locator("#audio").evaluate((audio, time) => {
-    audio.currentTime = time;
-  }, seconds);
+  await page.evaluate((time) => seekTransport(time), seconds);
   await expectAudioTime(page, seconds, 0.2);
 }
 
 async function expectAudioTime(page, expected, tolerance) {
   await page.waitForFunction(
     ({ target, allowed }) =>
-      Math.abs(document.querySelector("#audio").currentTime - target) <= allowed,
+      Math.abs(transportSnapshot().currentTime - target) <= allowed,
     { target: expected, allowed: tolerance },
   );
 }
 
 function audioTime(page) {
-  return page.locator("#audio").evaluate((audio) => audio.currentTime);
+  return page.evaluate(() => transportSnapshot().currentTime);
 }
 
 function audioSource(page) {
-  return page.locator("#audio").evaluate((audio) => audio.currentSrc);
+  return page.evaluate(() => transportSnapshot().path);
+}
+
+function parseTimeLabel(label) {
+  const [minutes, seconds] = label.split(":");
+  return Number(minutes) * 60 + Number(seconds);
+}
+
+function circularDistance(left, right, duration) {
+  const distance = Math.abs(left - right);
+  return Math.min(distance, Math.max(0, duration - distance));
 }

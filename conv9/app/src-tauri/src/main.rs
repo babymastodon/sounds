@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -15,38 +14,55 @@ const ENVELOPE_MAGIC: &[u8; 4] = b"CV9R";
 struct AppState {
     renderer: Arc<OnDemandRenderer>,
     render_lock: Arc<Mutex<()>>,
-    latest_request: Arc<AtomicU64>,
+    render_coordinator: Arc<Mutex<RenderCoordinator>>,
+}
+
+#[derive(Default)]
+struct RenderCoordinator {
+    epoch: u64,
+    latest_request: u64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Bootstrap {
     catalog: Catalog,
+    render_epoch: u64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RenderHeader {
+    render_epoch: u64,
     request_id: u64,
     left_id: String,
     right_id: String,
     algorithm: String,
     windows: HashMap<String, f32>,
+    parameters: AlgorithmParameters,
     hop_seconds: Option<f32>,
     render_milliseconds: u128,
     metrics: conv9::AudioMetrics,
 }
 
 #[tauri::command]
-fn load_bootstrap(state: tauri::State<'_, AppState>) -> Bootstrap {
-    Bootstrap {
+fn load_bootstrap(state: tauri::State<'_, AppState>) -> Result<Bootstrap, String> {
+    let mut coordinator = state
+        .render_coordinator
+        .lock()
+        .map_err(|_| "render coordinator lock was poisoned".to_owned())?;
+    coordinator.epoch = coordinator.epoch.saturating_add(1);
+    coordinator.latest_request = 0;
+    Ok(Bootstrap {
         catalog: state.renderer.catalog(),
-    }
+        render_epoch: coordinator.epoch,
+    })
 }
 
 #[tauri::command]
 async fn render_selection(
     state: tauri::State<'_, AppState>,
+    render_epoch: u64,
     request_id: u64,
     left_id: String,
     right_id: String,
@@ -54,15 +70,31 @@ async fn render_selection(
     windows: HashMap<String, f32>,
     parameters: AlgorithmParameters,
 ) -> Result<Response, String> {
-    state.latest_request.fetch_max(request_id, Ordering::AcqRel);
+    {
+        let mut coordinator = state
+            .render_coordinator
+            .lock()
+            .map_err(|_| "render coordinator lock was poisoned".to_owned())?;
+        if coordinator.epoch != render_epoch {
+            return Err("render session expired".to_owned());
+        }
+        coordinator.latest_request = coordinator.latest_request.max(request_id);
+    }
     let renderer = Arc::clone(&state.renderer);
     let render_lock = Arc::clone(&state.render_lock);
-    let latest_request = Arc::clone(&state.latest_request);
+    let render_coordinator = Arc::clone(&state.render_coordinator);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = render_lock
             .lock()
             .map_err(|_| "render coordinator lock was poisoned".to_owned())?;
-        let cancelled = || latest_request.load(Ordering::Acquire) != request_id;
+        let cancelled = || {
+            render_coordinator
+                .lock()
+                .map(|coordinator| {
+                    coordinator.epoch != render_epoch || coordinator.latest_request != request_id
+                })
+                .unwrap_or(true)
+        };
         if cancelled() {
             return Err("render superseded".to_owned());
         }
@@ -81,11 +113,13 @@ async fn render_selection(
             return Err("render superseded".to_owned());
         }
         let header = RenderHeader {
+            render_epoch,
             request_id,
             left_id,
             right_id,
             algorithm,
             windows: selection.windows,
+            parameters: selection.parameters,
             hop_seconds: rendered.config.map(|config| config.hop_seconds),
             render_milliseconds: started.elapsed().as_millis(),
             metrics: rendered.metrics,
@@ -97,8 +131,12 @@ async fn render_selection(
 }
 
 #[tauri::command]
-fn supersede_render(state: tauri::State<'_, AppState>, request_id: u64) {
-    state.latest_request.fetch_max(request_id, Ordering::AcqRel);
+fn supersede_render(state: tauri::State<'_, AppState>, render_epoch: u64, request_id: u64) {
+    if let Ok(mut coordinator) = state.render_coordinator.lock()
+        && coordinator.epoch == render_epoch
+    {
+        coordinator.latest_request = coordinator.latest_request.max(request_id);
+    }
 }
 
 fn main() {
@@ -110,7 +148,7 @@ fn main() {
             app.manage(AppState {
                 renderer: Arc::new(renderer),
                 render_lock: Arc::new(Mutex::new(())),
-                latest_request: Arc::new(AtomicU64::new(0)),
+                render_coordinator: Arc::new(Mutex::new(RenderCoordinator::default())),
             });
             Ok(())
         })

@@ -246,7 +246,12 @@ mod tests {
         let preview = renderer.source_preview("ambient_guitar", 128).unwrap();
         assert_eq!(preview.id, "ambient_guitar");
         assert_eq!(preview.peaks.len(), 128);
-        assert_eq!(preview.spectrum.len(), 128);
+        assert_eq!(preview.spectrum_columns, 128);
+        assert_eq!(preview.spectrum_rows, 96);
+        assert_eq!(
+            preview.spectrum_map.len(),
+            preview.spectrum_columns * preview.spectrum_rows
+        );
         assert!(preview.peak.is_finite() && preview.peak > 0.0);
         assert!(preview.rms_dbfs.is_finite());
         assert!((0.0..=1.0).contains(&preview.zero_crossing_rate));
@@ -259,12 +264,12 @@ mod tests {
         );
         assert!(
             preview
-                .spectrum
+                .spectrum_map
                 .iter()
                 .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
         );
         let (minimum, maximum) = preview
-            .spectrum
+            .spectrum_map
             .iter()
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(minimum, maximum), &value| {
                 (minimum.min(value), maximum.max(value))

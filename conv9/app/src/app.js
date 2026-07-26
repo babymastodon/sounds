@@ -70,6 +70,8 @@ const state = {
 
 const LOADING_FONT_CSS_PIXELS = 16;
 const COMMON_PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const DEFAULT_SOURCE_A = "gamelan_court";
+const DEFAULT_SOURCE_B = "chainsaw_cycle";
 
 async function boot() {
   try {
@@ -83,8 +85,13 @@ async function boot() {
     if (state.catalog.sources.length < 2) {
       throw new Error("At least two prepared clips are required.");
     }
-    state.sourceA = state.catalog.sources[0].id;
-    state.sourceB = state.catalog.sources[1].id;
+    const sourceIds = new Set(state.catalog.sources.map((source) => source.id));
+    state.sourceA = sourceIds.has(DEFAULT_SOURCE_A)
+      ? DEFAULT_SOURCE_A
+      : state.catalog.sources[0].id;
+    state.sourceB = sourceIds.has(DEFAULT_SOURCE_B)
+      ? DEFAULT_SOURCE_B
+      : state.catalog.sources.find((source) => source.id !== state.sourceA).id;
     for (const algorithm of state.catalog.algorithms) {
       state.settings.set(algorithm.id, {
         windows: Object.fromEntries(

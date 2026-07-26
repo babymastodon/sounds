@@ -92,6 +92,8 @@ try {
         statusPosition: getComputedStyle(document.querySelector("#renderStatus")).position,
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
         sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
+        sourceA: document.querySelector("#sourceASelect")?.value,
+        sourceB: document.querySelector("#sourceBSelect")?.value,
         methodCount: document.querySelectorAll("#algorithmButtons button").length,
         methodHeaderCount: document.querySelectorAll(
           "#methodToolTitle, .method-panel > header"
@@ -257,6 +259,8 @@ try {
   assert.equal(initial.statusPosition, "absolute");
   assert.equal(initial.sourceACount, 96);
   assert.equal(initial.sourceBCount, 96);
+  assert.equal(initial.sourceA, "gamelan_court");
+  assert.equal(initial.sourceB, "chainsaw_cycle");
   assert.equal(initial.methodCount, 7);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
@@ -339,6 +343,8 @@ try {
         stats: dialog.querySelector(".source-preview-stats").textContent,
         waveformVariation: canvasVariation(canvas),
         spectrumVariation: canvasVariation(spectrumCanvas),
+        spectrumColumns: spectrumCanvas.dataset.spectrumColumns,
+        spectrumRows: spectrumCanvas.dataset.spectrumRows,
         plotsContained:
           plots.top >= preview.top && plots.bottom <= preview.bottom &&
           plotContainment.length === 2 && plotContainment.every(Boolean),
@@ -361,6 +367,8 @@ try {
   assert.match(nativePreview.stats, /peak/);
   assert.ok(nativePreview.waveformVariation > 0, "native source preview waveform must vary");
   assert.ok(nativePreview.spectrumVariation > 0, "native source preview spectrum must vary");
+  assert.equal(nativePreview.spectrumColumns, "210", "native FFT map preserves time slices");
+  assert.equal(nativePreview.spectrumRows, "96", "native FFT map preserves frequency rows");
   assert.equal(nativePreview.plotsContained, true, "native plots stay inside preview");
   assert.equal(nativePreview.subtitleCount, 0, "native preview has no subtitle");
   assert.equal(nativePreview.rowSubtitleCount, 0, "native result rows have no subtitles");
@@ -401,9 +409,8 @@ try {
     return { sampleRate, rmsDb, decimation, reference };
   `);
   assert.ok(
-    renderedPrefix.rmsDb[0] < -100 &&
-      renderedPrefix.rmsDb[4] < -50 &&
-      renderedPrefix.rmsDb[19] > -35,
+    renderedPrefix.rmsDb[0] < renderedPrefix.rmsDb[4] - 10 &&
+      renderedPrefix.rmsDb[4] < renderedPrefix.rmsDb[19] - 10,
     `default render should fade in gradually: ${renderedPrefix.rmsDb
       .map((level) => level.toFixed(1))
       .join(" ")}`,
@@ -581,6 +588,23 @@ try {
   );
   assert.equal(afterCapture.paused, false);
   assert.equal(afterCapture.errorHidden, true, afterCapture.error);
+
+  await execute(port, sessionId, `
+    const selectSource = (selector, value) => {
+      const select = document.querySelector(selector);
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    selectSource("#sourceASelect", "ocean_rocks");
+    selectSource("#sourceBSelect", "drava_river_rapids");
+    return true;
+  `);
+  await poll(async () => {
+    const value = await playbackState(port, sessionId);
+    return value.path.includes(
+      "ocean_rocks__drava_river_rapids/windowed_convolution/"
+    ) && value.status?.startsWith("rendered ") ? value : undefined;
+  }, 90_000);
 
   const shortWindowStart = await playbackState(port, sessionId);
   const shortWindowTransition = await execute(port, sessionId, `
@@ -1015,6 +1039,7 @@ async function playbackState(port, id) {
       readyState: transport.readyState,
       path: transport.path,
       contextState: transport.contextState,
+      status: document.querySelector("#renderStatus")?.textContent,
       error: document.querySelector("#errorPanel")?.textContent,
       errorHidden: document.querySelector("#errorPanel")?.hidden
     };

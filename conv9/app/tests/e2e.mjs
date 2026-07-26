@@ -123,15 +123,28 @@ try {
           peaks.push([minimum, maximum]);
         }
         const rms = Math.sqrt(sumSquares / frameCount);
-        const spectrum = peaks.map(([minimum, maximum], index) => {
+        const spectrumRows = 96;
+        const spectrumMap = new Array(bins * spectrumRows);
+        for (let column = 0; column < bins; column += 1) {
+          const [minimum, maximum] = peaks[column];
           const localPeak = Math.max(Math.abs(minimum), Math.abs(maximum));
-          const contour = 0.35 + 0.65 * Math.abs(Math.sin(index * 0.071 + id.length));
-          return Math.min(1, localPeak * 2.5 * contour);
-        });
+          for (let row = 0; row < spectrumRows; row += 1) {
+            const ridge = Math.exp(
+              -Math.pow((row - (18 + ((column + id.length) % 55))) / 8, 2),
+            );
+            const texture = 0.15 * Math.abs(Math.sin(column * 0.13 + row * 0.29));
+            spectrumMap[column * spectrumRows + row] = Math.min(
+              1,
+              localPeak * 2.5 * (0.08 + ridge + texture),
+            );
+          }
+        }
         return {
           id,
           peaks,
-          spectrum,
+          spectrumMap,
+          spectrumColumns: bins,
+          spectrumRows,
           peak,
           rmsDbfs: 20 * Math.log10(Math.max(rms, 1e-12)),
           zeroCrossingRate: crossings / Math.max(1, frameCount - 1),
@@ -265,6 +278,8 @@ try {
       label: swap.getAttribute("aria-label"),
     };
   });
+  assert.equal(swapControl.aValue, "gamelan_court", "clip A uses the structured musical default");
+  assert.equal(swapControl.bValue, "chainsaw_cycle", "clip B uses the changing process default");
   assert.equal(swapControl.text, "", "source swap is icon-only");
   assert.equal(swapControl.iconCount, 1, "source swap contains one SVG icon");
   assert.equal(swapControl.label, "Swap clips A and B");
@@ -366,6 +381,14 @@ try {
   await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-waveform");
   await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-spectrum");
   await assertCanvasHasVariation(page, "#source-a-dialog .source-preview-spectrum");
+  assert.deepEqual(
+    await sourceDialog.locator(".source-preview-spectrum").evaluate((canvas) => ({
+      columns: canvas.dataset.spectrumColumns,
+      rows: canvas.dataset.spectrumRows,
+    })),
+    { columns: "210", rows: "96" },
+    "source preview renders the complete FFT time-frequency map",
+  );
   await assertPreviewPlotsContained(page, "#source-a-dialog");
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.source.png` });

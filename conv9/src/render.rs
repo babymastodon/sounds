@@ -77,7 +77,9 @@ pub struct RenderedAudio {
 pub struct SourcePreview {
     pub id: String,
     pub peaks: Vec<[f32; 2]>,
-    pub spectrum: Vec<f32>,
+    pub spectrum_map: Vec<f32>,
+    pub spectrum_columns: usize,
+    pub spectrum_rows: usize,
     pub peak: f32,
     pub rms_dbfs: f32,
     pub zero_crossing_rate: f32,
@@ -262,11 +264,14 @@ impl OnDemandRenderer {
             .windows(2)
             .filter(|pair| pair[0].is_sign_negative() != pair[1].is_sign_negative())
             .count();
-        let spectrum = source_preview_spectrum(&clip.samples, bins)?;
+        let spectrum_rows = 96;
+        let spectrum_map = source_preview_spectrum_map(&clip.samples, bins, spectrum_rows)?;
         Ok(SourcePreview {
             id: clip.id.clone(),
             peaks,
-            spectrum,
+            spectrum_map,
+            spectrum_columns: bins,
+            spectrum_rows,
             peak: metrics.peak,
             rms_dbfs: metrics.rms_dbfs,
             zero_crossing_rate: crossings as f32
@@ -306,64 +311,68 @@ impl OnDemandRenderer {
     }
 }
 
-fn source_preview_spectrum(samples: &[f32], bins: usize) -> Result<Vec<f32>> {
+fn source_preview_spectrum_map(samples: &[f32], columns: usize, rows: usize) -> Result<Vec<f32>> {
     const FFT_FRAMES: usize = 4_096;
-    const ANALYSIS_WINDOWS: usize = 24;
-    const MINIMUM_HZ: f32 = 30.0;
+    const MINIMUM_HZ: f32 = 50.0;
+    const MAXIMUM_HZ: f32 = 20_000.0;
     const FLOOR_DB: f32 = -72.0;
 
     let mut planner = RealFftPlanner::<f32>::new();
     let forward = planner.plan_fft_forward(FFT_FRAMES);
     let mut time = forward.make_input_vec();
     let mut fft = forward.make_output_vec();
-    let mut power = vec![0.0_f64; fft.len()];
     let window = (0..FFT_FRAMES)
-        .map(|index| {
-            let phase = (index as f32 + 0.5) / FFT_FRAMES as f32;
-            0.5 - 0.5 * (2.0 * PI * phase).cos()
+        .map(|index| 0.5 - 0.5 * (2.0 * PI * index as f32 / (FFT_FRAMES - 1) as f32).cos())
+        .collect::<Vec<_>>();
+    let maximum_hz = MAXIMUM_HZ.min(SAMPLE_RATE as f32 / 2.0);
+    let frequency_ratio = maximum_hz / MINIMUM_HZ;
+    let row_bin_ranges = (0..rows)
+        .map(|row| {
+            let phase = 1.0 - row as f32 / rows.saturating_sub(1).max(1) as f32;
+            let half_step = 0.5 / rows.saturating_sub(1).max(1) as f32;
+            let low_hz = MINIMUM_HZ * frequency_ratio.powf((phase - half_step).clamp(0.0, 1.0));
+            let high_hz = MINIMUM_HZ * frequency_ratio.powf((phase + half_step).clamp(0.0, 1.0));
+            let low_bin =
+                ((low_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).floor() as usize).max(1);
+            let high_bin = ((high_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).ceil() as usize)
+                .max(low_bin + 1)
+                .min(fft.len());
+            low_bin..high_bin
         })
         .collect::<Vec<_>>();
-
-    for analysis in 0..ANALYSIS_WINDOWS {
-        let center = (analysis * 2 + 1) * samples.len() / (ANALYSIS_WINDOWS * 2);
-        let start = center
-            .saturating_sub(FFT_FRAMES / 2)
-            .min(samples.len().saturating_sub(FFT_FRAMES));
-        for (target, (&sample, &weight)) in time
-            .iter_mut()
-            .zip(samples[start..start + FFT_FRAMES].iter().zip(&window))
-        {
-            *target = sample * weight;
+    let mut spectrum_map = vec![FLOOR_DB; columns * rows];
+    for column in 0..columns {
+        let center = column * samples.len().saturating_sub(1) / columns.saturating_sub(1).max(1);
+        let start = center as isize - FFT_FRAMES as isize / 2;
+        for (index, (target, &weight)) in time.iter_mut().zip(&window).enumerate() {
+            let source = start + index as isize;
+            *target = if source >= 0 && (source as usize) < samples.len() {
+                samples[source as usize] * weight
+            } else {
+                0.0
+            };
         }
         forward.process(&mut time, &mut fft)?;
-        for (total, value) in power.iter_mut().zip(&fft) {
-            *total += f64::from(value.norm_sqr());
+        for (row, bins) in row_bin_ranges.iter().enumerate() {
+            let band_power = fft[bins.clone()]
+                .iter()
+                .map(|value| value.norm_sqr())
+                .fold(0.0_f32, f32::max);
+            spectrum_map[column * rows + row] = 10.0 * band_power.max(1.0e-20).log10();
         }
     }
-
-    let maximum_hz = SAMPLE_RATE as f32 / 2.0;
-    let frequency_ratio = maximum_hz / MINIMUM_HZ;
-    let mut display_power = Vec::with_capacity(bins);
-    for index in 0..bins {
-        let low_hz = MINIMUM_HZ * frequency_ratio.powf(index as f32 / bins as f32);
-        let high_hz = MINIMUM_HZ * frequency_ratio.powf((index + 1) as f32 / bins as f32);
-        let low_bin = ((low_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).floor() as usize).max(1);
-        let high_bin = ((high_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).ceil() as usize)
-            .max(low_bin + 1)
-            .min(power.len());
-        let mean = power[low_bin..high_bin].iter().sum::<f64>()
-            / (high_bin - low_bin).max(1) as f64
-            / ANALYSIS_WINDOWS as f64;
-        display_power.push((10.0 * mean.max(1.0e-20).log10()) as f32);
-    }
-    let peak_db = display_power
+    let peak_db = spectrum_map
         .iter()
         .copied()
         .fold(f32::NEG_INFINITY, f32::max);
-    for value in &mut display_power {
+    if peak_db <= -190.0 {
+        spectrum_map.fill(0.0);
+        return Ok(spectrum_map);
+    }
+    for value in &mut spectrum_map {
         *value = ((*value - peak_db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
     }
-    Ok(display_power)
+    Ok(spectrum_map)
 }
 
 fn elapsed_milliseconds(started: Instant) -> f64 {
@@ -580,6 +589,47 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_preview_fft_map_preserves_time_and_frequency() {
+        let seconds = 2;
+        let frames = SAMPLE_RATE as usize * seconds;
+        let mut samples = vec![0.0; frames];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            let frequency = if index < frames / 2 { 400.0 } else { 4_000.0 };
+            *sample = (2.0 * PI * frequency * index as f32 / SAMPLE_RATE as f32).sin() * 0.5;
+        }
+        let columns = 64;
+        let rows = 96;
+        let map = source_preview_spectrum_map(&samples, columns, rows).unwrap();
+        let row_for = |frequency: f32| {
+            ((1.0 - (frequency / 50.0).ln() / (20_000.0_f32 / 50.0).ln()) * (rows - 1) as f32)
+                .round() as usize
+        };
+        let mean_region = |column_start: usize, column_end: usize, row: usize| {
+            (column_start..column_end)
+                .map(|column| map[column * rows + row])
+                .sum::<f32>()
+                / (column_end - column_start) as f32
+        };
+        let low_row = row_for(400.0);
+        let high_row = row_for(4_000.0);
+        let early_low = mean_region(8, 24, low_row);
+        let early_high = mean_region(8, 24, high_row);
+        let late_low = mean_region(40, 56, low_row);
+        let late_high = mean_region(40, 56, high_row);
+        assert!(
+            early_low > late_low + 0.3,
+            "early columns must retain the low-frequency tone"
+        );
+        assert!(
+            late_high > early_high + 0.3,
+            "late columns must retain the high-frequency tone"
+        );
+
+        let silence = source_preview_spectrum_map(&vec![0.0; frames], columns, rows).unwrap();
+        assert!(silence.iter().all(|&value| value == 0.0));
+    }
 
     #[test]
     fn each_method_exposes_its_parameters() {

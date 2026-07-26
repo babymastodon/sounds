@@ -46,6 +46,33 @@
     return element;
   }
 
+  let cachedSpectrumPalette = null;
+
+  function spectrumPalette() {
+    if (cachedSpectrumPalette) return cachedSpectrumPalette;
+    const stops = [
+      [0.0, 7, 9, 10],
+      [0.28, 20, 49, 54],
+      [0.55, 44, 129, 124],
+      [0.78, 216, 241, 80],
+      [1.0, 255, 114, 92],
+    ];
+    cachedSpectrumPalette = new Uint8ClampedArray(256 * 3);
+    for (let index = 0; index < 256; index++) {
+      const value = index / 255;
+      const rightIndex = stops.findIndex((stop) => value <= stop[0]);
+      const right = stops[Math.max(1, rightIndex)];
+      const left = stops[Math.max(0, rightIndex - 1)];
+      const phase = (value - left[0]) / (right[0] - left[0]);
+      for (let channel = 1; channel <= 3; channel++) {
+        cachedSpectrumPalette[index * 3 + channel - 1] = Math.round(
+          left[channel] + phase * (right[channel] - left[channel]),
+        );
+      }
+    }
+    return cachedSpectrumPalette;
+  }
+
   class SourceBrowser {
     static previewCache = new Map();
 
@@ -68,7 +95,7 @@
       this.previewGeneration = 0;
       this.previewTimer = 0;
       this.previewPeaks = null;
-      this.previewSpectrum = null;
+      this.previewSpectrumMap = null;
       this.previewStatus = "";
       this.opened = false;
       this.instanceId = `source-${role.toLowerCase()}`;
@@ -188,10 +215,10 @@
         className: "source-preview-spectrum",
         width: "420",
         height: "116",
-        "aria-label": `Spectrum preview for highlighted clip ${this.role} source`,
+        "aria-label": `FFT spectrum map for highlighted clip ${this.role} source`,
         title:
-          "Shows a lazily computed average log-frequency spectrum for the highlighted source, " +
-          "normalized over a 72 dB display range.",
+          "Shows a lazily computed FFT map: time runs left to right, low to high frequency runs " +
+          "bottom to top, and color shows energy over a 72 dB range.",
       });
       this.previewSpectrumFrame.append(this.previewSpectrumCanvas);
       this.previewPlots.append(this.previewWaveformFrame, this.previewSpectrumFrame);
@@ -210,7 +237,7 @@
         if (!this.opened) return;
         if (this.previewPeaks) {
           this.drawWaveform(this.previewPeaks);
-          this.drawSpectrum(this.previewSpectrum);
+          this.drawSpectrumMap(this.previewSpectrumMap);
         } else if (this.previewStatus) {
           this.drawStatus(this.previewStatus);
         }
@@ -486,6 +513,7 @@
         return;
       }
       this.previewCanvas.setAttribute("aria-busy", "true");
+      this.previewSpectrumCanvas.setAttribute("aria-busy", "true");
       this.drawStatus("loading waveform…");
       this.previewTimer = setTimeout(async () => {
         try {
@@ -498,6 +526,7 @@
           if (generation === this.previewGeneration && this.opened) {
             this.drawStatus("preview unavailable");
             this.previewCanvas.setAttribute("aria-busy", "false");
+            this.previewSpectrumCanvas.setAttribute("aria-busy", "false");
           }
         }
       }, delay);
@@ -522,8 +551,13 @@
 
     paintPreview(source, preview) {
       this.previewCanvas.setAttribute("aria-busy", "false");
+      this.previewSpectrumCanvas.setAttribute("aria-busy", "false");
       this.drawWaveform(preview.peaks);
-      this.drawSpectrum(preview.spectrum);
+      this.drawSpectrumMap({
+        values: preview.spectrumMap,
+        columns: preview.spectrumColumns,
+        rows: preview.spectrumRows,
+      });
       this.previewStats.replaceChildren(
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
         this.stat("rms", `${preview.rmsDbfs.toFixed(1)} dB`),
@@ -534,9 +568,17 @@
 
     drawStatus(text) {
       this.previewPeaks = null;
-      this.previewSpectrum = null;
+      this.previewSpectrumMap = null;
       this.previewStatus = text;
-      const { context, width, height } = this.canvasSurface(this.previewCanvas);
+      this.drawCanvasStatus(this.previewCanvas, text);
+      this.drawCanvasStatus(
+        this.previewSpectrumCanvas,
+        text === "loading waveform…" ? "computing fft map…" : text,
+      );
+    }
+
+    drawCanvasStatus(canvas, text) {
+      const { context, width, height } = this.canvasSurface(canvas);
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
@@ -545,7 +587,6 @@
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText(text, width / 2, height / 2);
-      this.clearCanvas(this.previewSpectrumCanvas);
     }
 
     drawWaveform(peaks) {
@@ -570,41 +611,51 @@
       context.stroke();
     }
 
-    drawSpectrum(spectrum) {
-      this.previewSpectrum = spectrum;
-      const { context, width, height } = this.canvasSurface(
+    drawSpectrumMap(spectrumMap) {
+      this.previewSpectrumMap = spectrumMap;
+      const { context, pixelWidth, pixelHeight } = this.canvasSurface(
         this.previewSpectrumCanvas,
       );
-      context.clearRect(0, 0, width, height);
-      context.fillStyle = "#181a19";
-      context.fillRect(0, 0, width, height);
-      if (!spectrum?.length) return;
-      context.beginPath();
-      context.moveTo(0, height);
-      spectrum.forEach((level, index) => {
-        const x = (index / Math.max(1, spectrum.length - 1)) * width;
-        const y = (1 - Math.max(0, Math.min(1, level))) * height;
-        context.lineTo(x, y);
-      });
-      context.lineTo(width, height);
-      context.closePath();
-      context.fillStyle = "#5d6753";
-      context.fill();
-      context.strokeStyle = "#a9b68f";
-      context.stroke();
+      const { values, columns, rows } = spectrumMap || {};
+      if (
+        !values?.length ||
+        !Number.isInteger(columns) ||
+        !Number.isInteger(rows) ||
+        values.length !== columns * rows
+      ) {
+        this.drawCanvasStatus(this.previewSpectrumCanvas, "fft map unavailable");
+        return;
+      }
+      const image = context.createImageData(pixelWidth, pixelHeight);
+      const palette = spectrumPalette();
+      for (let y = 0; y < pixelHeight; y++) {
+        const row = Math.min(rows - 1, Math.floor((y / pixelHeight) * rows));
+        for (let x = 0; x < pixelWidth; x++) {
+          const column = Math.min(
+            columns - 1,
+            Math.floor((x / pixelWidth) * columns),
+          );
+          const intensity = Math.max(
+            0,
+            Math.min(255, Math.round(values[column * rows + row] * 255)),
+          );
+          const colorOffset = intensity * 3;
+          const pixelOffset = (y * pixelWidth + x) * 4;
+          image.data[pixelOffset] = palette[colorOffset];
+          image.data[pixelOffset + 1] = palette[colorOffset + 1];
+          image.data[pixelOffset + 2] = palette[colorOffset + 2];
+          image.data[pixelOffset + 3] = 255;
+        }
+      }
+      context.putImageData(image, 0, 0);
+      this.previewSpectrumCanvas.dataset.spectrumColumns = String(columns);
+      this.previewSpectrumCanvas.dataset.spectrumRows = String(rows);
     }
 
     scrollActiveIntoView(block) {
       this.list
         .querySelector(`[data-source-id="${CSS.escape(this.activeId)}"]`)
         ?.scrollIntoView({ block, inline: "nearest" });
-    }
-
-    clearCanvas(canvas) {
-      const { context, width, height } = this.canvasSurface(canvas);
-      context.clearRect(0, 0, width, height);
-      context.fillStyle = "#181a19";
-      context.fillRect(0, 0, width, height);
     }
 
     canvasSurface(canvas) {
@@ -623,7 +674,7 @@
       }
       const context = canvas.getContext("2d");
       context.setTransform(scale, 0, 0, scale, 0, 0);
-      return { context, width, height };
+      return { context, width, height, pixelWidth, pixelHeight };
     }
   }
 

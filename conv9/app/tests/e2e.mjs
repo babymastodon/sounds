@@ -169,6 +169,47 @@ try {
 
   assert.equal(await page.locator("#sourceASelect option").count(), 96, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 96, "clip B count");
+  const swapControl = await page.evaluate(() => {
+    const a = document.querySelector("#sourceASelect");
+    const swap = document.querySelector("#swapSources");
+    const b = document.querySelector("#sourceBSelect");
+    const bounds = (element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, right: box.right, height: box.height };
+    };
+    return {
+      aValue: a.value,
+      bValue: b.value,
+      aBounds: bounds(a),
+      swapBounds: bounds(swap),
+      bBounds: bounds(b),
+      text: swap.textContent.trim(),
+      iconCount: swap.querySelectorAll(":scope > svg").length,
+      label: swap.getAttribute("aria-label"),
+    };
+  });
+  assert.equal(swapControl.text, "", "source swap is icon-only");
+  assert.equal(swapControl.iconCount, 1, "source swap contains one SVG icon");
+  assert.equal(swapControl.label, "Swap clips A and B");
+  assert.ok(
+    swapControl.aBounds.right <= swapControl.swapBounds.left &&
+      swapControl.swapBounds.right <= swapControl.bBounds.left &&
+      swapControl.swapBounds.height === swapControl.aBounds.height,
+    `source swap must sit between equal-height selectors: ${JSON.stringify(swapControl)}`,
+  );
+  await page.locator("#swapSources").click();
+  await waitForPath(
+    page,
+    `${swapControl.bValue}__${swapControl.aValue}/windowed_convolution/`,
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      a: document.querySelector("#sourceASelect").value,
+      b: document.querySelector("#sourceBSelect").value,
+    })),
+    { a: swapControl.bValue, b: swapControl.aValue },
+    "source swap reverses both dropdown values and the rendered source roles",
+  );
   assert.equal(
     await page.locator(".clip-selectors label, .source-meta, .convolution-mark").count(),
     0,
@@ -595,8 +636,38 @@ try {
     true,
     "pitch preservation sits directly next to playback speed",
   );
+  assert.deepEqual(
+    await page.locator("#preservePitch").evaluate((input) => {
+      const style = getComputedStyle(input);
+      return {
+        width: style.width,
+        height: style.height,
+        borderWidth: style.borderWidth,
+        backgroundImage: style.backgroundImage,
+      };
+    }),
+    {
+      width: "18px",
+      height: "18px",
+      borderWidth: "1px",
+      backgroundImage: "none",
+    },
+    "unchecked pitch control is a visible bordered square without a stray glyph",
+  );
   await page.locator("#preservePitch").check();
   assert.equal(await page.evaluate(() => transportSnapshot().preservePitch), true);
+  assert.match(
+    await page.locator("#preservePitch").evaluate((input) =>
+      getComputedStyle(input).backgroundImage
+    ),
+    /svg/,
+    "checked pitch control uses the intended SVG check glyph",
+  );
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.screenshot({
+      path: `${process.env.CONV9_TEST_SCREENSHOT}.pitch.png`,
+    });
+  }
   await page.getByRole("button", { name: "Play" }).click();
   await page.waitForFunction(
     () =>

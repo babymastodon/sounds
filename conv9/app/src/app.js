@@ -2,6 +2,7 @@ const ui = {
   renderStatus: document.querySelector("#renderStatus"),
   sourceASelect: document.querySelector("#sourceASelect"),
   sourceBSelect: document.querySelector("#sourceBSelect"),
+  swapSources: document.querySelector("#swapSources"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
   methodTools: document.querySelector("#methodTools"),
   metrics: document.querySelector("#metrics"),
@@ -153,6 +154,13 @@ function bindEvents() {
   });
   ui.sourceBSelect.addEventListener("change", () => {
     state.sourceB = ui.sourceBSelect.value;
+    scheduleSelection(true);
+  });
+  ui.swapSources.addEventListener("click", () => {
+    if (state.sourceA === state.sourceB) return;
+    [state.sourceA, state.sourceB] = [state.sourceB, state.sourceA];
+    ui.sourceASelect.value = state.sourceA;
+    ui.sourceBSelect.value = state.sourceB;
     scheduleSelection(true);
   });
   ui.algorithmButtons.addEventListener("click", (event) => {

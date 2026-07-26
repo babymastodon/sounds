@@ -20,6 +20,17 @@
           aria-label="Clip A"
           title="Choose the first convolution source. Changing clip A cancels stale work and renders the selected method again with this signal as input A."
         ></select>
+        <button
+          id="swapSources"
+          class="swap-sources"
+          type="button"
+          aria-label="Swap clips A and B"
+          title="Exchange clips A and B, keeping the current method and controls unchanged, then render the reversed source roles."
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 7h13m0 0-3-3m3 3-3 3M19 17H6m0 0 3-3m-3 3 3 3" />
+          </svg>
+        </button>
         <select
           id="sourceBSelect"
           aria-label="Clip B"

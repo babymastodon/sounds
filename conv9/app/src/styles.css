@@ -119,8 +119,8 @@ label,
 
 .clip-selectors {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr);
+  gap: 7px;
   min-width: 0;
 }
 
@@ -142,6 +142,35 @@ select:hover,
 select:focus-visible {
   color: var(--bright);
   background-color: var(--surface-hover);
+}
+
+.swap-sources {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  place-items: center;
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.swap-sources svg {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+.swap-sources:hover,
+.swap-sources:focus-visible {
+  color: var(--bright);
+  background: var(--surface);
+  outline: none;
 }
 
 .method-panel {
@@ -346,18 +375,19 @@ input[type="range"]:disabled {
   width: 18px;
   height: 18px;
   margin: 0;
+  border: 1px solid var(--muted);
   appearance: none;
-  background: var(--surface-hover);
+  background-color: var(--surface-hover);
   cursor: pointer;
 }
 
 .preserve-pitch input:checked {
-  background:
-    linear-gradient(135deg, transparent 42%, var(--background) 42% 57%, transparent 57%)
-      4px 3px / 10px 7px no-repeat,
-    linear-gradient(45deg, transparent 38%, var(--background) 38% 58%, transparent 58%)
-      1px 8px / 7px 5px no-repeat,
-    var(--accent);
+  border-color: var(--accent);
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 14'%3E%3Cpath d='M2.5 7.5 6 11 13.5 3' fill='none' stroke='%231d1f1e' stroke-width='2.25' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 16px 14px;
 }
 
 .preserve-pitch input:focus-visible {

@@ -547,6 +547,8 @@ struct SourceFilterVocoder {
     previous_a_magnitude: Vec<f32>,
     previous_log_ratio: Vec<f32>,
     prefix: Vec<f64>,
+    transient_state: f32,
+    transient_hold_frames: usize,
     initialized: bool,
 }
 
@@ -569,6 +571,8 @@ impl SourceFilterVocoder {
             previous_a_magnitude: vec![0.0; bins],
             previous_log_ratio: vec![0.0; bins],
             prefix: vec![0.0; bins + 1],
+            transient_state: 0.0,
+            transient_hold_frames: 0,
             forward,
             inverse,
             initialized: false,
@@ -587,7 +591,7 @@ impl SourceFilterVocoder {
         output: &mut [f32],
         overlap_weight: &mut [f32],
     ) -> Result<()> {
-        for index in 0..VOCODER_FRAME_FRAMES {
+        for (index, &window_sample) in window.iter().enumerate() {
             let source_index = frame_start + index as isize;
             let (a, b) = if (0..source_a.len() as isize).contains(&source_index) {
                 (
@@ -597,8 +601,8 @@ impl SourceFilterVocoder {
             } else {
                 (0.0, 0.0)
             };
-            self.a_time[index] = a * window[index];
-            self.b_time[index] = b * window[index];
+            self.a_time[index] = a * window_sample;
+            self.b_time[index] = b * window_sample;
         }
         self.forward
             .process(&mut self.a_time, &mut self.a_spectrum)?;
@@ -630,11 +634,27 @@ impl SourceFilterVocoder {
             &mut self.prefix,
         );
 
-        let transient = if a_power > 1.0e-16 {
+        let detected_transient = if a_power > 1.0e-16 {
             (positive_flux / a_power).sqrt().min(1.0) as f32
         } else {
             0.0
         };
+        // A single onset contributes to every overlapping analysis frame. Holding
+        // the peak flux for one complete frame prevents later frames in that same
+        // onset from undoing transient protection during overlap-add.
+        if detected_transient > self.transient_state {
+            self.transient_state = detected_transient;
+            self.transient_hold_frames = VOCODER_FRAME_FRAMES
+                .div_ceil(VOCODER_HOP_FRAMES)
+                .saturating_sub(1);
+        } else if self.transient_hold_frames > 0 {
+            self.transient_hold_frames -= 1;
+        } else {
+            let transient_release =
+                (-(VOCODER_HOP_FRAMES as f32) / (0.020 * SAMPLE_RATE as f32)).exp();
+            self.transient_state *= transient_release;
+        }
+        let transient = detected_transient.max(self.transient_state);
         let transient_transfer = parameters.vocoder_transfer
             * (1.0 - parameters.vocoder_transient_protection * transient);
         let attack = 1.0 - (-(VOCODER_HOP_FRAMES as f32) / (0.008 * SAMPLE_RATE as f32)).exp();
@@ -662,14 +682,14 @@ impl SourceFilterVocoder {
             .process(&mut self.a_spectrum, &mut self.output_time)?;
 
         let inverse_scale = 1.0 / VOCODER_FRAME_FRAMES as f32;
-        for index in 0..VOCODER_FRAME_FRAMES {
+        for (index, &window_sample) in window.iter().enumerate() {
             let output_index = frame_start + index as isize;
             if !(0..output.len() as isize).contains(&output_index) {
                 continue;
             }
             let output_index = output_index as usize;
-            let weight = window[index] * window[index];
-            output[output_index] += self.output_time[index] * inverse_scale * window[index];
+            let weight = window_sample * window_sample;
+            output[output_index] += self.output_time[index] * inverse_scale * window_sample;
             overlap_weight[output_index] += weight;
         }
         Ok(())
@@ -1777,6 +1797,15 @@ mod tests {
             output_ratio > input_ratio * 5.0,
             "B envelope was not transferred: input {input_ratio}, output {output_ratio}"
         );
+        for frequency in [500.0, 6_000.0] {
+            let input_phase = tone_phase(&a[trim..frames - trim], frequency);
+            let output_phase = tone_phase(&output[trim..frames - trim], frequency);
+            let difference = wrapped_phase_difference(input_phase, output_phase);
+            assert!(
+                difference < 0.01,
+                "A phase changed by {difference} radians at {frequency} Hz"
+            );
+        }
     }
 
     #[test]
@@ -1836,12 +1865,187 @@ mod tests {
     }
 
     #[test]
+    fn vocoder_identity_is_exact_across_control_extremes() {
+        let frames = SAMPLE_RATE as usize / 2;
+        let noise = deterministic_noise(frames, 0x1234_5678);
+        for (transfer, width, protection) in
+            [(0.0, 100.0, 0.0), (1.0, 900.0, 0.65), (1.5, 3_000.0, 1.0)]
+        {
+            let parameters = AlgorithmParameters {
+                vocoder_transfer: transfer,
+                vocoder_envelope_width_hz: width,
+                vocoder_transient_protection: protection,
+                ..AlgorithmParameters::default()
+            };
+            let identical = render_test_vocoder(&noise, &noise, parameters);
+            let error = rms_difference(&identical, &noise);
+            assert_eq!(identical.len(), noise.len());
+            assert!(identical.iter().all(|sample| sample.is_finite()));
+            assert!(
+                error < 1.0e-6,
+                "identical A/B changed at transfer={transfer}, width={width}, \
+                 protection={protection}: RMS error {error}"
+            );
+        }
+
+        // A time-domain impulse has a perfectly flat-magnitude spectrum, so
+        // identical impulses are the exact constant-envelope identity case.
+        let mut flat_spectrum = vec![0.0; frames];
+        flat_spectrum[frames / 2] = 0.5;
+        let output = render_test_vocoder(
+            &flat_spectrum,
+            &flat_spectrum,
+            AlgorithmParameters {
+                vocoder_transfer: 1.5,
+                vocoder_envelope_width_hz: 100.0,
+                vocoder_transient_protection: 0.0,
+                ..AlgorithmParameters::default()
+            },
+        );
+        assert!(rms_difference(&output, &flat_spectrum) < 1.0e-6);
+    }
+
+    #[test]
+    fn vocoder_silence_and_extreme_level_mismatches_are_bounded() {
+        let frames = SAMPLE_RATE as usize / 2;
+        let noise = deterministic_noise(frames, 0x8765_4321);
+        let silence = vec![0.0; frames];
+        let near_silence = noise
+            .iter()
+            .map(|sample| sample * 1.0e-7)
+            .collect::<Vec<_>>();
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.5,
+            vocoder_envelope_width_hz: 100.0,
+            vocoder_transient_protection: 0.0,
+            ..AlgorithmParameters::default()
+        };
+        let silent_output = render_test_vocoder(&silence, &noise, parameters);
+        assert!(silent_output.iter().all(|&sample| sample == 0.0));
+
+        let attenuated = render_test_vocoder(&noise, &silence, parameters);
+        let attenuation = rms(&attenuated) / rms(&noise);
+        assert!(
+            (attenuation - 0.125).abs() < 2.0e-3,
+            "maximum attenuation escaped the deliberate 1/8 bound: {attenuation}"
+        );
+
+        let amplified = render_test_vocoder(&near_silence, &noise, parameters);
+        let gain = rms(&amplified) / rms(&near_silence);
+        assert!(
+            (gain - 8.0).abs() < 0.02,
+            "maximum gain escaped the deliberate 8x bound: {gain}"
+        );
+        assert!(amplified.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn vocoder_full_transient_protection_exactly_preserves_an_isolated_impulse() {
+        let frames = SAMPLE_RATE as usize / 2;
+        let impulse_index = frames / 2;
+        let mut impulse = vec![0.0; frames];
+        impulse[impulse_index] = 0.5;
+        let spectrally_unlike_b = synthetic_tone(frames, 1_800.0, 0.4);
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.0,
+            vocoder_envelope_width_hz: 100.0,
+            vocoder_transient_protection: 1.0,
+            ..AlgorithmParameters::default()
+        };
+        let output = render_test_vocoder(&impulse, &spectrally_unlike_b, parameters);
+        let peak_index = output
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.abs().total_cmp(&right.1.abs()))
+            .unwrap()
+            .0;
+        assert_eq!(peak_index, impulse_index);
+        assert!(
+            rms_difference(&output, &impulse) < 1.0e-6,
+            "full protection recolored or smeared the impulse"
+        );
+    }
+
+    #[test]
+    fn vocoder_narrow_b_envelope_concentrates_broadband_a_without_inventing_timing() {
+        let frames = SAMPLE_RATE as usize;
+        let a = deterministic_noise(frames, 0x0ddc_0ffe);
+        let mut b = vec![0.0; frames];
+        let mut state = 0x5eed_u64;
+        for frequency in (2_400..=3_600).step_by(100) {
+            let phase = random_unit_variance(&mut state) * PI;
+            for (index, sample) in b.iter_mut().enumerate() {
+                *sample += 0.025
+                    * (2.0 * PI * frequency as f32 * index as f32 / SAMPLE_RATE as f32 + phase)
+                        .sin();
+            }
+        }
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.0,
+            vocoder_envelope_width_hz: 100.0,
+            vocoder_transient_protection: 0.0,
+            ..AlgorithmParameters::default()
+        };
+        let output = render_test_vocoder(&a, &b, parameters);
+        let input_ratio = spectral_band_power(&a, 2_200.0, 3_800.0)
+            / spectral_band_power(&a, 6_000.0, 10_000.0).max(1.0e-20);
+        let output_ratio = spectral_band_power(&output, 2_200.0, 3_800.0)
+            / spectral_band_power(&output, 6_000.0, 10_000.0).max(1.0e-20);
+        assert!(
+            output_ratio > input_ratio * 20.0,
+            "B's narrow envelope was not transferred: input ratio {input_ratio}, \
+             output ratio {output_ratio}"
+        );
+        assert_eq!(output.len(), a.len());
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn vocoder_cannot_and_does_not_invent_frequencies_absent_from_a() {
+        let frames = SAMPLE_RATE as usize;
+        let a_frequency = 997.0;
+        let a = synthetic_tone(frames, a_frequency, 0.25);
+        let b = deterministic_noise(frames, 0xc001_d00d);
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.5,
+            vocoder_envelope_width_hz: 3_000.0,
+            vocoder_transient_protection: 0.0,
+            ..AlgorithmParameters::default()
+        };
+        let output = render_test_vocoder(&a, &b, parameters);
+        let source_band = spectral_band_power(&output, a_frequency - 150.0, a_frequency + 150.0);
+        let other_band = spectral_band_power(&output, 4_000.0, 12_000.0);
+        assert!(
+            source_band > other_band * 1_000.0,
+            "envelope transfer invented unsupported high frequencies: source band \
+             {source_band}, other band {other_band}"
+        );
+        let input_peak = a.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        let output_peak = output.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert!(
+            output_peak <= input_peak * 8.01,
+            "spectral gain clamp did not bound a simple sine: input peak {input_peak}, \
+             output peak {output_peak}"
+        );
+    }
+
+    #[test]
     fn chunk_overlap_uses_available_short_window_support() {
         assert_eq!(chunk_crossfade_frames(48_000, 96_000, 25.0), 12_000);
         assert_eq!(chunk_crossfade_frames(4_800, 1_440_000, 75.0), 3_600);
     }
 
     fn tone_amplitude(samples: &[f32], frequency: f32) -> f32 {
+        let (real, imaginary) = tone_projection(samples, frequency);
+        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
+    }
+
+    fn tone_phase(samples: &[f32], frequency: f32) -> f64 {
+        let (real, imaginary) = tone_projection(samples, frequency);
+        imaginary.atan2(real)
+    }
+
+    fn tone_projection(samples: &[f32], frequency: f32) -> (f64, f64) {
         let mut real = 0.0_f64;
         let mut imaginary = 0.0_f64;
         for (index, &sample) in samples.iter().enumerate() {
@@ -1850,7 +2054,89 @@ mod tests {
             real += f64::from(sample) * phase.cos();
             imaginary -= f64::from(sample) * phase.sin();
         }
-        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
+        (real, imaginary)
+    }
+
+    fn wrapped_phase_difference(a: f64, b: f64) -> f64 {
+        let difference = (a - b).abs();
+        difference.min(2.0 * std::f64::consts::PI - difference)
+    }
+
+    fn synthetic_tone(frames: usize, frequency: f32, amplitude: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|index| {
+                amplitude * (2.0 * PI * frequency * index as f32 / SAMPLE_RATE as f32).sin()
+            })
+            .collect()
+    }
+
+    fn deterministic_noise(frames: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..frames)
+            .map(|_| 0.2 * random_unit_variance(&mut state))
+            .collect()
+    }
+
+    fn render_test_vocoder(a: &[f32], b: &[f32], parameters: AlgorithmParameters) -> Vec<f32> {
+        render_source_filter_vocoder(
+            &AudioClip {
+                id: "a".to_owned(),
+                samples: a.to_vec(),
+            },
+            &AudioClip {
+                id: "b".to_owned(),
+                samples: b.to_vec(),
+            },
+            parameters,
+            &|| false,
+        )
+        .unwrap()
+    }
+
+    fn spectral_band_power(samples: &[f32], low_hz: f32, high_hz: f32) -> f64 {
+        let fft_frames = 16_384.min(samples.len());
+        let offset = (samples.len() - fft_frames) / 2;
+        let mut planner = RealFftPlanner::<f32>::new();
+        let forward = planner.plan_fft_forward(fft_frames);
+        let mut time = forward.make_input_vec();
+        for (index, sample) in time.iter_mut().enumerate() {
+            let window = (PI * (index as f32 + 0.5) / fft_frames as f32)
+                .sin()
+                .powi(2);
+            *sample = samples[offset + index] * window;
+        }
+        let mut spectrum = forward.make_output_vec();
+        forward.process(&mut time, &mut spectrum).unwrap();
+        spectrum
+            .iter()
+            .enumerate()
+            .filter(|(bin, _)| {
+                let frequency = *bin as f32 * SAMPLE_RATE as f32 / fft_frames as f32;
+                (low_hz..high_hz).contains(&frequency)
+            })
+            .map(|(_, value)| f64::from(value.norm_sqr()))
+            .sum()
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples
+            .iter()
+            .map(|&sample| f64::from(sample) * f64::from(sample))
+            .sum::<f64>()
+            / samples.len().max(1) as f64)
+            .sqrt() as f32
+    }
+
+    fn rms_difference(a: &[f32], b: &[f32]) -> f32 {
+        (a.iter()
+            .zip(b)
+            .map(|(&left, &right)| {
+                let difference = f64::from(left - right);
+                difference * difference
+            })
+            .sum::<f64>()
+            / a.len().max(1) as f64)
+            .sqrt() as f32
     }
 
     fn assert_expected_power(a_frames: usize, b_frames: usize, hop: usize) {

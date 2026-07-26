@@ -343,6 +343,30 @@ try {
     Number(await page.locator("#spectrogram").getAttribute("data-analysis-columns")) > 720,
     "spectrogram time resolution exceeds the old 720-column cap",
   );
+  const spectrumPerformance = await page.locator("#spectrogram").evaluate((canvas) => ({
+    workers: Number(canvas.dataset.spectrumWorkers),
+    visibleBins: Number(canvas.dataset.visibleBins),
+    workerWallMs: Number(canvas.dataset.workerWallMs),
+    workerComputeMs: Number(canvas.dataset.workerComputeMs),
+    backingRows: canvas.height,
+    log: state.performanceLog.at(-1),
+  }));
+  assert.ok(spectrumPerformance.workers >= 2, "spectrum analysis uses multiple workers");
+  assert.ok(
+    spectrumPerformance.visibleBins < spectrumPerformance.backingRows,
+    "spectrum workers calculate each visible log-frequency bin only once",
+  );
+  assert.ok(
+    Number.isFinite(spectrumPerformance.workerWallMs) &&
+      spectrumPerformance.workerWallMs > 0 &&
+      Number.isFinite(spectrumPerformance.log?.spectrumMs),
+    `spectrum stage timing is logged: ${JSON.stringify(spectrumPerformance)}`,
+  );
+  console.log(
+    `spectrum ${spectrumPerformance.workerWallMs.toFixed(1)} ms wall, ` +
+      `${spectrumPerformance.workerComputeMs.toFixed(1)} ms aggregate, ` +
+      `${spectrumPerformance.workers} workers`,
+  );
   await assertNoViewportOverflow(page);
   await assertControlTooltips(page);
   assert.deepEqual(
@@ -450,13 +474,24 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#renderStatus")?.textContent === "rendering…",
   );
-  await page.getByRole("button", { name: "ir", exact: true }).click();
-  await waitForPath(page, "/evolving_ir/5.00x5.00");
+  await page.getByRole("button", { name: "vocoder", exact: true }).click();
+  await waitForPath(
+    page,
+    "/source_filter_vocoder/vocoder_envelope_width_hz=900.00,vocoder_transfer=0.85,vocoder_transient_protection=0.65",
+  );
+  assert.equal(await page.locator("#methodTools .window-control").count(), 0);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 3);
+  await page.getByLabel("transfer exact value").fill("1.10");
+  await waitForPath(page, "vocoder_transfer=1.10");
   assert.ok((await audioTime(page)) >= beforeSwitch - 0.5, "switch preserves position");
   assert.equal(await page.evaluate(() => transportSnapshot().paused), false);
   assert.match(await page.locator("#playButton").getAttribute("title"), /Pause playback/);
   const requests = await page.evaluate(() => window.__CONV9_TEST_REQUESTS__);
-  assert.equal(requests.at(-1).algorithm, "evolving_ir", "latest rapid selection wins");
+  assert.equal(
+    requests.at(-1).algorithm,
+    "source_filter_vocoder",
+    "latest rapid selection wins",
+  );
 
   await page.getByRole("button", { name: "Pause" }).click();
   await page.locator("body").press("Space");
@@ -553,6 +588,31 @@ try {
   await page.locator("#playbackSpeed").press("ArrowLeft");
   assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.50×");
   await page.locator("#playbackSpeed").evaluate((input) => input.blur());
+  assert.equal(
+    await page.locator("#preservePitch").evaluate((input) =>
+      input.parentElement.previousElementSibling?.classList.contains("playback-speed")
+    ),
+    true,
+    "pitch preservation sits directly next to playback speed",
+  );
+  await page.locator("#preservePitch").check();
+  assert.equal(await page.evaluate(() => transportSnapshot().preservePitch), true);
+  await page.getByRole("button", { name: "Play" }).click();
+  await page.waitForFunction(
+    () =>
+      transportSnapshot().playing &&
+      transportSnapshot().pitchLatency > 0.03 &&
+      state.transport.sourceEffect instanceof AudioWorkletNode,
+  );
+  await page.waitForTimeout(180);
+  assert.ok(
+    (await page.evaluate(() => transportSnapshot().currentTime)) > 0.1,
+    "pitch-preserved transport advances at the selected listening speed",
+  );
+  await page.getByRole("button", { name: "Pause" }).click();
+  await page.locator("#preservePitch").uncheck();
+  assert.equal(await page.evaluate(() => transportSnapshot().preservePitch), false);
+  await page.locator("#preservePitch").evaluate((input) => input.blur());
 
   await page.locator("#seek").evaluate((input) => {
     input.value = "11";
@@ -600,6 +660,7 @@ try {
 
   const sourceBeforeResize = await audioSource(page);
   const timeBeforeResize = await audioTime(page);
+  const analysisCountBeforeResize = await page.evaluate(() => state.performanceLog.length);
   await page.setViewportSize({ width: 900, height: 640 });
   await page.waitForTimeout(1_500);
   assert.equal(await audioSource(page), sourceBeforeResize, "resize does not reload audio");
@@ -609,6 +670,11 @@ try {
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   await assertToolLabelsFit(page);
+  assert.equal(
+    await page.evaluate(() => state.performanceLog.length),
+    analysisCountBeforeResize,
+    "resize rescales the cached spectrum instead of running another FFT analysis",
+  );
   assert.equal(await page.locator("#metrics").isVisible(), true, "metrics remain on compact row");
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.compact.png` });
@@ -669,12 +735,12 @@ async function testCatalog() {
         "Sets how much of the shorter analysis window overlaps its next position and controls render density.",
       input_taper:
         "Sets the Tukey taper applied to both extracted input windows before each convolution; synthesis crossfading remains separate.",
-      evolving_a_mix:
-        "Blends the cropped carriers: zero keeps B, one keeps A, and one half weights both equally.",
-      evolving_mix_motion:
-        "Moves the A/B carrier balance over the output timeline around the selected midpoint value.",
-      evolving_crop_position:
-        "Chooses the onset, center, or tail region used for each cropped evolving convolution carrier.",
+      vocoder_transfer:
+        "Sets how strongly clip B's smoothed spectral envelope reshapes clip A.",
+      vocoder_envelope_width_hz:
+        "Sets the frequency span used to smooth both short-time spectra before transfer.",
+      vocoder_transient_protection:
+        "Reduces envelope transfer during rapid spectral onsets from clip A.",
       chunk_crossfade_percent:
         "Sets power-normalized overlap as a percentage of the shorter chunk. The 50% default keeps transitions continuous; lower values expose seams.",
       chunk_crop_position:
@@ -690,7 +756,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 7,
+    schema_version: 8,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -710,18 +776,31 @@ async function testCatalog() {
         ],
       },
       {
-        id: "evolving_ir",
-        title: "Dual evolving impulse response",
+        id: "source_filter_vocoder",
+        title: "Source-filter vocoder",
         description:
-          "Crops every local convolution into A-sized and B-sized carriers, blends them, and overlap-adds the result.",
+          "Uses A for excitation, phase, and timing while B supplies a smooth short-time spectral envelope.",
         rank: 2,
-        windows: windows(),
+        windows: [],
         parameters: [
-          parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
-          parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
-          parameter("evolving_a_mix", "A carrier", 0, 1, 0.01, 0.5),
-          parameter("evolving_mix_motion", "carrier motion", -1, 1, 0.01, 0),
-          parameter("evolving_crop_position", "crop position", 0, 1, 0.01, 0.5),
+          parameter("vocoder_transfer", "transfer", 0, 1.5, 0.01, 0.85),
+          parameter(
+            "vocoder_envelope_width_hz",
+            "envelope width",
+            100,
+            3000,
+            50,
+            900,
+            "Hz",
+          ),
+          parameter(
+            "vocoder_transient_protection",
+            "transients",
+            0,
+            1,
+            0.01,
+            0.65,
+          ),
         ],
       },
       {

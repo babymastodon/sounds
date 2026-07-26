@@ -42,6 +42,7 @@ struct RenderHeader {
     parameters: AlgorithmParameters,
     hop_seconds: Option<f32>,
     render_milliseconds: u128,
+    timings: conv9::RenderTimings,
     metrics: conv9::AudioMetrics,
 }
 
@@ -122,6 +123,7 @@ async fn render_selection(
             parameters: selection.parameters,
             hop_seconds: rendered.config.map(|config| config.hop_seconds),
             render_milliseconds: started.elapsed().as_millis(),
+            timings: rendered.timings,
             metrics: rendered.metrics,
         };
         encode_envelope(&header, rendered.wav).map(Response::new)

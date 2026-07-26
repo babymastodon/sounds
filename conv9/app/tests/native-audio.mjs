@@ -401,6 +401,68 @@ try {
   assert.ok(Math.abs(changedPlaybackRate.rate - 1.5) < 1e-6);
   assert.equal(changedPlaybackRate.value, "1.50×");
 
+  await execute(port, sessionId, `
+    const speed = document.querySelector("#playbackSpeed");
+    speed.value = "0.5";
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    const pitch = document.querySelector("#preservePitch");
+    pitch.checked = true;
+    pitch.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  `);
+  await poll(async () => {
+    const value = await execute(port, sessionId, `
+      return {
+        checked: document.querySelector("#preservePitch").checked,
+        disabled: document.querySelector("#preservePitch").disabled,
+        loaded: Boolean(state.transport.pitchWorkletPromise),
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.checked && !value.disabled && value.loaded && value.errorHidden
+      ? value
+      : undefined;
+  });
+  await execute(
+    port,
+    sessionId,
+    `document.querySelector("#playButton").click(); return true;`,
+  );
+  const pitchPreserved = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const transport = transportSnapshot();
+      return {
+        playing: transport.playing,
+        rate: transport.playbackRate,
+        preservePitch: transport.preservePitch,
+        pitchLatency: transport.pitchLatency,
+        effect: state.transport.sourceEffect?.constructor?.name,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.playing && value.pitchLatency > 0.03 ? value : undefined;
+  });
+  assert.equal(pitchPreserved.preservePitch, true);
+  assert.ok(Math.abs(pitchPreserved.rate - 1.5) < 1e-6);
+  assert.equal(pitchPreserved.effect, "AudioWorkletNode");
+  assert.equal(pitchPreserved.errorHidden, true, pitchPreserved.error);
+  await captureMonitor();
+  const pitchSignal = analyzePcm16(await readFile(capturePath));
+  assert.ok(pitchSignal.rms > 0.003, `pitch-preserved native output is silent: ${pitchSignal.rms}`);
+  assert.ok(pitchSignal.peak > 0.01, `pitch-preserved native output peak is too low: ${pitchSignal.peak}`);
+  await resetPlayback(port, sessionId);
+  await execute(port, sessionId, `
+    const pitch = document.querySelector("#preservePitch");
+    pitch.checked = false;
+    pitch.dispatchEvent(new Event("change", { bubbles: true }));
+    const speed = document.querySelector("#playbackSpeed");
+    speed.value = "0";
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  `);
+
   await execute(
     port,
     sessionId,
@@ -564,7 +626,7 @@ try {
   );
   assert.equal(chunked.errorHidden, true, chunked.error);
 
-  for (const [algorithm, expectedDuration] of [["evolving_ir", 66]]) {
+  for (const [algorithm, expectedDuration] of [["source_filter_vocoder", 61]]) {
     await execute(
       port,
       sessionId,

@@ -77,9 +77,21 @@
               value="0"
               step="any"
               aria-label="Playback speed"
-              title="Adjust listening speed from half speed to double speed on an octave-logarithmic scale. It snaps to 0.5×, 0.75×, 1×, 1.25×, 1.5×, 1.75×, or 2×, with 1× exactly at the visual midpoint. Pitch follows speed; this does not re-render or modify the waveform."
+              title="Adjust listening speed from half speed to double speed on an octave-logarithmic scale. It snaps to 0.5×, 0.75×, 1×, 1.25×, 1.5×, 1.75×, or 2×, with 1× exactly at the visual midpoint."
             />
             <output id="playbackSpeedValue" for="playbackSpeed">1.00×</output>
+          </label>
+          <label
+            class="transport-control preserve-pitch"
+            title="Keep the original pitch while playback speed changes. This uses a real-time phase vocoder and adds about 43 ms of listening latency; turn it off for unprocessed varispeed playback."
+          >
+            <input
+              id="preservePitch"
+              type="checkbox"
+              aria-label="Preserve pitch"
+              title="Keep the original pitch while playback speed changes by inserting a real-time phase vocoder; ordinary varispeed playback is used when this is off."
+            />
+            <span>pitch</span>
           </label>
         </div>
       </section>
@@ -93,6 +105,7 @@
             aria-label="Audio waveform"
             title="Shows output amplitude over the complete rendered duration. Click anywhere to seek playback to that timeline position."
           ></canvas>
+          <span class="playhead" id="waveformPlayhead" aria-hidden="true"></span>
         </article>
         <article class="visual-card spectrogram-card">
           <canvas
@@ -101,6 +114,7 @@
             aria-label="Audio spectrum"
             title="Shows output energy over time on a logarithmic 50 Hz–20 kHz axis using a 16,384-point FFT. Click anywhere to seek."
           ></canvas>
+          <span class="playhead" id="spectrumPlayhead" aria-hidden="true"></span>
         </article>
       </section>
     </main>

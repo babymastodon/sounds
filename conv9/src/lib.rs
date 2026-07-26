@@ -10,5 +10,5 @@ pub use dsp::{
 };
 pub use render::{
     AlgorithmCatalogEntry, Catalog, OnDemandRenderer, ParameterCatalogEntry, RenderSelection,
-    RenderedAudio, WindowCatalogEntry,
+    RenderTimings, RenderedAudio, WindowCatalogEntry,
 };

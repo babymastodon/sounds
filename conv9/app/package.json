@@ -5,7 +5,7 @@
   "scripts": {
     "test": "npm run test:browser",
     "test:all": "npm run test:browser && npm run test:native-audio",
-    "test:browser": "node tests/e2e.mjs",
+    "test:browser": "node tests/pitch-worklet.mjs && node tests/spectrum-worker.mjs && node tests/e2e.mjs",
     "test:native-audio": "cargo build --manifest-path src-tauri/Cargo.toml && node tests/native-audio.mjs"
   },
   "devDependencies": {

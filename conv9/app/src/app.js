@@ -10,10 +10,13 @@ const ui = {
   volume: document.querySelector("#volume"),
   playbackSpeed: document.querySelector("#playbackSpeed"),
   playbackSpeedValue: document.querySelector("#playbackSpeedValue"),
+  preservePitch: document.querySelector("#preservePitch"),
   currentTime: document.querySelector("#currentTime"),
   duration: document.querySelector("#duration"),
   waveform: document.querySelector("#waveform"),
   spectrogram: document.querySelector("#spectrogram"),
+  waveformPlayhead: document.querySelector("#waveformPlayhead"),
+  spectrumPlayhead: document.querySelector("#spectrumPlayhead"),
   errorPanel: document.querySelector("#errorPanel"),
 };
 
@@ -26,8 +29,11 @@ const state = {
   settings: new Map(),
   waveformLayer: null,
   spectrumLayer: null,
+  spectrumBaseLayer: null,
+  spectrumWorkers: [],
   analysisSamples: null,
   analysisSampleRate: 0,
+  performanceLog: [],
   audioReady: false,
   renderEpoch: 0,
   selectionGeneration: 0,
@@ -42,6 +48,7 @@ const state = {
     buffer: null,
     source: null,
     sourceGain: null,
+    sourceEffect: null,
     position: 0,
     startedAt: 0,
     nextStartAt: 0,
@@ -51,6 +58,8 @@ const state = {
     operation: 0,
     lastOutputClock: 0,
     restartTimer: 0,
+    pitchWorkletPromise: null,
+    effectLatency: 0,
   },
 };
 
@@ -168,6 +177,9 @@ function bindEvents() {
   });
   ui.playbackSpeed.addEventListener("input", () => applyPlaybackSpeed(true));
   ui.playbackSpeed.addEventListener("change", () => applyPlaybackSpeed(false));
+  ui.preservePitch.addEventListener("change", () => {
+    void applyPitchPreservation().catch(handlePlaybackFailure);
+  });
   ui.playbackSpeed.addEventListener("keydown", (event) => {
     const direction = {
       ArrowLeft: -1,
@@ -230,6 +242,25 @@ function applyPlaybackSpeed(deferRestart = false) {
   if (shouldResume && state.audioReady) {
     scheduleTransportStart(deferRestart ? 50 : 0);
   }
+  refreshTransport();
+}
+
+async function applyPitchPreservation() {
+  if (ui.preservePitch.checked) {
+    try {
+      await ensurePitchWorklet();
+    } catch (error) {
+      ui.preservePitch.checked = false;
+      ui.preservePitch.disabled = true;
+      ui.preservePitch.parentElement.title =
+        "Pitch preservation is unavailable in this WebView. Playback speed remains usable as ordinary varispeed.";
+      throw error;
+    }
+  }
+  const shouldResume = state.transport.desiredPlaying;
+  if (state.transport.playing) stopTransport(true);
+  cancelScheduledTransportStart();
+  if (shouldResume && state.audioReady) scheduleTransportStart(0);
   refreshTransport();
 }
 
@@ -401,16 +432,23 @@ async function selectClip(preservePlayback, generation) {
     validateRenderedSelection(rendered.header, bytes, request);
     updateMetrics(rendered.header);
     ui.renderStatus.textContent = "analyzing…";
-    const decoded = await analyzeSelection(bytes, generation);
-    if (generation !== state.selectionGeneration || !decoded) return;
+    const analysis = await analyzeSelection(bytes, generation);
+    if (generation !== state.selectionGeneration || !analysis) return;
     installTransportBuffer(
-      decoded,
+      analysis.decoded,
       preservePlayback ? state.pendingPosition : 0,
       selectionSignature(request),
     );
     state.renderTransitionActive = false;
     setTransportReady(true);
     ui.renderStatus.textContent = `rendered ${rendered.header.renderMilliseconds} ms`;
+    logPerformance({
+      requestId: request.requestId,
+      algorithm: request.algorithm,
+      backendMs: rendered.header.renderMilliseconds,
+      backendStages: rendered.header.timings,
+      ...analysis.timings,
+    });
     if (state.transport.desiredPlaying) {
       try {
         await startTransport();
@@ -441,6 +479,8 @@ function beginRenderTransition(preservePlayback) {
   state.analysisSampleRate = 0;
   state.waveformLayer = null;
   state.spectrumLayer = null;
+  state.spectrumBaseLayer = null;
+  cancelSpectrumWorkers();
 }
 
 function updateMetrics(header) {
@@ -460,8 +500,15 @@ function selectedAlgorithm() {
 
 function selectionSignature(request) {
   if (request.windows.clip_a_seconds == null) {
-    if (request.algorithm !== "full_convolution") {
+    if (request.algorithm === "dry_a" || request.algorithm === "dry_b") {
       return `${request.leftId}__${request.rightId}/${request.algorithm}/source`;
+    }
+    if (request.algorithm === "source_filter_vocoder") {
+      const parameters = Object.entries(request.parameters)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, value]) => `${id}=${Number(value).toFixed(2)}`)
+        .join(",");
+      return `${request.leftId}__${request.rightId}/${request.algorithm}/${parameters}`;
     }
     const segments = `a${request.parameters.full_a_offset_seconds.toFixed(2)}+` +
       `${request.parameters.full_a_duration_seconds.toFixed(2)}_` +
@@ -621,29 +668,67 @@ function clamp(value, minimum, maximum) {
 }
 
 async function analyzeSelection(bytes, generation) {
+  const analysisStarted = performance.now();
   drawLoading(ui.waveform, "drawing waveform…");
   drawLoading(ui.spectrogram, "computing spectrum…");
   const context = ensureAudioContext();
   const audioBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const decodeStarted = performance.now();
   const decoded = await context.decodeAudioData(audioBytes);
+  const decodeMs = performance.now() - decodeStarted;
   if (generation !== state.selectionGeneration) return null;
   // Analysis and playback deliberately share this exact decoded AudioBuffer.
   state.analysisSamples = decoded.getChannelData(0);
   state.analysisSampleRate = decoded.sampleRate;
-  resizeVisualizations();
-  return decoded;
+  const waveformStarted = performance.now();
+  state.waveformLayer = renderWaveformLayer(ui.waveform, state.analysisSamples);
+  paintLayer(ui.waveform, state.waveformLayer);
+  ui.waveform.setAttribute("aria-busy", "false");
+  const waveformMs = performance.now() - waveformStarted;
+  const spectrumStarted = performance.now();
+  state.spectrumBaseLayer = await renderSpectrogramLayer(
+    ui.spectrogram,
+    state.analysisSamples,
+    state.analysisSampleRate,
+    generation,
+  );
+  if (generation !== state.selectionGeneration || !state.spectrumBaseLayer) {
+    return null;
+  }
+  state.spectrumLayer = state.spectrumBaseLayer;
+  paintLayer(ui.spectrogram, state.spectrumLayer);
+  ui.spectrogram.setAttribute("aria-busy", "false");
+  const spectrumMs = performance.now() - spectrumStarted;
+  return {
+    decoded,
+    timings: {
+      decodeMs: roundMilliseconds(decodeMs),
+      waveformMs: roundMilliseconds(waveformMs),
+      spectrumMs: roundMilliseconds(spectrumMs),
+      analysisMs: roundMilliseconds(performance.now() - analysisStarted),
+    },
+  };
 }
 
 function resizeVisualizations() {
   if (!state.analysisSamples || !state.analysisSampleRate) return;
   state.waveformLayer = renderWaveformLayer(ui.waveform, state.analysisSamples);
-  state.spectrumLayer = renderSpectrogramLayer(
-    ui.spectrogram,
-    state.analysisSamples,
-    state.analysisSampleRate,
-  );
+  paintLayer(ui.waveform, state.waveformLayer);
+  if (state.spectrumBaseLayer) {
+    state.spectrumLayer = sizedLayer(ui.spectrogram);
+    state.spectrumLayer
+      .getContext("2d")
+      .drawImage(
+        state.spectrumBaseLayer,
+        0,
+        0,
+        state.spectrumLayer.width,
+        state.spectrumLayer.height,
+      );
+    paintLayer(ui.spectrogram, state.spectrumLayer);
+  }
   ui.waveform.setAttribute("aria-busy", "false");
-  ui.spectrogram.setAttribute("aria-busy", "false");
+  if (state.spectrumLayer) ui.spectrogram.setAttribute("aria-busy", "false");
 }
 
 function renderWaveformLayer(canvas, samples) {
@@ -670,7 +755,7 @@ function renderWaveformLayer(canvas, samples) {
   return layer;
 }
 
-function renderSpectrogramLayer(canvas, samples, sampleRate) {
+async function renderSpectrogramLayer(canvas, samples, sampleRate, generation) {
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   const { width, height } = layer;
@@ -680,46 +765,154 @@ function renderSpectrogramLayer(canvas, samples, sampleRate) {
   const fftSize = 16384;
   canvas.dataset.fftSize = String(fftSize);
   canvas.dataset.analysisColumns = String(columns);
-  const real = new Float64Array(fftSize);
-  const imaginary = new Float64Array(fftSize);
-  const magnitudes = new Float32Array((fftSize / 2 + 1) * columns);
-  let maximum = -Infinity;
-  for (let column = 0; column < columns; column++) {
-    const center = Math.floor((column / Math.max(1, columns - 1)) * (samples.length - 1));
-    const start = center - fftSize / 2;
-    for (let index = 0; index < fftSize; index++) {
-      const sample = samples[Math.max(0, Math.min(samples.length - 1, start + index))];
-      real[index] = sample * (0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (fftSize - 1)));
-      imaginary[index] = 0;
-    }
-    fft(real, imaginary);
-    for (let bin = 0; bin <= fftSize / 2; bin++) {
-      const db = 20 * Math.log10(Math.hypot(real[bin], imaginary[bin]) + 1e-9);
-      magnitudes[column * (fftSize / 2 + 1) + bin] = db;
-      maximum = Math.max(maximum, db);
-    }
-  }
-  const image = context.createImageData(width, height);
   const minimumFrequency = 50;
   const maximumFrequency = Math.min(20000, sampleRate / 2);
+  const rowBins = new Uint16Array(height);
+  const uniqueBins = [];
+  const binRows = new Map();
   for (let y = 0; y < height; y++) {
     const phase = 1 - y / Math.max(1, height - 1);
     const frequency = minimumFrequency * Math.pow(maximumFrequency / minimumFrequency, phase);
     const bin = Math.min(fftSize / 2, Math.round((frequency * fftSize) / sampleRate));
+    if (!binRows.has(bin)) {
+      binRows.set(bin, uniqueBins.length);
+      uniqueBins.push(bin);
+    }
+    rowBins[y] = binRows.get(bin);
+  }
+  const workerCount = Math.min(
+    4,
+    columns,
+    Math.max(1, (navigator.hardwareConcurrency || 2) - 2),
+  );
+  canvas.dataset.spectrumWorkers = String(workerCount);
+  canvas.dataset.visibleBins = String(uniqueBins.length);
+  const workerStarted = performance.now();
+  const jobs = [];
+  for (let workerIndex = 0; workerIndex < workerCount; workerIndex++) {
+    const columnStart = Math.floor((workerIndex * columns) / workerCount);
+    const columnEnd = Math.floor(((workerIndex + 1) * columns) / workerCount);
+    if (columnEnd <= columnStart) continue;
+    const firstCenter = spectrumColumnCenter(columnStart, columns, samples.length);
+    const lastCenter = spectrumColumnCenter(columnEnd - 1, columns, samples.length);
+    const sampleStart = Math.max(0, firstCenter - fftSize / 2);
+    const sampleEnd = Math.min(
+      samples.length,
+      lastCenter + fftSize / 2 + 1,
+    );
+    const sampleSlice = samples.slice(sampleStart, sampleEnd);
+    jobs.push(runSpectrumWorker({
+      columnStart,
+      columnEnd,
+      totalColumns: columns,
+      fftSize,
+      rowBins: Uint16Array.from(uniqueBins),
+      sampleRate,
+      totalSamples: samples.length,
+      sampleStart,
+      samples: sampleSlice,
+      generation,
+    }));
+  }
+  const stripes = await Promise.all(jobs);
+  if (generation !== state.selectionGeneration) return null;
+  const magnitudes = new Float32Array(columns * uniqueBins.length);
+  let maximum = -Infinity;
+  let workerComputeMs = 0;
+  for (const stripe of stripes) {
+    const values = new Float32Array(stripe.values);
+    magnitudes.set(values, stripe.columnStart * uniqueBins.length);
+    maximum = Math.max(maximum, stripe.maximum);
+    workerComputeMs += stripe.computeMs;
+  }
+  canvas.dataset.workerWallMs = roundMilliseconds(
+    performance.now() - workerStarted,
+  );
+  canvas.dataset.workerComputeMs = roundMilliseconds(workerComputeMs);
+  const image = context.createImageData(width, height);
+  const palette = spectralPalette();
+  const dynamicMaximum = Number.isFinite(maximum) ? maximum : -72;
+  for (let y = 0; y < height; y++) {
+    const row = rowBins[y];
     for (let x = 0; x < width; x++) {
       const column = Math.min(columns - 1, Math.floor((x / width) * columns));
-      const db = magnitudes[column * (fftSize / 2 + 1) + bin];
-      const intensity = Math.max(0, Math.min(1, (db - (maximum - 72)) / 72));
-      const [red, green, blue] = spectralColor(intensity);
+      const db = magnitudes[column * uniqueBins.length + row];
+      const intensity = Math.max(
+        0,
+        Math.min(255, Math.round(((db - (dynamicMaximum - 72)) / 72) * 255)),
+      );
+      const colorOffset = intensity * 3;
       const offset = (y * width + x) * 4;
-      image.data[offset] = red;
-      image.data[offset + 1] = green;
-      image.data[offset + 2] = blue;
+      image.data[offset] = palette[colorOffset];
+      image.data[offset + 1] = palette[colorOffset + 1];
+      image.data[offset + 2] = palette[colorOffset + 2];
       image.data[offset + 3] = 255;
     }
   }
   context.putImageData(image, 0, 0);
   return layer;
+}
+
+function spectrumColumnCenter(column, columns, sampleCount) {
+  return Math.floor(
+    (column / Math.max(1, columns - 1)) * Math.max(0, sampleCount - 1),
+  );
+}
+
+function runSpectrumWorker(parameters) {
+  return new Promise((resolve, reject) => {
+    if (parameters.generation !== state.selectionGeneration) {
+      reject(new DOMException("Spectrum render superseded", "AbortError"));
+      return;
+    }
+    const worker = new Worker("spectrum-worker.js");
+    const entry = { worker, reject };
+    state.spectrumWorkers.push(entry);
+    const finish = () => {
+      worker.terminate();
+      state.spectrumWorkers = state.spectrumWorkers.filter(
+        (candidate) => candidate !== entry,
+      );
+    };
+    worker.onmessage = (event) => {
+      finish();
+      resolve(event.data);
+    };
+    worker.onerror = (event) => {
+      finish();
+      reject(new Error(`Spectrum worker failed: ${event.message}`));
+    };
+    const rowBins = parameters.rowBins;
+    const samples = parameters.samples;
+    worker.postMessage(
+      {
+        ...parameters,
+        rowBins: rowBins.buffer,
+        samples: samples.buffer,
+      },
+      [rowBins.buffer, samples.buffer],
+    );
+  });
+}
+
+function cancelSpectrumWorkers() {
+  const workers = state.spectrumWorkers;
+  state.spectrumWorkers = [];
+  for (const { worker, reject } of workers) {
+    worker.terminate();
+    reject(new DOMException("Spectrum render superseded", "AbortError"));
+  }
+}
+
+let cachedSpectralPalette;
+
+function spectralPalette() {
+  if (cachedSpectralPalette) return cachedSpectralPalette;
+  cachedSpectralPalette = new Uint8ClampedArray(256 * 3);
+  for (let index = 0; index < 256; index++) {
+    cachedSpectralPalette.set(spectralColor(index / 255), index * 3);
+  }
+  return cachedSpectralPalette;
 }
 
 function spectralColor(value) {
@@ -741,39 +934,18 @@ function spectralColor(value) {
   return stops.at(-1).slice(1);
 }
 
-function fft(real, imaginary) {
-  const length = real.length;
-  for (let i = 1, j = 0; i < length; i++) {
-    let bit = length >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [real[i], real[j]] = [real[j], real[i]];
-      [imaginary[i], imaginary[j]] = [imaginary[j], imaginary[i]];
-    }
-  }
-  for (let size = 2; size <= length; size <<= 1) {
-    const angle = (-2 * Math.PI) / size;
-    const stepReal = Math.cos(angle);
-    const stepImaginary = Math.sin(angle);
-    for (let start = 0; start < length; start += size) {
-      let rotationReal = 1;
-      let rotationImaginary = 0;
-      for (let offset = 0; offset < size / 2; offset++) {
-        const even = start + offset;
-        const odd = even + size / 2;
-        const oddReal = real[odd] * rotationReal - imaginary[odd] * rotationImaginary;
-        const oddImaginary = real[odd] * rotationImaginary + imaginary[odd] * rotationReal;
-        real[odd] = real[even] - oddReal;
-        imaginary[odd] = imaginary[even] - oddImaginary;
-        real[even] += oddReal;
-        imaginary[even] += oddImaginary;
-        const nextReal = rotationReal * stepReal - rotationImaginary * stepImaginary;
-        rotationImaginary = rotationReal * stepImaginary + rotationImaginary * stepReal;
-        rotationReal = nextReal;
-      }
-    }
-  }
+function roundMilliseconds(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function logPerformance(entry) {
+  const record = {
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  state.performanceLog.push(record);
+  if (state.performanceLog.length > 32) state.performanceLog.shift();
+  console.info("[conv9 performance]", record);
 }
 
 function animateCursor() {
@@ -781,12 +953,14 @@ function animateCursor() {
   const phase = snapshot.duration > 0
     ? Math.max(0, Math.min(1, snapshot.currentTime / snapshot.duration))
     : 0;
-  drawLayerWithCursor(ui.waveform, state.waveformLayer, phase);
-  drawLayerWithCursor(ui.spectrogram, state.spectrumLayer, phase);
+  ui.waveformPlayhead.style.transform =
+    `translate3d(${phase * ui.waveform.clientWidth}px, 0, 0)`;
+  ui.spectrumPlayhead.style.transform =
+    `translate3d(${phase * ui.spectrogram.clientWidth}px, 0, 0)`;
   requestAnimationFrame(animateCursor);
 }
 
-function drawLayerWithCursor(canvas, layer, phase) {
+function paintLayer(canvas, layer) {
   if (!layer) return;
   const context = canvas.getContext("2d");
   if (canvas.width !== layer.width || canvas.height !== layer.height) {
@@ -794,13 +968,6 @@ function drawLayerWithCursor(canvas, layer, phase) {
     canvas.height = layer.height;
   }
   context.drawImage(layer, 0, 0);
-  const x = Math.round(phase * (canvas.width - 1)) + 0.5;
-  context.strokeStyle = "#c77e69";
-  context.lineWidth = Math.max(1, window.devicePixelRatio);
-  context.beginPath();
-  context.moveTo(x, 0);
-  context.lineTo(x, canvas.height);
-  context.stroke();
 }
 
 function sizedLayer(canvas) {
@@ -883,6 +1050,22 @@ function ensureAudioContext() {
     refreshTransport();
   });
   return context;
+}
+
+async function ensurePitchWorklet() {
+  const context = ensureAudioContext();
+  if (!context.audioWorklet || typeof window.AudioWorkletNode !== "function") {
+    throw new Error("This WebView does not support real-time pitch preservation.");
+  }
+  if (!state.transport.pitchWorkletPromise) {
+    state.transport.pitchWorkletPromise = context.audioWorklet
+      .addModule("pitch-worklet.js")
+      .catch((error) => {
+        state.transport.pitchWorkletPromise = null;
+        throw error;
+      });
+  }
+  await state.transport.pitchWorkletPromise;
 }
 
 function installTransportBuffer(buffer, position, signature) {
@@ -971,6 +1154,9 @@ async function startTransport() {
   const context = ensureAudioContext();
   const operation = ++state.transport.operation;
   if (context.state !== "running") await context.resume();
+  const preservePitch =
+    ui.preservePitch.checked && Math.abs(state.transport.rate - 1) > 1e-6;
+  if (preservePitch) await ensurePitchWorklet();
   if (
     operation !== state.transport.operation ||
     !state.audioReady ||
@@ -988,17 +1174,38 @@ async function startTransport() {
   source.loopStart = 0;
   source.loopEnd = duration;
   source.playbackRate.value = state.transport.rate;
-  source.connect(sourceGain);
+  let sourceEffect = null;
+  let effectLatency = 0;
+  if (preservePitch) {
+    sourceEffect = new AudioWorkletNode(context, "pitch-preserver", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [state.transport.buffer.numberOfChannels],
+      processorOptions: {
+        channels: state.transport.buffer.numberOfChannels,
+        factor: 1 / state.transport.rate,
+      },
+    });
+    source.connect(sourceEffect);
+    sourceEffect.connect(sourceGain);
+    effectLatency = 2048 / context.sampleRate;
+  } else {
+    source.connect(sourceGain);
+  }
   sourceGain.connect(state.transport.gain);
   const startAt = Math.max(context.currentTime, state.transport.nextStartAt);
+  const audibleStartAt = startAt + effectLatency;
   sourceGain.gain.setValueAtTime(0, startAt);
-  sourceGain.gain.linearRampToValueAtTime(1, startAt + 0.005);
+  sourceGain.gain.setValueAtTime(0, audibleStartAt);
+  sourceGain.gain.linearRampToValueAtTime(1, audibleStartAt + 0.005);
   state.transport.source = source;
   state.transport.sourceGain = sourceGain;
+  state.transport.sourceEffect = sourceEffect;
+  state.transport.effectLatency = effectLatency;
   state.transport.position = position;
   // Keep the UI on the sample currently reaching the output device. The graph
   // begins at context.currentTime; transportClockTime trails it by output latency.
-  state.transport.startedAt = startAt;
+  state.transport.startedAt = audibleStartAt;
   state.transport.nextStartAt = 0;
   state.transport.playing = true;
   source.start(startAt, position);
@@ -1016,8 +1223,11 @@ function stopTransport(preservePosition) {
   state.transport.operation++;
   const source = state.transport.source;
   const sourceGain = state.transport.sourceGain;
+  const sourceEffect = state.transport.sourceEffect;
   state.transport.source = null;
   state.transport.sourceGain = null;
+  state.transport.sourceEffect = null;
+  state.transport.effectLatency = 0;
   state.transport.playing = false;
   if (source) {
     try {
@@ -1036,6 +1246,7 @@ function stopTransport(preservePosition) {
     source.addEventListener("ended", () => {
       source.disconnect();
       sourceGain?.disconnect();
+      sourceEffect?.disconnect();
     }, { once: true });
   }
   if (preservePosition) state.transport.position = position;
@@ -1081,6 +1292,8 @@ function transportSnapshot() {
     readyState: state.audioReady ? 4 : 0,
     loop: true,
     playbackRate: state.transport.rate,
+    preservePitch: ui.preservePitch.checked,
+    pitchLatency: state.transport.effectLatency,
     volume: Number(ui.volume.value),
     path: state.currentSignature,
     bufferRevision: state.bufferRevision,
@@ -1096,6 +1309,7 @@ function shutdownTransport() {
   const context = state.transport.context;
   state.transport.gain = null;
   state.transport.context = null;
+  state.transport.pitchWorkletPromise = null;
   if (context && context.state !== "closed") {
     void context.close().catch(() => {});
   }
@@ -1163,7 +1377,7 @@ function formatTime(seconds) {
 function shortAlgorithm(value) {
   return {
     windowed_convolution: "windowed",
-    evolving_ir: "ir",
+    source_filter_vocoder: "vocoder",
     chunk_crossfade: "chunks",
     full_convolution: "full",
     dry_a: "dry a",

@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -66,6 +67,17 @@ pub struct RenderedAudio {
     pub wav: Vec<u8>,
     pub metrics: AudioMetrics,
     pub config: Option<WindowConfig>,
+    pub timings: RenderTimings,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderTimings {
+    pub source_milliseconds: f64,
+    pub dsp_milliseconds: f64,
+    pub condition_milliseconds: f64,
+    pub encode_milliseconds: f64,
+    pub total_milliseconds: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -108,7 +120,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 7,
+            schema_version: 8,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -133,6 +145,7 @@ impl OnDemandRenderer {
         selection: &RenderSelection,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<RenderedAudio> {
+        let total_started = Instant::now();
         let algorithm = Algorithm::from_str(&selection.algorithm)?;
         let parameters = selection.parameters.validate(algorithm)?;
         let config = if algorithm.uses_windows() {
@@ -158,8 +171,11 @@ impl OnDemandRenderer {
         } else {
             None
         };
+        let source_started = Instant::now();
         let left = self.clip(&selection.left_id)?;
         let right = self.clip(&selection.right_id)?;
+        let source_milliseconds = elapsed_milliseconds(source_started);
+        let dsp_started = Instant::now();
         let mut output =
             render_algorithm_cancellable(algorithm, config, parameters, &left, &right, cancelled)
                 .with_context(|| {
@@ -182,9 +198,11 @@ impl OnDemandRenderer {
                         .unwrap_or_else(|| "full".to_owned()),
                 )
             })?;
+        let dsp_milliseconds = elapsed_milliseconds(dsp_started);
         if cancelled() {
             bail!("render cancelled");
         }
+        let condition_started = Instant::now();
         let metrics = if algorithm.is_dry() {
             let metrics = measure(&output);
             validate_metrics(&metrics, output.len(), "dry source output")?;
@@ -192,11 +210,21 @@ impl OnDemandRenderer {
         } else {
             condition_output(&mut output)?
         };
+        let condition_milliseconds = elapsed_milliseconds(condition_started);
+        let encode_started = Instant::now();
         let wav = encode_pcm16(&output)?;
+        let encode_milliseconds = elapsed_milliseconds(encode_started);
         Ok(RenderedAudio {
             wav,
             metrics,
             config,
+            timings: RenderTimings {
+                source_milliseconds,
+                dsp_milliseconds,
+                condition_milliseconds,
+                encode_milliseconds,
+                total_milliseconds: elapsed_milliseconds(total_started),
+            },
         })
     }
 
@@ -230,6 +258,10 @@ impl OnDemandRenderer {
         cache.truncate(4);
         Ok(loaded)
     }
+}
+
+fn elapsed_milliseconds(started: Instant) -> f64 {
+    (started.elapsed().as_secs_f64() * 10_000.0).round() / 10.0
 }
 
 fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
@@ -292,44 +324,42 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
     };
     match algorithm {
         Algorithm::WindowedConvolution => vec![input_taper(), overlap()],
-        Algorithm::EvolvingIr => vec![
-            input_taper(),
-            overlap(),
+        Algorithm::SourceFilterVocoder => vec![
             ParameterCatalogEntry {
-                id: "evolving_a_mix",
-                label: "A carrier",
+                id: "vocoder_transfer",
+                label: "transfer",
+                minimum: 0.0,
+                maximum: 1.5,
+                step: 0.01,
+                default: defaults.vocoder_transfer,
+                unit: "",
+                description: "Sets how strongly clip B's smoothed spectral envelope reshapes clip \
+                              A. 0 keeps A's original spectrum, 1 applies the measured B/A envelope \
+                              ratio, and values above 1 exaggerate the transferred color.",
+            },
+            ParameterCatalogEntry {
+                id: "vocoder_envelope_width_hz",
+                label: "envelope width",
+                minimum: 100.0,
+                maximum: 3_000.0,
+                step: 50.0,
+                default: defaults.vocoder_envelope_width_hz,
+                unit: "Hz",
+                description: "Sets the frequency span used to smooth both short-time spectra before \
+                              their ratio is transferred. Narrow values retain detailed resonances; \
+                              broad values emphasize stable formants and overall timbral shape.",
+            },
+            ParameterCatalogEntry {
+                id: "vocoder_transient_protection",
+                label: "transients",
                 minimum: 0.0,
                 maximum: 1.0,
                 step: 0.01,
-                default: defaults.evolving_a_mix,
+                default: defaults.vocoder_transient_protection,
                 unit: "",
-                description: "Blends the two cropped convolution carriers. 0 keeps only the \
-                              B-sized carrier, 1 keeps only the A-sized carrier, and 0.5 gives both \
-                              equal synthesis weight.",
-            },
-            ParameterCatalogEntry {
-                id: "evolving_mix_motion",
-                label: "carrier motion",
-                minimum: -1.0,
-                maximum: 1.0,
-                step: 0.01,
-                default: defaults.evolving_mix_motion,
-                unit: "",
-                description: "Moves the A/B carrier balance over the output timeline around the \
-                              selected midpoint mix. Positive values evolve toward A; negative \
-                              values evolve toward B, with clamping at either pure carrier.",
-            },
-            ParameterCatalogEntry {
-                id: "evolving_crop_position",
-                label: "crop position",
-                minimum: 0.0,
-                maximum: 1.0,
-                step: 0.01,
-                default: defaults.evolving_crop_position,
-                unit: "",
-                description: "Chooses which region of each complete local convolution becomes the \
-                              A- and B-sized carriers. 0 keeps the onset, 0.5 keeps the center, and \
-                              1 keeps the decaying tail.",
+                description: "Reduces envelope transfer only during rapid spectral onsets from clip \
+                              A. 0 colors attacks fully, while 1 preserves the strongest A transients \
+                              and restores the selected transfer as each onset settles.",
             },
         ],
         Algorithm::ChunkCrossfade => vec![
@@ -444,10 +474,19 @@ mod tests {
                         .all(|parameter| parameter.description.len() > 80)
                 );
                 assert!(window_catalog(algorithm).is_empty());
-            } else {
+            } else if algorithm.is_dry() {
                 assert!(algorithm.is_dry());
                 assert!(parameters.is_empty());
                 assert!(window_catalog(algorithm).is_empty());
+            } else {
+                assert_eq!(algorithm, Algorithm::SourceFilterVocoder);
+                assert_eq!(parameters.len(), 3);
+                assert!(window_catalog(algorithm).is_empty());
+                assert!(
+                    parameters
+                        .iter()
+                        .all(|parameter| parameter.description.len() > 80)
+                );
             }
         }
         assert!(
@@ -467,13 +506,11 @@ mod tests {
                 &["input_taper", "window_overlap_percent"][..],
             ),
             (
-                Algorithm::EvolvingIr,
+                Algorithm::SourceFilterVocoder,
                 &[
-                    "input_taper",
-                    "window_overlap_percent",
-                    "evolving_a_mix",
-                    "evolving_mix_motion",
-                    "evolving_crop_position",
+                    "vocoder_transfer",
+                    "vocoder_envelope_width_hz",
+                    "vocoder_transient_protection",
                 ][..],
             ),
             (

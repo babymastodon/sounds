@@ -2,6 +2,7 @@ use std::f32::consts::PI;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
+use rayon::join;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +12,7 @@ use crate::audio::{AudioClip, INPUT_FRAMES, INPUT_SECONDS, SAMPLE_RATE};
 #[serde(rename_all = "snake_case")]
 pub enum Algorithm {
     WindowedConvolution,
-    EvolvingIr,
+    SourceFilterVocoder,
     ChunkCrossfade,
     FullConvolution,
     DryA,
@@ -21,7 +22,7 @@ pub enum Algorithm {
 impl Algorithm {
     pub const ALL: [Self; 6] = [
         Self::WindowedConvolution,
-        Self::EvolvingIr,
+        Self::SourceFilterVocoder,
         Self::ChunkCrossfade,
         Self::FullConvolution,
         Self::DryA,
@@ -31,7 +32,7 @@ impl Algorithm {
     pub fn slug(self) -> &'static str {
         match self {
             Self::WindowedConvolution => "windowed_convolution",
-            Self::EvolvingIr => "evolving_ir",
+            Self::SourceFilterVocoder => "source_filter_vocoder",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
             Self::DryA => "dry_a",
@@ -42,7 +43,7 @@ impl Algorithm {
     pub fn title(self) -> &'static str {
         match self {
             Self::WindowedConvolution => "Windowed convolution",
-            Self::EvolvingIr => "Dual evolving impulse response",
+            Self::SourceFilterVocoder => "Source-filter vocoder",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
             Self::DryA => "Dry source A",
@@ -58,10 +59,11 @@ impl Algorithm {
                  crossfades use positive-coherence-aware power normalization to prevent correlated \
                  grain swelling and hop-rate buzz, with one gradual fade at each complete edge."
             }
-            Self::EvolvingIr => {
-                "Convolves synchronized A/B windows, crops the result into separate A-sized and \
-                 B-sized carriers, then blends them through power-normalized root-Hann synthesis. \
-                 Carrier balance shifts which source's local timing dominates."
+            Self::SourceFilterVocoder => {
+                "Uses clip A as the excitation and temporal source while clip B supplies a smooth \
+                 short-time spectral envelope. A's phase, amplitude motion, and protected transients \
+                 remain in place as B's time-varying broad-band color is transferred by a dense \
+                 overlap-add source-filter vocoder."
             }
             Self::ChunkCrossfade => {
                 "Convolves independent synchronized chunks, crops each result to its timeline slot, \
@@ -89,7 +91,7 @@ impl Algorithm {
     pub fn rank(self) -> u8 {
         match self {
             Self::WindowedConvolution => 1,
-            Self::EvolvingIr => 2,
+            Self::SourceFilterVocoder => 2,
             Self::ChunkCrossfade => 3,
             Self::FullConvolution => 4,
             Self::DryA => 5,
@@ -98,10 +100,7 @@ impl Algorithm {
     }
 
     pub fn uses_windows(self) -> bool {
-        matches!(
-            self,
-            Self::WindowedConvolution | Self::EvolvingIr | Self::ChunkCrossfade
-        )
+        matches!(self, Self::WindowedConvolution | Self::ChunkCrossfade)
     }
 
     pub fn is_dry(self) -> bool {
@@ -125,14 +124,16 @@ pub const MAX_WINDOW_SECONDS: f32 = 30.00;
 pub const DEFAULT_A_WINDOW_SECONDS: f32 = 5.00;
 pub const DEFAULT_B_WINDOW_SECONDS: f32 = 5.00;
 const DEFAULT_INPUT_TAPER: f32 = 0.50;
+const VOCODER_FRAME_FRAMES: usize = 1_024;
+const VOCODER_HOP_FRAMES: usize = VOCODER_FRAME_FRAMES / 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AlgorithmParameters {
     pub input_taper: f32,
-    pub evolving_a_mix: f32,
-    pub evolving_mix_motion: f32,
-    pub evolving_crop_position: f32,
+    pub vocoder_transfer: f32,
+    pub vocoder_envelope_width_hz: f32,
+    pub vocoder_transient_protection: f32,
     pub window_overlap_percent: f32,
     pub chunk_crossfade_percent: f32,
     pub chunk_crop_position: f32,
@@ -146,9 +147,9 @@ impl Default for AlgorithmParameters {
     fn default() -> Self {
         Self {
             input_taper: DEFAULT_INPUT_TAPER,
-            evolving_a_mix: 0.50,
-            evolving_mix_motion: 0.0,
-            evolving_crop_position: 0.50,
+            vocoder_transfer: 0.85,
+            vocoder_envelope_width_hz: 900.0,
+            vocoder_transient_protection: 0.65,
             window_overlap_percent: 75.0,
             chunk_crossfade_percent: 50.0,
             chunk_crop_position: 0.50,
@@ -167,14 +168,17 @@ impl AlgorithmParameters {
                 validate_range("input taper", self.input_taper, 0.05, 1.0)?;
                 validate_range("window overlap", self.window_overlap_percent, 5.0, 80.0)?;
             }
-            Algorithm::EvolvingIr => {
-                validate_range("input taper", self.input_taper, 0.05, 1.0)?;
-                validate_range("window overlap", self.window_overlap_percent, 5.0, 80.0)?;
-                validate_range("A carrier mix", self.evolving_a_mix, 0.0, 1.0)?;
-                validate_range("carrier mix motion", self.evolving_mix_motion, -1.0, 1.0)?;
+            Algorithm::SourceFilterVocoder => {
+                validate_range("envelope transfer", self.vocoder_transfer, 0.0, 1.5)?;
                 validate_range(
-                    "carrier crop position",
-                    self.evolving_crop_position,
+                    "envelope width",
+                    self.vocoder_envelope_width_hz,
+                    100.0,
+                    3_000.0,
+                )?;
+                validate_range(
+                    "transient protection",
+                    self.vocoder_transient_protection,
                     0.0,
                     1.0,
                 )?;
@@ -287,13 +291,9 @@ pub fn render_algorithm_cancellable(
             parameters.input_taper,
             cancelled,
         )?,
-        Algorithm::EvolvingIr => render_evolving_ir(
-            clip_a,
-            clip_b,
-            require_windows(config, algorithm)?,
-            parameters,
-            cancelled,
-        )?,
+        Algorithm::SourceFilterVocoder => {
+            render_source_filter_vocoder(clip_a, clip_b, parameters, cancelled)?
+        }
         Algorithm::ChunkCrossfade => render_chunk_crossfade(
             clip_a,
             clip_b,
@@ -411,7 +411,17 @@ fn render_windowed_samples(
         .map(|&center| (convolution_center(center), local_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
-    let power_profile = convolution_power_profile(&mut convolver, a_frames, b_frames, input_taper)?;
+    let a_taper = tukey_window(a_frames, input_taper);
+    let b_taper = tukey_window(b_frames, input_taper);
+    let power_profile = convolution_power_profile_from_tapers(&mut convolver, &a_taper, &b_taper)?;
+    let synthesis_profile = (0..local_frames)
+        .map(|index| synthesis_weight(index, local_frames))
+        .collect::<Vec<_>>();
+    let power_amplitude = synthesis_profile
+        .iter()
+        .zip(&power_profile)
+        .map(|(&weight, &power)| weight * power.sqrt())
+        .collect::<Vec<_>>();
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
     let mut previous_local: Option<(isize, Vec<f32>)> = None;
@@ -421,14 +431,8 @@ fn render_windowed_samples(
             bail!("render cancelled");
         }
         let output_center = convolution_center(source_center);
-        let (a, b) = extract_pair_samples(
-            clip_a,
-            clip_b,
-            source_center,
-            a_frames,
-            b_frames,
-            input_taper,
-        );
+        let (a, b) =
+            extract_pair_samples_with_tapers(clip_a, clip_b, source_center, &a_taper, &b_taper);
         let mut local = convolver.convolve(&a, &b)?;
         previous_gain = Some(level_local(
             &mut local,
@@ -436,11 +440,22 @@ fn render_windowed_samples(
             0.085,
             level_smoothing,
         ));
-        overlap.add_crossfade(output_center, &local, &power_profile, 1.0);
+        overlap.add_crossfade_precomputed(
+            output_center,
+            &local,
+            &synthesis_profile,
+            &power_amplitude,
+            1.0,
+        );
         if let Some((previous_center, previous)) = previous_local.take() {
             let coherence =
                 aligned_positive_coherence(&previous, previous_center, &local, output_center);
-            overlap.add_coherence_pair(previous_center, output_center, &power_profile, coherence);
+            overlap.add_coherence_pair_precomputed(
+                previous_center,
+                output_center,
+                &power_amplitude,
+                coherence,
+            );
         }
         previous_local = Some((output_center, local));
     }
@@ -468,72 +483,209 @@ fn apply_half_hann_edge_fade(samples: &mut [f32], frames: usize) {
     }
 }
 
-fn render_evolving_ir(
+fn render_source_filter_vocoder(
     clip_a: &AudioClip,
     clip_b: &AudioClip,
-    config: WindowConfig,
     parameters: AlgorithmParameters,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<f32>> {
-    let a_frames = seconds_to_frames(config.clip_a_seconds);
-    let b_frames = seconds_to_frames(config.clip_b_seconds);
-    let hop_frames = seconds_to_frames(config.hop_seconds);
-    let mut convolver = LocalConvolver::new(a_frames + b_frames - 1);
-    let full_power =
-        convolution_power_profile(&mut convolver, a_frames, b_frames, parameters.input_taper)?;
-    let a_power = normalized_power_profile(positioned_crop(
-        &full_power,
-        a_frames,
-        parameters.evolving_crop_position,
-    ));
-    let b_power = normalized_power_profile(positioned_crop(
-        &full_power,
-        b_frames,
-        parameters.evolving_crop_position,
-    ));
-    let render_centers = centers(hop_frames);
-    let mut placements = Vec::new();
-    for &center in &render_centers {
-        let mix = evolving_mix(parameters, center);
-        if mix > 0.0 {
-            placements.push((center as isize, a_frames));
-        }
-        if mix < 1.0 {
-            placements.push((center as isize, b_frames));
-        }
-    }
-    let mut overlap = OverlapBuffer::for_placements(&placements);
-    let mut gain_a = None;
-    let mut gain_b = None;
-    let level_smoothing = gain_smoothing_for_hop(hop_frames);
-    for center in render_centers {
-        if cancelled() {
+    let window = (0..VOCODER_FRAME_FRAMES)
+        .map(|index| {
+            let phase = (index as f32 + 0.5) / VOCODER_FRAME_FRAMES as f32;
+            (0.5 - 0.5 * (2.0 * PI * phase).cos()).sqrt()
+        })
+        .collect::<Vec<_>>();
+    let envelope_radius = ((parameters.vocoder_envelope_width_hz * VOCODER_FRAME_FRAMES as f32
+        / SAMPLE_RATE as f32)
+        .round() as usize)
+        .max(1);
+    let mut vocoder = SourceFilterVocoder::new();
+    let mut output = vec![0.0_f32; clip_a.samples.len()];
+    let mut overlap_weight = vec![0.0_f32; output.len()];
+    let first_start = -(VOCODER_FRAME_FRAMES as isize - VOCODER_HOP_FRAMES as isize);
+    let mut frame_start = first_start;
+    let mut frame_index = 0_usize;
+    while frame_start < output.len() as isize {
+        if frame_index.is_multiple_of(16) && cancelled() {
             bail!("render cancelled");
         }
-        let (a, b) = extract_pair(
-            clip_a,
-            clip_b,
-            center,
-            a_frames,
-            b_frames,
-            parameters.input_taper,
-        );
-        let local = convolver.convolve(&a, &b)?;
-        let mix = evolving_mix(parameters, center);
-        if mix > 0.0 {
-            let mut a_carrier =
-                positioned_crop(&local, a_frames, parameters.evolving_crop_position);
-            gain_a = Some(level_local(&mut a_carrier, gain_a, 0.078, level_smoothing));
-            overlap.add_crossfade(center as isize, &a_carrier, &a_power, mix);
-        }
-        if mix < 1.0 {
-            let mut b_carrier =
-                positioned_crop(&local, b_frames, parameters.evolving_crop_position);
-            gain_b = Some(level_local(&mut b_carrier, gain_b, 0.078, level_smoothing));
-            overlap.add_crossfade(center as isize, &b_carrier, &b_power, 1.0 - mix);
+        vocoder.process_frame(
+            &clip_a.samples,
+            &clip_b.samples,
+            frame_start,
+            &window,
+            envelope_radius,
+            parameters,
+            &mut output,
+            &mut overlap_weight,
+        )?;
+        frame_start += VOCODER_HOP_FRAMES as isize;
+        frame_index += 1;
+    }
+    for (sample, weight) in output.iter_mut().zip(overlap_weight) {
+        if weight > 1.0e-8 {
+            *sample /= weight;
+        } else {
+            *sample = 0.0;
         }
     }
-    Ok(overlap.finish().samples)
+    Ok(output)
+}
+
+struct SourceFilterVocoder {
+    forward: std::sync::Arc<dyn RealToComplex<f32>>,
+    inverse: std::sync::Arc<dyn ComplexToReal<f32>>,
+    a_time: Vec<f32>,
+    b_time: Vec<f32>,
+    output_time: Vec<f32>,
+    a_spectrum: Vec<realfft::num_complex::Complex32>,
+    b_spectrum: Vec<realfft::num_complex::Complex32>,
+    a_log_magnitude: Vec<f32>,
+    b_log_magnitude: Vec<f32>,
+    a_envelope: Vec<f32>,
+    b_envelope: Vec<f32>,
+    previous_a_magnitude: Vec<f32>,
+    previous_log_ratio: Vec<f32>,
+    prefix: Vec<f64>,
+    initialized: bool,
+}
+
+impl SourceFilterVocoder {
+    fn new() -> Self {
+        let mut planner = RealFftPlanner::<f32>::new();
+        let forward = planner.plan_fft_forward(VOCODER_FRAME_FRAMES);
+        let inverse = planner.plan_fft_inverse(VOCODER_FRAME_FRAMES);
+        let bins = VOCODER_FRAME_FRAMES / 2 + 1;
+        Self {
+            a_time: forward.make_input_vec(),
+            b_time: forward.make_input_vec(),
+            output_time: inverse.make_output_vec(),
+            a_spectrum: forward.make_output_vec(),
+            b_spectrum: forward.make_output_vec(),
+            a_log_magnitude: vec![0.0; bins],
+            b_log_magnitude: vec![0.0; bins],
+            a_envelope: vec![0.0; bins],
+            b_envelope: vec![0.0; bins],
+            previous_a_magnitude: vec![0.0; bins],
+            previous_log_ratio: vec![0.0; bins],
+            prefix: vec![0.0; bins + 1],
+            forward,
+            inverse,
+            initialized: false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_frame(
+        &mut self,
+        source_a: &[f32],
+        source_b: &[f32],
+        frame_start: isize,
+        window: &[f32],
+        envelope_radius: usize,
+        parameters: AlgorithmParameters,
+        output: &mut [f32],
+        overlap_weight: &mut [f32],
+    ) -> Result<()> {
+        for index in 0..VOCODER_FRAME_FRAMES {
+            let source_index = frame_start + index as isize;
+            let (a, b) = if (0..source_a.len() as isize).contains(&source_index) {
+                (
+                    source_a[source_index as usize],
+                    source_b[source_index as usize],
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            self.a_time[index] = a * window[index];
+            self.b_time[index] = b * window[index];
+        }
+        self.forward
+            .process(&mut self.a_time, &mut self.a_spectrum)?;
+        self.forward
+            .process(&mut self.b_time, &mut self.b_spectrum)?;
+
+        let mut positive_flux = 0.0_f64;
+        let mut a_power = 0.0_f64;
+        for bin in 0..self.a_spectrum.len() {
+            let a_magnitude = self.a_spectrum[bin].norm();
+            let b_magnitude = self.b_spectrum[bin].norm();
+            let increase = (a_magnitude - self.previous_a_magnitude[bin]).max(0.0);
+            positive_flux += f64::from(increase) * f64::from(increase);
+            a_power += f64::from(a_magnitude) * f64::from(a_magnitude);
+            self.previous_a_magnitude[bin] = a_magnitude;
+            self.a_log_magnitude[bin] = (a_magnitude + 1.0e-5).ln();
+            self.b_log_magnitude[bin] = (b_magnitude + 1.0e-5).ln();
+        }
+        smooth_frequency(
+            &self.a_log_magnitude,
+            &mut self.a_envelope,
+            envelope_radius,
+            &mut self.prefix,
+        );
+        smooth_frequency(
+            &self.b_log_magnitude,
+            &mut self.b_envelope,
+            envelope_radius,
+            &mut self.prefix,
+        );
+
+        let transient = if a_power > 1.0e-16 {
+            (positive_flux / a_power).sqrt().min(1.0) as f32
+        } else {
+            0.0
+        };
+        let transient_transfer = parameters.vocoder_transfer
+            * (1.0 - parameters.vocoder_transient_protection * transient);
+        let attack = 1.0 - (-(VOCODER_HOP_FRAMES as f32) / (0.008 * SAMPLE_RATE as f32)).exp();
+        let release = 1.0 - (-(VOCODER_HOP_FRAMES as f32) / (0.040 * SAMPLE_RATE as f32)).exp();
+        let maximum_log_ratio = 8.0_f32.ln();
+        for bin in 0..self.a_spectrum.len() {
+            let target = (self.b_envelope[bin] - self.a_envelope[bin])
+                .clamp(-maximum_log_ratio, maximum_log_ratio);
+            if !self.initialized {
+                self.previous_log_ratio[bin] = target;
+            } else {
+                let amount = if target > self.previous_log_ratio[bin] {
+                    attack
+                } else {
+                    release
+                };
+                self.previous_log_ratio[bin] += amount * (target - self.previous_log_ratio[bin]);
+            }
+            let applied = (self.previous_log_ratio[bin] * transient_transfer)
+                .clamp(-maximum_log_ratio, maximum_log_ratio);
+            self.a_spectrum[bin] *= applied.exp();
+        }
+        self.initialized = true;
+        self.inverse
+            .process(&mut self.a_spectrum, &mut self.output_time)?;
+
+        let inverse_scale = 1.0 / VOCODER_FRAME_FRAMES as f32;
+        for index in 0..VOCODER_FRAME_FRAMES {
+            let output_index = frame_start + index as isize;
+            if !(0..output.len() as isize).contains(&output_index) {
+                continue;
+            }
+            let output_index = output_index as usize;
+            let weight = window[index] * window[index];
+            output[output_index] += self.output_time[index] * inverse_scale * window[index];
+            overlap_weight[output_index] += weight;
+        }
+        Ok(())
+    }
+}
+
+fn smooth_frequency(input: &[f32], output: &mut [f32], radius: usize, prefix: &mut [f64]) {
+    prefix[0] = 0.0;
+    for (index, &value) in input.iter().enumerate() {
+        prefix[index + 1] = prefix[index] + f64::from(value);
+    }
+    for (index, value) in output.iter_mut().enumerate() {
+        let start = index.saturating_sub(radius);
+        let end = (index + radius + 1).min(input.len());
+        *value = ((prefix[end] - prefix[start]) / (end - start) as f64) as f32;
+    }
 }
 
 fn render_chunk_crossfade(
@@ -556,13 +708,26 @@ fn render_chunk_crossfade(
         .map(|&center| (center as isize, block_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
-    let full_power =
-        convolution_power_profile(&mut convolver, a_frames, b_frames, parameters.input_taper)?;
+    let a_taper = tukey_window(a_frames, parameters.input_taper);
+    let b_taper = tukey_window(b_frames, parameters.input_taper);
+    let full_power = convolution_power_profile_from_tapers(&mut convolver, &a_taper, &b_taper)?;
     let block_power = normalized_power_profile(positioned_crop(
         &full_power,
         block_frames,
         parameters.chunk_crop_position,
     ));
+    let equal_power_profile = (0..block_frames)
+        .map(|index| {
+            let edge = index.min(block_frames - 1 - index);
+            if edge >= crossfade_frames {
+                1.0
+            } else {
+                ((edge as f32 / crossfade_frames.max(1) as f32) * PI / 2.0)
+                    .sin()
+                    .max(1.0e-5)
+            }
+        })
+        .collect::<Vec<_>>();
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
     let level_smoothing = gain_smoothing_for_hop(slot_frames);
@@ -570,13 +735,12 @@ fn render_chunk_crossfade(
         if cancelled() {
             bail!("render cancelled");
         }
-        let (a, b) = extract_pair(
-            clip_a,
-            clip_b,
+        let (a, b) = extract_pair_samples_with_tapers(
+            &clip_a.samples,
+            &clip_b.samples,
             center,
-            a_frames,
-            b_frames,
-            parameters.input_taper,
+            &a_taper,
+            &b_taper,
         );
         let local = convolver.convolve(&a, &b)?;
         let mut block = positioned_crop(
@@ -590,7 +754,12 @@ fn render_chunk_crossfade(
             0.085,
             level_smoothing,
         ));
-        overlap.add_equal_power(center as isize, &block, &block_power, crossfade_frames);
+        overlap.add_equal_power_precomputed(
+            center as isize,
+            &block,
+            &block_power,
+            &equal_power_profile,
+        );
     }
     Ok(overlap.finish().samples)
 }
@@ -607,6 +776,7 @@ fn seconds_to_frames_allow_zero(seconds: f32) -> usize {
     (seconds * SAMPLE_RATE as f32).round().max(0.0) as usize
 }
 
+#[cfg(test)]
 fn centers(hop_frames: usize) -> Vec<usize> {
     centers_for_length(INPUT_FRAMES, hop_frames)
 }
@@ -647,54 +817,43 @@ fn normalized_source_position(
     (phase * (source_frames - 1) as f64).round() as usize
 }
 
-fn extract_pair(
-    clip_a: &AudioClip,
-    clip_b: &AudioClip,
-    output_center: usize,
-    a_frames: usize,
-    b_frames: usize,
-    input_taper: f32,
-) -> (Vec<f32>, Vec<f32>) {
-    extract_pair_samples(
-        &clip_a.samples,
-        &clip_b.samples,
-        output_center,
-        a_frames,
-        b_frames,
-        input_taper,
-    )
+#[cfg(test)]
+fn extract_window(source: &[f32], center: isize, frames: usize, input_taper: f32) -> Vec<f32> {
+    let taper = tukey_window(frames, input_taper);
+    extract_window_with_taper(source, center, &taper)
 }
 
-fn extract_pair_samples(
+fn extract_window_with_taper(source: &[f32], center: isize, taper: &[f32]) -> Vec<f32> {
+    let frames = taper.len();
+    let half = frames as isize / 2;
+    let mut output = Vec::with_capacity(frames);
+    for (index, &weight) in taper.iter().enumerate() {
+        let source_index = reflect_index(center + index as isize - half, source.len());
+        output.push(source[source_index] * weight);
+    }
+    output
+}
+
+fn extract_pair_samples_with_tapers(
     clip_a: &[f32],
     clip_b: &[f32],
     output_center: usize,
-    a_frames: usize,
-    b_frames: usize,
-    input_taper: f32,
+    a_taper: &[f32],
+    b_taper: &[f32],
 ) -> (Vec<f32>, Vec<f32>) {
     let output_frames = clip_a.len().max(clip_b.len());
     let a_center = normalized_source_position(output_center, output_frames, clip_a.len()) as isize;
     let b_center = normalized_source_position(output_center, output_frames, clip_b.len()) as isize;
     (
-        extract_window(clip_a, a_center, a_frames, input_taper),
-        extract_window(clip_b, b_center, b_frames, input_taper),
+        extract_window_with_taper(clip_a, a_center, a_taper),
+        extract_window_with_taper(clip_b, b_center, b_taper),
     )
 }
 
-fn evolving_mix(parameters: AlgorithmParameters, center: usize) -> f32 {
-    let phase = center as f32 / (INPUT_FRAMES - 1) as f32;
-    (parameters.evolving_a_mix + parameters.evolving_mix_motion * (phase - 0.5)).clamp(0.0, 1.0)
-}
-
-fn extract_window(source: &[f32], center: isize, frames: usize, input_taper: f32) -> Vec<f32> {
-    let half = frames as isize / 2;
-    let mut output = Vec::with_capacity(frames);
-    for index in 0..frames {
-        let source_index = reflect_index(center + index as isize - half, source.len());
-        output.push(source[source_index] * tukey(index, frames, input_taper));
-    }
-    output
+fn tukey_window(frames: usize, alpha: f32) -> Vec<f32> {
+    (0..frames)
+        .map(|index| tukey(index, frames, alpha))
+        .collect()
 }
 
 fn reflect_index(mut index: isize, length: usize) -> usize {
@@ -732,18 +891,30 @@ fn positioned_crop(input: &[f32], length: usize, position: f32) -> Vec<f32> {
     input[start..start + length].to_vec()
 }
 
+#[cfg(test)]
 fn convolution_power_profile(
     convolver: &mut LocalConvolver,
     a_frames: usize,
     b_frames: usize,
     input_taper: f32,
 ) -> Result<Vec<f32>> {
-    let analysis_power = |frames| {
-        (0..frames)
-            .map(|index| tukey(index, frames, input_taper).powi(2))
+    let a_taper = tukey_window(a_frames, input_taper);
+    let b_taper = tukey_window(b_frames, input_taper);
+    convolution_power_profile_from_tapers(convolver, &a_taper, &b_taper)
+}
+
+fn convolution_power_profile_from_tapers(
+    convolver: &mut LocalConvolver,
+    a_taper: &[f32],
+    b_taper: &[f32],
+) -> Result<Vec<f32>> {
+    let analysis_power = |taper: &[f32]| {
+        taper
+            .iter()
+            .map(|sample| sample * sample)
             .collect::<Vec<_>>()
     };
-    let profile = convolver.convolve(&analysis_power(a_frames), &analysis_power(b_frames))?;
+    let profile = convolver.convolve(&analysis_power(a_taper), &analysis_power(b_taper))?;
     Ok(normalized_power_profile(profile))
 }
 
@@ -797,19 +968,30 @@ struct LocalConvolver {
     left_time: Vec<f32>,
     right_time: Vec<f32>,
     output_time: Vec<f32>,
+    left_spectrum: Vec<realfft::num_complex::Complex32>,
+    right_spectrum: Vec<realfft::num_complex::Complex32>,
 }
 
 impl LocalConvolver {
     fn new(output_frames: usize) -> Self {
         let fft_len = output_frames.next_power_of_two();
         let mut planner = RealFftPlanner::<f32>::new();
+        let forward = planner.plan_fft_forward(fft_len);
+        let inverse = planner.plan_fft_inverse(fft_len);
+        let left_time = forward.make_input_vec();
+        let right_time = forward.make_input_vec();
+        let output_time = inverse.make_output_vec();
+        let left_spectrum = forward.make_output_vec();
+        let right_spectrum = forward.make_output_vec();
         Self {
             fft_len,
-            forward: planner.plan_fft_forward(fft_len),
-            inverse: planner.plan_fft_inverse(fft_len),
-            left_time: vec![0.0; fft_len],
-            right_time: vec![0.0; fft_len],
-            output_time: vec![0.0; fft_len],
+            forward,
+            inverse,
+            left_time,
+            right_time,
+            output_time,
+            left_spectrum,
+            right_spectrum,
         }
     }
 
@@ -822,17 +1004,18 @@ impl LocalConvolver {
         self.right_time.fill(0.0);
         self.left_time[..left.len()].copy_from_slice(left);
         self.right_time[..right.len()].copy_from_slice(right);
-        let mut left_spectrum = self.forward.make_output_vec();
-        let mut right_spectrum = self.forward.make_output_vec();
-        self.forward
-            .process(&mut self.left_time, &mut left_spectrum)?;
-        self.forward
-            .process(&mut self.right_time, &mut right_spectrum)?;
-        for (left, right) in left_spectrum.iter_mut().zip(&right_spectrum) {
+        let forward = &self.forward;
+        let (left_result, right_result) = join(
+            || forward.process(&mut self.left_time, &mut self.left_spectrum),
+            || forward.process(&mut self.right_time, &mut self.right_spectrum),
+        );
+        left_result?;
+        right_result?;
+        for (left, right) in self.left_spectrum.iter_mut().zip(&self.right_spectrum) {
             *left *= *right;
         }
         self.inverse
-            .process(&mut left_spectrum, &mut self.output_time)?;
+            .process(&mut self.left_spectrum, &mut self.output_time)?;
         let scale = 1.0 / self.fft_len as f32;
         let output = self.output_time[..output_frames]
             .iter()
@@ -874,21 +1057,45 @@ impl OverlapBuffer {
         }
     }
 
+    #[cfg(test)]
     fn add_crossfade(&mut self, center: isize, local: &[f32], power_profile: &[f32], mix: f32) {
         assert_eq!(local.len(), power_profile.len());
+        let synthesis_profile = (0..local.len())
+            .map(|index| synthesis_weight(index, local.len()))
+            .collect::<Vec<_>>();
+        let power_amplitude = synthesis_profile
+            .iter()
+            .zip(power_profile)
+            .map(|(&weight, &power)| weight * power.sqrt())
+            .collect::<Vec<_>>();
+        self.add_crossfade_precomputed(center, local, &synthesis_profile, &power_amplitude, mix);
+    }
+
+    fn add_crossfade_precomputed(
+        &mut self,
+        center: isize,
+        local: &[f32],
+        synthesis_profile: &[f32],
+        power_amplitude: &[f32],
+        mix: f32,
+    ) {
+        assert_eq!(local.len(), synthesis_profile.len());
+        assert_eq!(local.len(), power_amplitude.len());
         let start = center - local.len() as isize / 2;
-        for (index, (&sample, &local_power)) in local.iter().zip(power_profile).enumerate() {
+        for (index, &sample) in local.iter().enumerate() {
             let output_index = start + index as isize - self.start_frame;
             if !(0..self.samples.len() as isize).contains(&output_index) {
                 continue;
             }
-            let weight = synthesis_weight(index, local.len()) * mix;
+            let weight = synthesis_profile[index] * mix;
+            let amplitude = power_amplitude[index] * mix;
             self.samples[output_index as usize] += sample * weight;
-            self.power_weights[output_index as usize] += weight * weight * local_power;
-            self.amplitude_weights[output_index as usize] += weight * local_power.sqrt();
+            self.power_weights[output_index as usize] += amplitude * amplitude;
+            self.amplitude_weights[output_index as usize] += amplitude;
         }
     }
 
+    #[cfg(test)]
     fn add_coherence_pair(
         &mut self,
         previous_center: isize,
@@ -896,7 +1103,25 @@ impl OverlapBuffer {
         power_profile: &[f32],
         coherence: f32,
     ) {
-        let length = power_profile.len();
+        let power_amplitude = (0..power_profile.len())
+            .map(|index| synthesis_weight(index, power_profile.len()) * power_profile[index].sqrt())
+            .collect::<Vec<_>>();
+        self.add_coherence_pair_precomputed(
+            previous_center,
+            current_center,
+            &power_amplitude,
+            coherence,
+        );
+    }
+
+    fn add_coherence_pair_precomputed(
+        &mut self,
+        previous_center: isize,
+        current_center: isize,
+        power_amplitude: &[f32],
+        coherence: f32,
+    ) {
+        let length = power_amplitude.len();
         let previous_start = previous_center - length as isize / 2;
         let current_start = current_center - length as isize / 2;
         let overlap_start = previous_start.max(current_start);
@@ -904,39 +1129,29 @@ impl OverlapBuffer {
         for frame in overlap_start..overlap_end {
             let previous_index = (frame - previous_start) as usize;
             let current_index = (frame - current_start) as usize;
-            let previous_amplitude =
-                synthesis_weight(previous_index, length) * power_profile[previous_index].sqrt();
-            let current_amplitude =
-                synthesis_weight(current_index, length) * power_profile[current_index].sqrt();
-            let pair_weight = previous_amplitude * current_amplitude;
+            let pair_weight = power_amplitude[previous_index] * power_amplitude[current_index];
             let output_index = (frame - self.start_frame) as usize;
             self.coherence_sum[output_index] += coherence * pair_weight;
             self.coherence_weights[output_index] += pair_weight;
         }
     }
 
-    fn add_equal_power(
+    fn add_equal_power_precomputed(
         &mut self,
         center: isize,
         local: &[f32],
         power_profile: &[f32],
-        fade_frames: usize,
+        weights: &[f32],
     ) {
         assert_eq!(local.len(), power_profile.len());
+        assert_eq!(local.len(), weights.len());
         let start = center - local.len() as isize / 2;
         for (index, (&sample, &local_power)) in local.iter().zip(power_profile).enumerate() {
             let output_index = start + index as isize - self.start_frame;
             if !(0..self.samples.len() as isize).contains(&output_index) {
                 continue;
             }
-            let edge = index.min(local.len() - 1 - index);
-            let weight = if edge >= fade_frames {
-                1.0
-            } else {
-                ((edge as f32 / fade_frames.max(1) as f32) * PI / 2.0)
-                    .sin()
-                    .max(1.0e-5)
-            };
+            let weight = weights[index];
             self.samples[output_index as usize] += sample * weight;
             self.power_weights[output_index as usize] += weight * weight * local_power;
         }
@@ -999,7 +1214,11 @@ fn aligned_positive_coherence(
     let mut dot = 0.0_f64;
     let mut previous_power = 0.0_f64;
     let mut current_power = 0.0_f64;
-    for frame in overlap_start..overlap_end {
+    // Adjacent local convolutions are already band-limited and the estimate is
+    // smoothed over 20 ms, so full-rate correlation adds cost without useful
+    // temporal detail. A prime 31-frame stride retains a 1.55 kHz control
+    // bandwidth without locking onto common power-of-two tone periods.
+    for frame in (overlap_start..overlap_end).step_by(31) {
         let previous_sample = previous[(frame - previous_start) as usize] as f64;
         let current_sample = current[(frame - current_start) as usize] as f64;
         dot += previous_sample * current_sample;
@@ -1107,8 +1326,11 @@ mod tests {
         assert!(parameters.validate(Algorithm::WindowedConvolution).is_err());
 
         parameters = AlgorithmParameters::default();
-        parameters.evolving_crop_position = 1.1;
-        assert!(parameters.validate(Algorithm::EvolvingIr).is_err());
+        parameters.vocoder_transfer = 1.6;
+        assert!(parameters.validate(Algorithm::SourceFilterVocoder).is_err());
+        parameters = AlgorithmParameters::default();
+        parameters.vocoder_envelope_width_hz = 50.0;
+        assert!(parameters.validate(Algorithm::SourceFilterVocoder).is_err());
     }
 
     #[test]
@@ -1468,24 +1690,167 @@ mod tests {
     }
 
     #[test]
-    fn crop_position_and_carrier_motion_cover_their_full_ranges() {
+    fn crop_position_covers_its_full_range() {
         let input = (0..10).map(|value| value as f32).collect::<Vec<_>>();
         assert_eq!(positioned_crop(&input, 4, 0.0), vec![0.0, 1.0, 2.0, 3.0]);
         assert_eq!(positioned_crop(&input, 4, 0.5), vec![3.0, 4.0, 5.0, 6.0]);
         assert_eq!(positioned_crop(&input, 4, 1.0), vec![6.0, 7.0, 8.0, 9.0]);
+    }
 
+    #[test]
+    fn vocoder_zero_transfer_reconstructs_a_with_exact_duration_and_phase() {
+        let frames = SAMPLE_RATE as usize;
+        let a = (0..frames)
+            .map(|index| {
+                let time = index as f32 / SAMPLE_RATE as f32;
+                0.35 * (2.0 * PI * 311.0 * time).sin() + 0.18 * (2.0 * PI * 2_017.0 * time).sin()
+            })
+            .collect::<Vec<_>>();
+        let b = (0..frames)
+            .map(|index| {
+                let time = index as f32 / SAMPLE_RATE as f32;
+                0.4 * (2.0 * PI * 733.0 * time).sin()
+            })
+            .collect::<Vec<_>>();
+        let clip_a = AudioClip {
+            id: "a".to_owned(),
+            samples: a.clone(),
+        };
+        let clip_b = AudioClip {
+            id: "b".to_owned(),
+            samples: b,
+        };
         let parameters = AlgorithmParameters {
-            evolving_mix_motion: 1.0,
+            vocoder_transfer: 0.0,
             ..AlgorithmParameters::default()
         };
-        assert!((evolving_mix(parameters, 0) - 0.0).abs() < 1.0e-6);
-        assert!((evolving_mix(parameters, INPUT_FRAMES - 1) - 1.0).abs() < 1.0e-6);
+        let output = render_source_filter_vocoder(&clip_a, &clip_b, parameters, &|| false).unwrap();
+        assert_eq!(output.len(), a.len());
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        let trim = VOCODER_FRAME_FRAMES;
+        let error = output[trim..output.len() - trim]
+            .iter()
+            .zip(&a[trim..a.len() - trim])
+            .map(|(&actual, &expected)| {
+                let difference = f64::from(actual - expected);
+                difference * difference
+            })
+            .sum::<f64>()
+            / (output.len() - 2 * trim) as f64;
+        assert!(error.sqrt() < 1.0e-5, "reconstruction RMS error {error}");
+    }
+
+    #[test]
+    fn vocoder_transfers_b_envelope_while_retaining_a_phase() {
+        let frames = SAMPLE_RATE as usize;
+        let signal = |low_gain: f32, high_gain: f32| {
+            (0..frames)
+                .map(|index| {
+                    let time = index as f32 / SAMPLE_RATE as f32;
+                    low_gain * (2.0 * PI * 500.0 * time).sin()
+                        + high_gain * (2.0 * PI * 6_000.0 * time).sin()
+                })
+                .collect::<Vec<_>>()
+        };
+        let a = signal(0.3, 0.3);
+        let clip_a = AudioClip {
+            id: "a".to_owned(),
+            samples: a.clone(),
+        };
+        let clip_b = AudioClip {
+            id: "b".to_owned(),
+            samples: signal(0.55, 0.025),
+        };
+        let parameters = AlgorithmParameters {
+            vocoder_transfer: 1.0,
+            vocoder_envelope_width_hz: 100.0,
+            vocoder_transient_protection: 0.0,
+            ..AlgorithmParameters::default()
+        };
+        let output = render_source_filter_vocoder(&clip_a, &clip_b, parameters, &|| false).unwrap();
+        let trim = VOCODER_FRAME_FRAMES;
+        let input_ratio = tone_amplitude(&a[trim..frames - trim], 500.0)
+            / tone_amplitude(&a[trim..frames - trim], 6_000.0);
+        let output_ratio = tone_amplitude(&output[trim..frames - trim], 500.0)
+            / tone_amplitude(&output[trim..frames - trim], 6_000.0).max(1.0e-9);
+        assert!(
+            output_ratio > input_ratio * 5.0,
+            "B envelope was not transferred: input {input_ratio}, output {output_ratio}"
+        );
+    }
+
+    #[test]
+    fn vocoder_keeps_a_burst_on_a_timeline_and_honors_cancellation() {
+        use std::cell::Cell;
+
+        let frames = SAMPLE_RATE as usize;
+        let mut a = vec![0.0; frames];
+        for (index, sample) in a[12_000..15_000].iter_mut().enumerate() {
+            *sample = 0.5 * (2.0 * PI * 900.0 * index as f32 / SAMPLE_RATE as f32).sin();
+        }
+        let b = (0..frames)
+            .map(|index| 0.4 * (2.0 * PI * 1_800.0 * index as f32 / SAMPLE_RATE as f32).sin())
+            .collect();
+        let clip_a = AudioClip {
+            id: "a".to_owned(),
+            samples: a,
+        };
+        let clip_b = AudioClip {
+            id: "b".to_owned(),
+            samples: b,
+        };
+        let output =
+            render_source_filter_vocoder(&clip_a, &clip_b, AlgorithmParameters::default(), &|| {
+                false
+            })
+            .unwrap();
+        let inside = output[11_000..16_000]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        let outside = output[..10_000]
+            .iter()
+            .chain(&output[17_000..])
+            .map(|sample| sample * sample)
+            .sum::<f32>();
+        assert!(
+            inside > outside * 20.0,
+            "A timing smeared outside its burst"
+        );
+
+        let polls = Cell::new(0);
+        let cancelled = || {
+            polls.set(polls.get() + 1);
+            polls.get() >= 2
+        };
+        assert!(
+            render_source_filter_vocoder(
+                &clip_a,
+                &clip_b,
+                AlgorithmParameters::default(),
+                &cancelled,
+            )
+            .is_err()
+        );
+        assert_eq!(polls.get(), 2);
     }
 
     #[test]
     fn chunk_overlap_uses_available_short_window_support() {
         assert_eq!(chunk_crossfade_frames(48_000, 96_000, 25.0), 12_000);
         assert_eq!(chunk_crossfade_frames(4_800, 1_440_000, 75.0), 3_600);
+    }
+
+    fn tone_amplitude(samples: &[f32], frequency: f32) -> f32 {
+        let mut real = 0.0_f64;
+        let mut imaginary = 0.0_f64;
+        for (index, &sample) in samples.iter().enumerate() {
+            let phase = 2.0 * std::f64::consts::PI * f64::from(frequency) * index as f64
+                / f64::from(SAMPLE_RATE);
+            real += f64::from(sample) * phase.cos();
+            imaginary -= f64::from(sample) * phase.sin();
+        }
+        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
     }
 
     fn assert_expected_power(a_frames: usize, b_frames: usize, hop: usize) {

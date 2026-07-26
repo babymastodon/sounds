@@ -14,14 +14,18 @@ pub enum Algorithm {
     EvolvingIr,
     ChunkCrossfade,
     FullConvolution,
+    DryA,
+    DryB,
 }
 
 impl Algorithm {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::WindowedConvolution,
         Self::EvolvingIr,
         Self::ChunkCrossfade,
         Self::FullConvolution,
+        Self::DryA,
+        Self::DryB,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -30,6 +34,8 @@ impl Algorithm {
             Self::EvolvingIr => "evolving_ir",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
+            Self::DryA => "dry_a",
+            Self::DryB => "dry_b",
         }
     }
 
@@ -39,6 +45,8 @@ impl Algorithm {
             Self::EvolvingIr => "Dual evolving impulse response",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
+            Self::DryA => "Dry source A",
+            Self::DryB => "Dry source B",
         }
     }
 
@@ -65,6 +73,16 @@ impl Algorithm {
                  operation. Each selected cut receives a 20 ms edge fade, both segments default \
                  to the complete 61-second sources, and the complete A + B - 1 result is retained."
             }
+            Self::DryA => {
+                "Plays the complete conditioned clip A exactly as it enters the convolution \
+                 methods. No convolution, output saturation, or second level-normalization pass \
+                 is applied, making this a direct 61-second source-listening reference."
+            }
+            Self::DryB => {
+                "Plays the complete conditioned clip B exactly as it enters the convolution \
+                 methods. No convolution, output saturation, or second level-normalization pass \
+                 is applied, making this a direct 61-second source-listening reference."
+            }
         }
     }
 
@@ -74,7 +92,20 @@ impl Algorithm {
             Self::EvolvingIr => 2,
             Self::ChunkCrossfade => 3,
             Self::FullConvolution => 4,
+            Self::DryA => 5,
+            Self::DryB => 6,
         }
+    }
+
+    pub fn uses_windows(self) -> bool {
+        matches!(
+            self,
+            Self::WindowedConvolution | Self::EvolvingIr | Self::ChunkCrossfade
+        )
+    }
+
+    pub fn is_dry(self) -> bool {
+        matches!(self, Self::DryA | Self::DryB)
     }
 }
 
@@ -93,16 +124,16 @@ pub const MIN_WINDOW_SECONDS: f32 = 0.10;
 pub const MAX_WINDOW_SECONDS: f32 = 30.00;
 pub const DEFAULT_A_WINDOW_SECONDS: f32 = 5.00;
 pub const DEFAULT_B_WINDOW_SECONDS: f32 = 5.00;
+const DEFAULT_INPUT_TAPER: f32 = 0.50;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AlgorithmParameters {
-    pub taper: f32,
+    pub input_taper: f32,
     pub evolving_a_mix: f32,
     pub evolving_mix_motion: f32,
     pub evolving_crop_position: f32,
     pub window_overlap_percent: f32,
-    pub window_b_offset_seconds: f32,
     pub chunk_crossfade_percent: f32,
     pub chunk_crop_position: f32,
     pub full_a_offset_seconds: f32,
@@ -114,12 +145,11 @@ pub struct AlgorithmParameters {
 impl Default for AlgorithmParameters {
     fn default() -> Self {
         Self {
-            taper: 0.50,
+            input_taper: DEFAULT_INPUT_TAPER,
             evolving_a_mix: 0.50,
             evolving_mix_motion: 0.0,
             evolving_crop_position: 0.50,
             window_overlap_percent: 75.0,
-            window_b_offset_seconds: 0.0,
             chunk_crossfade_percent: 50.0,
             chunk_crop_position: 0.50,
             full_a_offset_seconds: 0.0,
@@ -134,12 +164,11 @@ impl AlgorithmParameters {
     pub fn validate(self, algorithm: Algorithm) -> Result<Self> {
         match algorithm {
             Algorithm::WindowedConvolution => {
-                validate_range("window taper", self.taper, 0.05, 1.0)?;
+                validate_range("input taper", self.input_taper, 0.05, 1.0)?;
                 validate_range("window overlap", self.window_overlap_percent, 5.0, 80.0)?;
-                validate_window_scan(self)?;
             }
             Algorithm::EvolvingIr => {
-                validate_range("window taper", self.taper, 0.05, 1.0)?;
+                validate_range("input taper", self.input_taper, 0.05, 1.0)?;
                 validate_range("window overlap", self.window_overlap_percent, 5.0, 80.0)?;
                 validate_range("A carrier mix", self.evolving_a_mix, 0.0, 1.0)?;
                 validate_range("carrier mix motion", self.evolving_mix_motion, -1.0, 1.0)?;
@@ -149,18 +178,11 @@ impl AlgorithmParameters {
                     0.0,
                     1.0,
                 )?;
-                validate_window_scan(self)?;
             }
             Algorithm::ChunkCrossfade => {
-                validate_range("window taper", self.taper, 0.05, 1.0)?;
+                validate_range("input taper", self.input_taper, 0.05, 1.0)?;
                 validate_range("chunk crossfade", self.chunk_crossfade_percent, 5.0, 75.0)?;
                 validate_range("chunk crop position", self.chunk_crop_position, 0.0, 1.0)?;
-                validate_range(
-                    "clip B timeline offset",
-                    self.window_b_offset_seconds,
-                    -30.0,
-                    30.0,
-                )?;
             }
             Algorithm::FullConvolution => {
                 validate_segment(
@@ -174,18 +196,10 @@ impl AlgorithmParameters {
                     self.full_b_duration_seconds,
                 )?;
             }
+            Algorithm::DryA | Algorithm::DryB => {}
         }
         Ok(self)
     }
-}
-
-fn validate_window_scan(parameters: AlgorithmParameters) -> Result<()> {
-    validate_range(
-        "clip B timeline offset",
-        parameters.window_b_offset_seconds,
-        -30.0,
-        30.0,
-    )
 }
 
 fn validate_range(label: &str, value: f32, minimum: f32, maximum: f32) -> Result<()> {
@@ -270,7 +284,7 @@ pub fn render_algorithm_cancellable(
             clip_a,
             clip_b,
             require_windows(config, algorithm)?,
-            parameters,
+            parameters.input_taper,
             cancelled,
         )?,
         Algorithm::EvolvingIr => render_evolving_ir(
@@ -288,6 +302,8 @@ pub fn render_algorithm_cancellable(
             cancelled,
         )?,
         Algorithm::FullConvolution => render_full(clip_a, clip_b, parameters, cancelled)?,
+        Algorithm::DryA => clip_a.samples.clone(),
+        Algorithm::DryB => clip_b.samples.clone(),
     };
     if output.is_empty() {
         bail!("{} returned an empty waveform", algorithm.slug());
@@ -350,7 +366,7 @@ fn render_windowed(
     clip_a: &AudioClip,
     clip_b: &AudioClip,
     config: WindowConfig,
-    parameters: AlgorithmParameters,
+    input_taper: f32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<f32>> {
     let a_frames = seconds_to_frames(config.clip_a_seconds);
@@ -362,7 +378,7 @@ fn render_windowed(
         a_frames,
         b_frames,
         hop_frames,
-        parameters,
+        input_taper,
         cancelled,
     )?;
     // Normalization intentionally removes missing-neighbor attenuation. Restore
@@ -382,7 +398,7 @@ fn render_windowed_samples(
     a_frames: usize,
     b_frames: usize,
     hop_frames: usize,
-    parameters: AlgorithmParameters,
+    input_taper: f32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TimelineRender> {
     if clip_a.len() != clip_b.len() || clip_a.is_empty() {
@@ -395,7 +411,7 @@ fn render_windowed_samples(
         .map(|&center| (convolution_center(center), local_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
-    let power_profile = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
+    let power_profile = convolution_power_profile(&mut convolver, a_frames, b_frames, input_taper)?;
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
     let mut previous_local: Option<(isize, Vec<f32>)> = None;
@@ -411,7 +427,7 @@ fn render_windowed_samples(
             source_center,
             a_frames,
             b_frames,
-            parameters,
+            input_taper,
         );
         let mut local = convolver.convolve(&a, &b)?;
         previous_gain = Some(level_local(
@@ -463,7 +479,8 @@ fn render_evolving_ir(
     let b_frames = seconds_to_frames(config.clip_b_seconds);
     let hop_frames = seconds_to_frames(config.hop_seconds);
     let mut convolver = LocalConvolver::new(a_frames + b_frames - 1);
-    let full_power = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
+    let full_power =
+        convolution_power_profile(&mut convolver, a_frames, b_frames, parameters.input_taper)?;
     let a_power = normalized_power_profile(positioned_crop(
         &full_power,
         a_frames,
@@ -493,7 +510,14 @@ fn render_evolving_ir(
         if cancelled() {
             bail!("render cancelled");
         }
-        let (a, b) = extract_pair(clip_a, clip_b, center, a_frames, b_frames, parameters);
+        let (a, b) = extract_pair(
+            clip_a,
+            clip_b,
+            center,
+            a_frames,
+            b_frames,
+            parameters.input_taper,
+        );
         let local = convolver.convolve(&a, &b)?;
         let mix = evolving_mix(parameters, center);
         if mix > 0.0 {
@@ -532,7 +556,8 @@ fn render_chunk_crossfade(
         .map(|&center| (center as isize, block_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
-    let full_power = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
+    let full_power =
+        convolution_power_profile(&mut convolver, a_frames, b_frames, parameters.input_taper)?;
     let block_power = normalized_power_profile(positioned_crop(
         &full_power,
         block_frames,
@@ -545,7 +570,14 @@ fn render_chunk_crossfade(
         if cancelled() {
             bail!("render cancelled");
         }
-        let (a, b) = extract_pair(clip_a, clip_b, center, a_frames, b_frames, parameters);
+        let (a, b) = extract_pair(
+            clip_a,
+            clip_b,
+            center,
+            a_frames,
+            b_frames,
+            parameters.input_taper,
+        );
         let local = convolver.convolve(&a, &b)?;
         let mut block = positioned_crop(
             &local,
@@ -621,7 +653,7 @@ fn extract_pair(
     output_center: usize,
     a_frames: usize,
     b_frames: usize,
-    parameters: AlgorithmParameters,
+    input_taper: f32,
 ) -> (Vec<f32>, Vec<f32>) {
     extract_pair_samples(
         &clip_a.samples,
@@ -629,7 +661,7 @@ fn extract_pair(
         output_center,
         a_frames,
         b_frames,
-        parameters,
+        input_taper,
     )
 }
 
@@ -639,20 +671,15 @@ fn extract_pair_samples(
     output_center: usize,
     a_frames: usize,
     b_frames: usize,
-    parameters: AlgorithmParameters,
+    input_taper: f32,
 ) -> (Vec<f32>, Vec<f32>) {
     let output_frames = clip_a.len().max(clip_b.len());
     let a_center = normalized_source_position(output_center, output_frames, clip_a.len()) as isize;
-    let b_center = normalized_source_position(output_center, output_frames, clip_b.len()) as isize
-        + seconds_to_frames_signed(parameters.window_b_offset_seconds);
+    let b_center = normalized_source_position(output_center, output_frames, clip_b.len()) as isize;
     (
-        extract_window(clip_a, a_center, a_frames, parameters.taper),
-        extract_window(clip_b, b_center, b_frames, parameters.taper),
+        extract_window(clip_a, a_center, a_frames, input_taper),
+        extract_window(clip_b, b_center, b_frames, input_taper),
     )
-}
-
-fn seconds_to_frames_signed(seconds: f32) -> isize {
-    (seconds * SAMPLE_RATE as f32).round() as isize
 }
 
 fn evolving_mix(parameters: AlgorithmParameters, center: usize) -> f32 {
@@ -660,12 +687,12 @@ fn evolving_mix(parameters: AlgorithmParameters, center: usize) -> f32 {
     (parameters.evolving_a_mix + parameters.evolving_mix_motion * (phase - 0.5)).clamp(0.0, 1.0)
 }
 
-fn extract_window(source: &[f32], center: isize, frames: usize, taper: f32) -> Vec<f32> {
+fn extract_window(source: &[f32], center: isize, frames: usize, input_taper: f32) -> Vec<f32> {
     let half = frames as isize / 2;
     let mut output = Vec::with_capacity(frames);
     for index in 0..frames {
         let source_index = reflect_index(center + index as isize - half, source.len());
-        output.push(source[source_index] * tukey(index, frames, taper));
+        output.push(source[source_index] * tukey(index, frames, input_taper));
     }
     output
 }
@@ -709,11 +736,11 @@ fn convolution_power_profile(
     convolver: &mut LocalConvolver,
     a_frames: usize,
     b_frames: usize,
-    parameters: AlgorithmParameters,
+    input_taper: f32,
 ) -> Result<Vec<f32>> {
     let analysis_power = |frames| {
         (0..frames)
-            .map(|index| tukey(index, frames, parameters.taper).powi(2))
+            .map(|index| tukey(index, frames, input_taper).powi(2))
             .collect::<Vec<_>>()
     };
     let profile = convolver.convolve(&analysis_power(a_frames), &analysis_power(b_frames))?;
@@ -1018,6 +1045,19 @@ mod tests {
     }
 
     #[test]
+    fn input_taper_controls_only_the_extracted_analysis_edges() {
+        let source = vec![1.0; 64];
+        let nearly_rectangular = extract_window(&source, 32, 32, 0.05);
+        let full_hann = extract_window(&source, 32, 32, 1.0);
+        assert_eq!(nearly_rectangular[0], 0.0);
+        assert_eq!(full_hann[0], 0.0);
+        assert!((nearly_rectangular[8] - 1.0).abs() < 1.0e-6);
+        assert!(full_hann[8] < 0.6);
+        assert!((nearly_rectangular[16] - 1.0).abs() < 1.0e-6);
+        assert!((full_hann[16] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
     fn continuous_windows_validate_and_derive_hop() {
         let config = WindowConfig::new(0.37, 1.29, 35.0).unwrap();
         assert_eq!(config.clip_a_seconds, 0.37);
@@ -1272,7 +1312,7 @@ mod tests {
                 a_window,
                 b_window,
                 hop,
-                AlgorithmParameters::default(),
+                DEFAULT_INPUT_TAPER,
                 &|| false,
             )
             .unwrap();
@@ -1324,16 +1364,9 @@ mod tests {
                 .into_iter()
                 .map(|sample| sample * amplitude)
                 .collect::<Vec<_>>();
-            let rendered = render_windowed_samples(
-                &a,
-                &b,
-                256,
-                512,
-                128,
-                AlgorithmParameters::default(),
-                &|| false,
-            )
-            .unwrap();
+            let rendered =
+                render_windowed_samples(&a, &b, 256, 512, 128, DEFAULT_INPUT_TAPER, &|| false)
+                    .unwrap();
             assert!(rendered.samples.iter().all(|sample| sample.is_finite()));
             let peak = rendered
                 .samples
@@ -1362,16 +1395,9 @@ mod tests {
         ];
         for (a, b, label) in cases {
             let hop = 256;
-            let rendered = render_windowed_samples(
-                &a,
-                &b,
-                512,
-                1_024,
-                hop,
-                AlgorithmParameters::default(),
-                &|| false,
-            )
-            .unwrap();
+            let rendered =
+                render_windowed_samples(&a, &b, 512, 1_024, hop, DEFAULT_INPUT_TAPER, &|| false)
+                    .unwrap();
             let seam_ratio = seam_difference_ratio(&rendered, frames, hop);
             assert!(rendered.samples.iter().all(|sample| sample.is_finite()));
             assert!(
@@ -1389,16 +1415,9 @@ mod tests {
             *sample *= 0.2 + 0.8 * index as f32 / (frames - 1) as f32;
         }
         let b = synthetic_noise(frames, 0xabcd_1234);
-        let rendered = render_windowed_samples(
-            &a,
-            &b,
-            512,
-            1_024,
-            256,
-            AlgorithmParameters::default(),
-            &|| false,
-        )
-        .unwrap();
+        let rendered =
+            render_windowed_samples(&a, &b, 512, 1_024, 256, DEFAULT_INPUT_TAPER, &|| false)
+                .unwrap();
         let trim = 2_048;
         let levels = block_rms(
             &rendered.samples[trim..rendered.samples.len() - trim],
@@ -1475,13 +1494,9 @@ mod tests {
             .map(|index| ((index * hop) as isize, local_frames))
             .collect::<Vec<_>>();
         let mut convolver = LocalConvolver::new(local_frames);
-        let profile = convolution_power_profile(
-            &mut convolver,
-            a_frames,
-            b_frames,
-            AlgorithmParameters::default(),
-        )
-        .unwrap();
+        let profile =
+            convolution_power_profile(&mut convolver, a_frames, b_frames, DEFAULT_INPUT_TAPER)
+                .unwrap();
         let mut overlap = OverlapBuffer::for_placements(&placements);
         let mut state = (a_frames as u64) << 32 | b_frames as u64;
         for &(center, _) in &placements {

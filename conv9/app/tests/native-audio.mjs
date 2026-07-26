@@ -70,6 +70,8 @@ try {
         source: audio?.currentSrc,
         path: audio?.dataset.path,
         loop: audio?.loop,
+        playbackRate: audio?.playbackRate,
+        playbackSpeedValue: document.querySelector("#playbackSpeedValue")?.textContent,
         title: document.querySelector("#renderTitle")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
@@ -113,11 +115,13 @@ try {
   assert.match(initial.source, /^blob:tauri:/);
   assert.match(initial.path, /windowed_convolution\/5\.00x5\.00\//);
   assert.equal(initial.loop, true);
+  assert.equal(initial.playbackRate, 1);
+  assert.equal(initial.playbackSpeedValue, "1.00×");
   assert.equal(initial.title, "windowed");
   assert.match(initial.status, /^rendered \d+ ms$/);
   assert.equal(initial.sourceACount, 48);
   assert.equal(initial.sourceBCount, 48);
-  assert.equal(initial.methodCount, 4);
+  assert.equal(initial.methodCount, 6);
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
   assert.equal(initial.seekDisabled, false);
@@ -126,6 +130,21 @@ try {
   assert.equal(initial.errorHidden, true, initial.error);
   assert.ok(initial.viewport.scrollWidth <= initial.viewport.width, "native horizontal overflow");
   assert.ok(initial.viewport.scrollHeight <= initial.viewport.height, "native vertical overflow");
+
+  const changedPlaybackRate = await execute(port, sessionId, `
+    const speed = document.querySelector("#playbackSpeed");
+    speed.value = "1.35";
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    const result = {
+      rate: document.querySelector("#audio").playbackRate,
+      value: document.querySelector("#playbackSpeedValue").textContent
+    };
+    speed.value = "1";
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    return result;
+  `);
+  assert.equal(changedPlaybackRate.rate, 1.35);
+  assert.equal(changedPlaybackRate.value, "1.35×");
 
   await execute(
     port,
@@ -385,6 +404,46 @@ try {
   const fullSignal = analyzePcm16(await readFile(capturePath));
   assert.ok(fullSignal.rms > 0.003, `full convolution is silent: RMS ${fullSignal.rms}`);
   assert.ok(fullSignal.peak > 0.01, `full convolution peak is too low: ${fullSignal.peak}`);
+
+  for (const [algorithm, title] of [
+    ["dry_a", "dry a"],
+    ["dry_b", "dry b"],
+  ]) {
+    await execute(
+      port,
+      sessionId,
+      `document.querySelector(
+        "#algorithmButtons button[data-value='${algorithm}']"
+      ).click(); return true;`,
+    );
+    const dry = await poll(async () => {
+      const value = await execute(port, sessionId, `
+        const audio = document.querySelector("#audio");
+        return {
+          duration: audio.duration,
+          path: audio.dataset.path,
+          title: document.querySelector("#renderTitle")?.textContent,
+          toolInputs: document.querySelectorAll("#methodTools input").length,
+          tools: document.querySelector("#methodTools")?.textContent,
+          status: document.querySelector("#renderStatus")?.textContent,
+          error: document.querySelector("#errorPanel")?.textContent,
+          errorHidden: document.querySelector("#errorPanel")?.hidden
+        };
+      `);
+      return value.path.includes(`/${algorithm}/source`) &&
+        value.status?.startsWith("rendered ") ? value : undefined;
+    }, 90_000);
+    assert.ok(Math.abs(dry.duration - 61) < 0.02, `${algorithm} duration was ${dry.duration}`);
+    assert.equal(dry.title, title);
+    assert.equal(dry.toolInputs, 0);
+    assert.match(dry.tools, /no configurable parameters/);
+    assert.equal(dry.errorHidden, true, dry.error);
+  }
+  await captureMonitor();
+  const drySignal = analyzePcm16(await readFile(capturePath));
+  assert.ok(drySignal.rms > 0.003, `dry source is silent: RMS ${drySignal.rms}`);
+  assert.ok(drySignal.peak > 0.01, `dry source peak is too low: ${drySignal.peak}`);
+
   assert.equal(existsSync(retiredOutputDir), false, "native renders must not create outputs");
   console.log(
     `conv9 native audio passed: windowed ${decibels(signal.rms).toFixed(2)} dBFS RMS, ` +

@@ -147,9 +147,9 @@ try {
 
   assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
-  assert.equal(await page.locator("#algorithmButtons button").count(), 4, "algorithm count");
+  assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
-  assert.equal(await page.locator("#methodTools .tool-control").count(), 5);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 4);
   assert.equal(
     await page.getByLabel("A window exact value").getAttribute("min"),
     "0.1",
@@ -160,6 +160,7 @@ try {
   );
   assert.equal(await page.getByLabel("A window exact value").inputValue(), "5.00");
   assert.equal(await page.getByLabel("B window exact value").inputValue(), "5.00");
+  assert.equal(await page.getByLabel("input taper exact value").inputValue(), "0.50");
   assert.equal(await page.getByLabel("overlap exact value").inputValue(), "75");
   const defaultSliderPosition = Number(
     await page.locator("input[type='range'][aria-label='A window']").inputValue(),
@@ -187,6 +188,10 @@ try {
     await page.locator("input[type='range'][aria-label='A window']").getAttribute("title"),
     /seconds are extracted from clip A.*softened logarithmic curve/,
   );
+  assert.match(
+    await page.getByLabel("input taper exact value").getAttribute("title"),
+    /both extracted input windows.*synthesis crossfading remains separate/,
+  );
   assert.equal(await page.locator("#errorPanel").isHidden(), true, "error panel hidden");
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: process.env.CONV9_TEST_SCREENSHOT });
@@ -205,7 +210,7 @@ try {
   await page.getByRole("button", { name: "chunks", exact: true }).click();
   await waitForPath(page, "/chunk_crossfade/5.00x5.00");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
-  assert.equal(await page.locator("#methodTools .tool-control").count(), 6);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 5);
   assert.equal(await page.getByLabel("overlap exact value").inputValue(), "50");
   assert.match(
     await page.getByLabel("overlap exact value").getAttribute("title"),
@@ -246,6 +251,17 @@ try {
   await waitForPath(page, "/full_convolution/a10.00+20.00_b0.00+15.00");
   await expectContains(page, "#windowReadout", "out 35.00s");
 
+  await page.getByRole("button", { name: "dry a", exact: true }).click();
+  await waitForPath(page, "/dry_a/source");
+  assert.equal(await page.locator("#methodTools .window-control").count(), 0);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 0);
+  await expectContains(page, "#methodTools", "no configurable parameters");
+  await expectContains(page, "#windowReadout", "source a / out 61.00s");
+
+  await page.getByRole("button", { name: "dry b", exact: true }).click();
+  await waitForPath(page, "/dry_b/source");
+  await expectContains(page, "#windowReadout", "source b / out 61.00s");
+
   await page.getByRole("button", { name: "Play" }).click();
   await page.waitForFunction(() => !document.querySelector("#audio").paused);
   const beforeSwitch = await audioTime(page);
@@ -272,6 +288,17 @@ try {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   assert.equal(await page.locator("#audio").evaluate((audio) => audio.volume), 0.37);
+  assert.equal(await page.locator("#audio").evaluate((audio) => audio.playbackRate), 1);
+  await page.locator("#playbackSpeed").evaluate((input) => {
+    input.value = "1.35";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  assert.equal(await page.locator("#audio").evaluate((audio) => audio.playbackRate), 1.35);
+  assert.equal(await page.locator("#playbackSpeedValue").textContent(), "1.35×");
+  assert.equal(
+    await page.locator("#playbackSpeed").getAttribute("aria-valuetext"),
+    "1.35 times",
+  );
 
   await page.locator("#seek").evaluate((input) => {
     input.value = "11";
@@ -341,23 +368,6 @@ async function testCatalog() {
         "Sets how many seconds are extracted from clip B at each synchronized timeline position. Longer windows retain more context but create more temporal smear.",
     },
   ];
-  const crossfadeShape = {
-    id: "taper",
-    label: "edge taper",
-    minimum: 0.05,
-    maximum: 1,
-    step: 0.01,
-    default: 0.5,
-    unit: "",
-    description:
-      "Sets the Tukey taper on each input window; synthesis uses a fixed root-Hann shape with automatic power normalization.",
-  };
-  const analysisTaper = {
-    ...crossfadeShape,
-    label: "edge taper",
-    description:
-      "Sets the Tukey taper on each independent input chunk; chunk blending is controlled by the separate overlap percentage.",
-  };
   const parameter = (id, label, minimum, maximum, step, defaultValue, unit = "") => ({
     id,
     label,
@@ -369,8 +379,8 @@ async function testCatalog() {
     description: {
       window_overlap_percent:
         "Sets how much of the shorter analysis window overlaps its next position and controls render density.",
-      window_b_offset_seconds:
-        "Offsets clip B's scan relative to clip A, with reflected source boundaries and no dry audio.",
+      input_taper:
+        "Sets the Tukey taper applied to both extracted input windows before each convolution; synthesis crossfading remains separate.",
       evolving_a_mix:
         "Blends the cropped carriers: zero keeps B, one keeps A, and one half weights both equally.",
       evolving_mix_motion:
@@ -392,7 +402,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 6,
+    schema_version: 7,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -407,9 +417,8 @@ async function testCatalog() {
         rank: 1,
         windows: windows(),
         parameters: [
-          crossfadeShape,
+          parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
           parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
-          parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
         ],
       },
       {
@@ -420,9 +429,8 @@ async function testCatalog() {
         rank: 2,
         windows: windows(),
         parameters: [
-          crossfadeShape,
+          parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
           parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
-          parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
           parameter("evolving_a_mix", "A carrier", 0, 1, 0.01, 0.5),
           parameter("evolving_mix_motion", "carrier motion", -1, 1, 0.01, 0),
           parameter("evolving_crop_position", "crop position", 0, 1, 0.01, 0.5),
@@ -436,9 +444,8 @@ async function testCatalog() {
         rank: 3,
         windows: windows(),
         parameters: [
-          analysisTaper,
+          parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
           parameter("chunk_crossfade_percent", "overlap", 5, 75, 1, 50, "%"),
-          parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
           parameter("chunk_crop_position", "crop position", 0, 1, 0.01, 0.5),
         ],
       },
@@ -455,6 +462,24 @@ async function testCatalog() {
           parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
           parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
         ],
+      },
+      {
+        id: "dry_a",
+        title: "Dry source A",
+        description:
+          "Plays the complete conditioned clip A without convolution, output saturation, or a second level-normalization pass.",
+        rank: 5,
+        windows: [],
+        parameters: [],
+      },
+      {
+        id: "dry_b",
+        title: "Dry source B",
+        description:
+          "Plays the complete conditioned clip B without convolution, output saturation, or a second level-normalization pass.",
+        rank: 6,
+        windows: [],
+        parameters: [],
       },
     ],
   };

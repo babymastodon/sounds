@@ -7,8 +7,8 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::audio::{
-    AudioClip, AudioMetrics, INPUT_SECONDS, SAMPLE_RATE, condition_output, encode_pcm16,
-    read_prepared_clip,
+    AudioClip, AudioMetrics, INPUT_SECONDS, SAMPLE_RATE, condition_output, encode_pcm16, measure,
+    read_prepared_clip, validate_metrics,
 };
 use crate::dsp::{
     Algorithm, AlgorithmParameters, DEFAULT_A_WINDOW_SECONDS, DEFAULT_B_WINDOW_SECONDS,
@@ -108,7 +108,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 6,
+            schema_version: 7,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -135,9 +135,7 @@ impl OnDemandRenderer {
     ) -> Result<RenderedAudio> {
         let algorithm = Algorithm::from_str(&selection.algorithm)?;
         let parameters = selection.parameters.validate(algorithm)?;
-        let config = if algorithm == Algorithm::FullConvolution {
-            None
-        } else {
+        let config = if algorithm.uses_windows() {
             let clip_a_seconds = selection
                 .windows
                 .get("clip_a_seconds")
@@ -157,6 +155,8 @@ impl OnDemandRenderer {
                     parameters.window_overlap_percent,
                 )?
             })
+        } else {
+            None
         };
         let left = self.clip(&selection.left_id)?;
         let right = self.clip(&selection.right_id)?;
@@ -185,7 +185,13 @@ impl OnDemandRenderer {
         if cancelled() {
             bail!("render cancelled");
         }
-        let metrics = condition_output(&mut output)?;
+        let metrics = if algorithm.is_dry() {
+            let metrics = measure(&output);
+            validate_metrics(&metrics, output.len(), "dry source output")?;
+            metrics
+        } else {
+            condition_output(&mut output)?
+        };
         let wav = encode_pcm16(&output)?;
         Ok(RenderedAudio {
             wav,
@@ -227,7 +233,7 @@ impl OnDemandRenderer {
 }
 
 fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
-    if algorithm == Algorithm::FullConvolution {
+    if !algorithm.uses_windows() {
         return Vec::new();
     }
     vec![
@@ -260,17 +266,17 @@ fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
 
 fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
     let defaults = AlgorithmParameters::default();
-    let analysis_taper = || ParameterCatalogEntry {
-        id: "taper",
-        label: "edge taper",
+    let input_taper = || ParameterCatalogEntry {
+        id: "input_taper",
+        label: "input taper",
         minimum: 0.05,
         maximum: 1.0,
         step: 0.01,
-        default: defaults.taper,
+        default: defaults.input_taper,
         unit: "",
-        description: "Sets the Tukey taper applied to each input window before convolution. Higher \
-                      values soften more of each edge and reduce spectral leakage. Synthesis uses \
-                      a fixed root-Hann shape with automatic power normalization.",
+        description: "Sets the Tukey taper applied to both extracted input windows before each \
+                      convolution. 0.05 is nearly rectangular, 0.50 is the balanced default, and \
+                      1.0 is a full Hann window; synthesis crossfading remains separate.",
     };
     let overlap = || ParameterCatalogEntry {
         id: "window_overlap_percent",
@@ -284,26 +290,11 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                       default provides four-way synthesis coverage after each result is placed at \
                       tA+tB. Lower values expose grain and buzz; higher values cost more FFT blocks.",
     };
-    let timeline_offset = || ParameterCatalogEntry {
-        id: "window_b_offset_seconds",
-        label: "B offset",
-        minimum: -30.0,
-        maximum: 30.0,
-        step: 0.1,
-        default: defaults.window_b_offset_seconds,
-        unit: "s",
-        description: "Offsets clip B's scan position relative to clip A at every window. Positive \
-                      values read B later and negative values read it earlier; reflected boundaries \
-                      preserve a continuous source without adding dry audio.",
-    };
     match algorithm {
-        Algorithm::WindowedConvolution => {
-            vec![analysis_taper(), overlap(), timeline_offset()]
-        }
+        Algorithm::WindowedConvolution => vec![input_taper(), overlap()],
         Algorithm::EvolvingIr => vec![
-            analysis_taper(),
+            input_taper(),
             overlap(),
-            timeline_offset(),
             ParameterCatalogEntry {
                 id: "evolving_a_mix",
                 label: "A carrier",
@@ -342,7 +333,7 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
             },
         ],
         Algorithm::ChunkCrossfade => vec![
-            analysis_taper(),
+            input_taper(),
             ParameterCatalogEntry {
                 id: "chunk_crossfade_percent",
                 label: "overlap",
@@ -355,7 +346,6 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               chunk, which is the convolution support available beyond the longer \
                               timeline slot. 50% is continuous by default; lower values expose seams.",
             },
-            timeline_offset(),
             ParameterCatalogEntry {
                 id: "chunk_crop_position",
                 label: "crop position",
@@ -419,6 +409,7 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               after the selected B offset.",
             },
         ],
+        Algorithm::DryA | Algorithm::DryB => Vec::new(),
     }
 }
 
@@ -431,7 +422,21 @@ mod tests {
         for algorithm in Algorithm::ALL {
             assert!(algorithm.description().len() > 100);
             let parameters = parameter_catalog(algorithm);
-            if algorithm == Algorithm::FullConvolution {
+            if algorithm.uses_windows() {
+                assert!(!parameters.is_empty());
+                assert!(
+                    parameters
+                        .iter()
+                        .all(|parameter| parameter.description.len() > 80)
+                );
+                let windows = window_catalog(algorithm);
+                assert_eq!(windows.len(), 2);
+                assert!(windows.iter().all(|window| {
+                    window.default == 5.0
+                        && window.scale == "soft_log"
+                        && window.description.len() > 100
+                }));
+            } else if algorithm == Algorithm::FullConvolution {
                 assert_eq!(parameters.len(), 4);
                 assert!(
                     parameters
@@ -440,20 +445,9 @@ mod tests {
                 );
                 assert!(window_catalog(algorithm).is_empty());
             } else {
-                assert!(!parameters.is_empty());
-                assert!(
-                    parameters
-                        .iter()
-                        .all(|parameter| parameter.description.len() > 80)
-                );
-                assert!(parameters.iter().any(|parameter| parameter.id == "taper"));
-                let windows = window_catalog(algorithm);
-                assert_eq!(windows.len(), 2);
-                assert!(windows.iter().all(|window| {
-                    window.default == 5.0
-                        && window.scale == "soft_log"
-                        && window.description.len() > 100
-                }));
+                assert!(algorithm.is_dry());
+                assert!(parameters.is_empty());
+                assert!(window_catalog(algorithm).is_empty());
             }
         }
         assert!(
@@ -461,18 +455,22 @@ mod tests {
                 .iter()
                 .any(|parameter| parameter.id == "chunk_crossfade_percent")
         );
+        assert!(Algorithm::ALL.into_iter().all(|algorithm| {
+            parameter_catalog(algorithm).iter().all(|parameter| {
+                parameter.id != "taper" && parameter.id != "window_b_offset_seconds"
+            })
+        }));
 
         let required = [
             (
                 Algorithm::WindowedConvolution,
-                &["taper", "window_overlap_percent", "window_b_offset_seconds"][..],
+                &["input_taper", "window_overlap_percent"][..],
             ),
             (
                 Algorithm::EvolvingIr,
                 &[
-                    "taper",
+                    "input_taper",
                     "window_overlap_percent",
-                    "window_b_offset_seconds",
                     "evolving_a_mix",
                     "evolving_mix_motion",
                     "evolving_crop_position",
@@ -481,9 +479,8 @@ mod tests {
             (
                 Algorithm::ChunkCrossfade,
                 &[
-                    "taper",
+                    "input_taper",
                     "chunk_crossfade_percent",
-                    "window_b_offset_seconds",
                     "chunk_crop_position",
                 ][..],
             ),

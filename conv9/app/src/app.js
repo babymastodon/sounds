@@ -13,6 +13,8 @@ const ui = {
   playButton: document.querySelector("#playButton"),
   seek: document.querySelector("#seek"),
   volume: document.querySelector("#volume"),
+  playbackSpeed: document.querySelector("#playbackSpeed"),
+  playbackSpeedValue: document.querySelector("#playbackSpeedValue"),
   currentTime: document.querySelector("#currentTime"),
   duration: document.querySelector("#duration"),
   waveform: document.querySelector("#waveform"),
@@ -142,7 +144,10 @@ function bindEvents() {
   });
   ui.audio.addEventListener("play", refreshPlayButton);
   ui.audio.addEventListener("pause", refreshPlayButton);
-  ui.audio.addEventListener("loadedmetadata", refreshTransport);
+  ui.audio.addEventListener("loadedmetadata", () => {
+    applyPlaybackSpeed();
+    refreshTransport();
+  });
   ui.audio.addEventListener("timeupdate", refreshTransport);
   ui.audio.addEventListener("ended", refreshPlayButton);
   ui.seek.addEventListener("input", () => {
@@ -151,7 +156,9 @@ function bindEvents() {
   ui.volume.addEventListener("input", () => {
     ui.audio.volume = Number(ui.volume.value);
   });
+  ui.playbackSpeed.addEventListener("input", applyPlaybackSpeed);
   ui.audio.volume = Number(ui.volume.value);
+  applyPlaybackSpeed();
   for (const canvas of [ui.waveform, ui.spectrogram]) {
     canvas.addEventListener("click", (event) => {
       if (!state.audioReady) return;
@@ -177,6 +184,15 @@ function bindEvents() {
       );
     }
   });
+}
+
+function applyPlaybackSpeed() {
+  const rate = Number(ui.playbackSpeed.value);
+  ui.audio.defaultPlaybackRate = rate;
+  ui.audio.playbackRate = rate;
+  ui.audio.preservesPitch = true;
+  ui.playbackSpeedValue.value = `${rate.toFixed(2)}×`;
+  ui.playbackSpeed.setAttribute("aria-valuetext", `${rate.toFixed(2)} times`);
 }
 
 function buildMethodTools() {
@@ -368,13 +384,19 @@ function updateMetadata(header, settings) {
   const clipASeconds = header.windows.clip_a_seconds;
   const clipBSeconds = header.windows.clip_b_seconds;
   if (clipASeconds == null) {
-    const parameters = settings.parameters;
-    ui.windowReadout.textContent =
-      `a ${parameters.full_a_duration_seconds.toFixed(1)}s @ ` +
-      `${parameters.full_a_offset_seconds.toFixed(1)}s / ` +
-      `b ${parameters.full_b_duration_seconds.toFixed(1)}s @ ` +
-      `${parameters.full_b_offset_seconds.toFixed(1)}s / ` +
-      `out ${header.metrics.duration_seconds.toFixed(2)}s`;
+    if (state.algorithm === "full_convolution") {
+      const parameters = settings.parameters;
+      ui.windowReadout.textContent =
+        `a ${parameters.full_a_duration_seconds.toFixed(1)}s @ ` +
+        `${parameters.full_a_offset_seconds.toFixed(1)}s / ` +
+        `b ${parameters.full_b_duration_seconds.toFixed(1)}s @ ` +
+        `${parameters.full_b_offset_seconds.toFixed(1)}s / ` +
+        `out ${header.metrics.duration_seconds.toFixed(2)}s`;
+    } else {
+      const source = state.algorithm === "dry_a" ? "a" : "b";
+      ui.windowReadout.textContent =
+        `source ${source} / out ${header.metrics.duration_seconds.toFixed(2)}s`;
+    }
   } else {
     let readout =
       `a ${clipASeconds.toFixed(2)}s / b ${clipBSeconds.toFixed(2)}s / ` +
@@ -386,7 +408,6 @@ function updateMetadata(header, settings) {
     } else {
       readout += ` / overlap ${settings.parameters.window_overlap_percent.toFixed(0)}%`;
     }
-    readout += ` / b shift ${settings.parameters.window_b_offset_seconds.toFixed(1)}s`;
     readout += ` / out ${header.metrics.duration_seconds.toFixed(2)}s`;
     ui.windowReadout.textContent = readout;
   }
@@ -414,6 +435,9 @@ function selectedAlgorithm() {
 
 function selectionSignature(request) {
   if (request.windows.clip_a_seconds == null) {
+    if (request.algorithm !== "full_convolution") {
+      return `${request.leftId}__${request.rightId}/${request.algorithm}/source`;
+    }
     const segments = `a${request.parameters.full_a_offset_seconds.toFixed(2)}+` +
       `${request.parameters.full_a_duration_seconds.toFixed(2)}_` +
       `b${request.parameters.full_b_offset_seconds.toFixed(2)}+` +
@@ -799,6 +823,8 @@ function shortAlgorithm(value) {
     evolving_ir: "ir",
     chunk_crossfade: "chunks",
     full_convolution: "full",
+    dry_a: "dry a",
+    dry_b: "dry b",
   }[value];
 }
 

@@ -517,7 +517,7 @@
       this.drawStatus("loading waveform…");
       this.previewTimer = setTimeout(async () => {
         try {
-          const preview = await this.loadPreview(source.id, 210);
+          const preview = await this.loadPreview(source.id, 420);
           SourceBrowser.previewCache.set(source.id, preview);
           if (generation === this.previewGeneration && this.opened) {
             this.paintPreview(source, preview);
@@ -557,6 +557,7 @@
         values: preview.spectrumMap,
         columns: preview.spectrumColumns,
         rows: preview.spectrumRows,
+        fftSize: preview.spectrumFftSize,
       });
       this.previewStats.replaceChildren(
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
@@ -596,18 +597,23 @@
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
-      context.strokeStyle = "#343735";
+      const top = peaks.map(([, maximum]) => (0.5 - maximum * 0.48) * height);
+      const bottom = peaks.map(([minimum]) => (0.5 - minimum * 0.48) * height);
       context.beginPath();
-      context.moveTo(0, height / 2 + 0.5);
-      context.lineTo(width, height / 2 + 0.5);
-      context.stroke();
-      context.strokeStyle = "#a9b68f";
-      context.beginPath();
-      peaks.forEach(([minimum, maximum], index) => {
+      top.forEach((y, index) => {
         const x = (index / Math.max(1, peaks.length - 1)) * width;
-        context.moveTo(x, (0.5 - maximum * 0.48) * height);
-        context.lineTo(x, (0.5 - minimum * 0.48) * height);
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
       });
+      for (let index = bottom.length - 1; index >= 0; index--) {
+        const x = (index / Math.max(1, bottom.length - 1)) * width;
+        context.lineTo(x, bottom[index]);
+      }
+      context.closePath();
+      context.fillStyle = "#929e7c";
+      context.fill();
+      context.strokeStyle = "#a9b68f";
+      context.lineWidth = 0.75;
       context.stroke();
     }
 
@@ -616,11 +622,12 @@
       const { context, pixelWidth, pixelHeight } = this.canvasSurface(
         this.previewSpectrumCanvas,
       );
-      const { values, columns, rows } = spectrumMap || {};
+      const { values, columns, rows, fftSize } = spectrumMap || {};
       if (
         !values?.length ||
         !Number.isInteger(columns) ||
         !Number.isInteger(rows) ||
+        !Number.isInteger(fftSize) ||
         values.length !== columns * rows
       ) {
         this.drawCanvasStatus(this.previewSpectrumCanvas, "fft map unavailable");
@@ -650,6 +657,7 @@
       context.putImageData(image, 0, 0);
       this.previewSpectrumCanvas.dataset.spectrumColumns = String(columns);
       this.previewSpectrumCanvas.dataset.spectrumRows = String(rows);
+      this.previewSpectrumCanvas.dataset.fftSize = String(fftSize);
     }
 
     scrollActiveIntoView(block) {

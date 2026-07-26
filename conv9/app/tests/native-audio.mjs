@@ -345,6 +345,7 @@ try {
         spectrumVariation: canvasVariation(spectrumCanvas),
         spectrumColumns: spectrumCanvas.dataset.spectrumColumns,
         spectrumRows: spectrumCanvas.dataset.spectrumRows,
+        previewFftSize: spectrumCanvas.dataset.fftSize,
         plotsContained:
           plots.top >= preview.top && plots.bottom <= preview.bottom &&
           plotContainment.length === 2 && plotContainment.every(Boolean),
@@ -367,8 +368,9 @@ try {
   assert.match(nativePreview.stats, /peak/);
   assert.ok(nativePreview.waveformVariation > 0, "native source preview waveform must vary");
   assert.ok(nativePreview.spectrumVariation > 0, "native source preview spectrum must vary");
-  assert.equal(nativePreview.spectrumColumns, "210", "native FFT map preserves time slices");
-  assert.equal(nativePreview.spectrumRows, "96", "native FFT map preserves frequency rows");
+  assert.equal(nativePreview.spectrumColumns, "420", "native FFT map preserves time slices");
+  assert.equal(nativePreview.spectrumRows, "192", "native FFT map preserves frequency rows");
+  assert.equal(nativePreview.previewFftSize, "8192", "native preview uses the higher FFT size");
   assert.equal(nativePreview.plotsContained, true, "native plots stay inside preview");
   assert.equal(nativePreview.subtitleCount, 0, "native preview has no subtitle");
   assert.equal(nativePreview.rowSubtitleCount, 0, "native result rows have no subtitles");

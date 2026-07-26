@@ -36,6 +36,7 @@ const state = {
   spectrumLayer: null,
   spectrumBaseLayer: null,
   spectrumWorkers: [],
+  spectrumWorkerPool: [],
   analysisSamples: null,
   analysisSampleRate: 0,
   performanceLog: [],
@@ -469,7 +470,10 @@ async function selectClip(preservePlayback, generation) {
     ui.renderStatus.textContent = "rendering…";
     drawLoading(ui.waveform, "rendering…");
     drawLoading(ui.spectrogram, "rendering…");
-    const rendered = await state.bridge.renderSelection(request);
+    const [rendered] = await Promise.all([
+      state.bridge.renderSelection(request),
+      warmSpectrumWorkers(generation),
+    ]);
     if (generation !== state.selectionGeneration) return;
     const bytes = normalizeBytes(rendered.wav);
     validateRenderedSelection(rendered.header, bytes, request);
@@ -802,9 +806,12 @@ async function renderSpectrogramLayer(canvas, samples, sampleRate, generation) {
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
   const { width, height } = layer;
-  // One analysis column per CSS pixel retains all visible time detail while
-  // avoiding duplicate FFT work solely for a high-DPI backing store.
-  const columns = Math.min(Math.max(1, Math.ceil(canvas.clientWidth || width)), 2880);
+  // Analyze at 1.05 columns per CSS pixel. This is sharper than the former
+  // one-column-per-pixel map without duplicating work for every high-DPI pixel.
+  const columns = Math.min(
+    Math.max(1, Math.ceil((canvas.clientWidth || width) * 1.05)),
+    3840,
+  );
   const fftSize = 16384;
   canvas.dataset.fftSize = String(fftSize);
   canvas.dataset.analysisColumns = String(columns);
@@ -823,41 +830,50 @@ async function renderSpectrogramLayer(canvas, samples, sampleRate, generation) {
     }
     rowBins[y] = binRows.get(bin);
   }
-  const workerCount = Math.min(
-    4,
-    columns,
-    Math.max(1, (navigator.hardwareConcurrency || 2) - 2),
-  );
+  const workerCount = Math.min(columns, spectrumWorkerCount());
   canvas.dataset.spectrumWorkers = String(workerCount);
   canvas.dataset.visibleBins = String(uniqueBins.length);
   const workerStarted = performance.now();
-  const jobs = [];
-  for (let workerIndex = 0; workerIndex < workerCount; workerIndex++) {
-    const columnStart = Math.floor((workerIndex * columns) / workerCount);
-    const columnEnd = Math.floor(((workerIndex + 1) * columns) / workerCount);
-    if (columnEnd <= columnStart) continue;
-    const firstCenter = spectrumColumnCenter(columnStart, columns, samples.length);
-    const lastCenter = spectrumColumnCenter(columnEnd - 1, columns, samples.length);
-    const sampleStart = Math.max(0, firstCenter - fftSize / 2);
-    const sampleEnd = Math.min(
-      samples.length,
-      lastCenter + fftSize / 2 + 1,
-    );
-    const sampleSlice = samples.slice(sampleStart, sampleEnd);
-    jobs.push(runSpectrumWorker({
-      columnStart,
-      columnEnd,
-      totalColumns: columns,
-      fftSize,
-      rowBins: Uint16Array.from(uniqueBins),
-      sampleRate,
-      totalSamples: samples.length,
-      sampleStart,
-      samples: sampleSlice,
-      generation,
-    }));
-  }
-  const stripes = await Promise.all(jobs);
+  const stripeCount = Math.min(columns, workerCount * 8);
+  canvas.dataset.spectrumStripes = String(stripeCount);
+  const stripes = new Array(stripeCount);
+  let nextStripe = 0;
+  const runQueue = async (workerIndex) => {
+    while (nextStripe < stripeCount) {
+      const stripeIndex = nextStripe++;
+      const columnStart = Math.floor((stripeIndex * columns) / stripeCount);
+      const columnEnd = Math.floor(((stripeIndex + 1) * columns) / stripeCount);
+      if (columnEnd <= columnStart) continue;
+      const firstCenter = spectrumColumnCenter(columnStart, columns, samples.length);
+      const lastCenter = spectrumColumnCenter(columnEnd - 1, columns, samples.length);
+      const sampleStart = Math.max(0, firstCenter - fftSize / 2);
+      const sampleEnd = Math.min(
+        samples.length,
+        lastCenter + fftSize / 2 + 1,
+      );
+      const sampleSlice = samples.slice(sampleStart, sampleEnd);
+      stripes[stripeIndex] = await runSpectrumWorker(
+        {
+          columnStart,
+          columnEnd,
+          totalColumns: columns,
+          fftSize,
+          rowBins: Uint16Array.from(uniqueBins),
+          sampleRate,
+          totalSamples: samples.length,
+          sampleStart,
+          samples: sampleSlice,
+          generation,
+        },
+        workerIndex,
+      );
+    }
+  };
+  await Promise.all(
+    Array.from({ length: workerCount }, (_, workerIndex) =>
+      runQueue(workerIndex),
+    ),
+  );
   if (generation !== state.selectionGeneration) return null;
   const magnitudes = new Float32Array(columns * uniqueBins.length);
   let maximum = -Infinity;
@@ -868,6 +884,12 @@ async function renderSpectrogramLayer(canvas, samples, sampleRate, generation) {
     maximum = Math.max(maximum, stripe.maximum);
     workerComputeMs += stripe.computeMs;
   }
+  const spectrumAlgorithm = stripes[0]?.algorithm || "unknown";
+  const butterflyReduction = stripes[0]?.butterflyReduction;
+  canvas.dataset.spectrumAlgorithm = spectrumAlgorithm;
+  canvas.dataset.butterflyReduction = String(
+    roundMilliseconds(butterflyReduction || 0),
+  );
   canvas.dataset.workerWallMs = roundMilliseconds(
     performance.now() - workerStarted,
   );
@@ -902,17 +924,52 @@ function spectrumColumnCenter(column, columns, sampleCount) {
   );
 }
 
-function runSpectrumWorker(parameters) {
+function spectrumWorkerCount() {
+  return Math.min(6, Math.max(1, navigator.hardwareConcurrency || 2));
+}
+
+function warmSpectrumWorkers(generation) {
+  return Promise.all(
+    Array.from({ length: spectrumWorkerCount() }, (_, workerIndex) =>
+      spectrumWorkerRequest(
+        workerIndex,
+        { type: "warm", fftSize: 16384 },
+        [],
+        generation,
+      ),
+    ),
+  );
+}
+
+function runSpectrumWorker(parameters, workerIndex) {
+  const rowBins = parameters.rowBins;
+  const samples = parameters.samples;
+  return spectrumWorkerRequest(
+    workerIndex,
+    {
+      ...parameters,
+      type: "spectrum",
+      rowBins: rowBins.buffer,
+      samples: samples.buffer,
+    },
+    [rowBins.buffer, samples.buffer],
+    parameters.generation,
+  );
+}
+
+function spectrumWorkerRequest(workerIndex, message, transfers, generation) {
   return new Promise((resolve, reject) => {
-    if (parameters.generation !== state.selectionGeneration) {
+    if (generation !== state.selectionGeneration) {
       reject(new DOMException("Spectrum render superseded", "AbortError"));
       return;
     }
-    const worker = new Worker("spectrum-worker.js");
-    const entry = { worker, reject };
+    const worker =
+      state.spectrumWorkerPool[workerIndex] ||
+      new Worker("spectrum-worker.js");
+    state.spectrumWorkerPool[workerIndex] = worker;
+    const entry = { worker, workerIndex, reject };
     state.spectrumWorkers.push(entry);
     const finish = () => {
-      worker.terminate();
       state.spectrumWorkers = state.spectrumWorkers.filter(
         (candidate) => candidate !== entry,
       );
@@ -923,26 +980,24 @@ function runSpectrumWorker(parameters) {
     };
     worker.onerror = (event) => {
       finish();
+      worker.terminate();
+      if (state.spectrumWorkerPool[workerIndex] === worker) {
+        state.spectrumWorkerPool[workerIndex] = null;
+      }
       reject(new Error(`Spectrum worker failed: ${event.message}`));
     };
-    const rowBins = parameters.rowBins;
-    const samples = parameters.samples;
-    worker.postMessage(
-      {
-        ...parameters,
-        rowBins: rowBins.buffer,
-        samples: samples.buffer,
-      },
-      [rowBins.buffer, samples.buffer],
-    );
+    worker.postMessage(message, transfers);
   });
 }
 
 function cancelSpectrumWorkers() {
   const workers = state.spectrumWorkers;
   state.spectrumWorkers = [];
-  for (const { worker, reject } of workers) {
+  for (const { worker, workerIndex, reject } of workers) {
     worker.terminate();
+    if (state.spectrumWorkerPool[workerIndex] === worker) {
+      state.spectrumWorkerPool[workerIndex] = null;
+    }
     reject(new DOMException("Spectrum render superseded", "AbortError"));
   }
 }

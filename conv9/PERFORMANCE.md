@@ -7,6 +7,7 @@ Measurements were taken on an Intel Core Ultra 7 268V with four performance core
 | Workload | Before | After | Speedup |
 | --- | ---: | ---: | ---: |
 | 16,384-point spectrogram, 1,240 columns | 2,071 ms median | 176 ms wall | 11.8× |
+| Packed-real spectrogram, 1,302 columns | 176 ms wall | 67.5–76.4 ms wall | 2.30–2.61× |
 | Windowed convolution, 5 s × 5 s | 748 ms | 171–175 ms | 4.3–4.4× |
 | Windowed convolution, 0.1 s × 5 s, 8 threads | 9,318 ms | 2,180–2,522 ms | 3.7–4.3× |
 | Windowed convolution, 0.1 s × 30 s, 8 threads | 75,257 ms | 20,907–22,492 ms | 3.35–3.60× |
@@ -15,7 +16,9 @@ Measurements were taken on an Intel Core Ultra 7 268V with four performance core
 | Source-filter vocoder, 61 s | not present | 279–281 ms warm | — |
 | Predictive resonator bank, 61 s | not present | 252–383 ms warm | — |
 
-The spectrogram now splits contiguous time ranges across four cancelable workers. Each worker receives only its PCM range plus the FFT halo, reuses one Hann window and bit-reversal plan, calculates only unique visible log-frequency bins, and returns compact `Float32` stripes. The main thread uses a cached 256-color lookup table. Resize rescales the cached spectrum and performs no FFT. The static waveform and spectrum canvases are no longer recopied on every animation frame; compositor playheads move over them instead.
+The spectrogram now uses six cancelable, persistent workers. Since every input frame is real, each worker packs its even/odd samples into one 8,192-point complex transform and exactly recovers the positive half of the requested 16,384-point real spectrum. This replaces the former 16,384-point complex core and reduces its butterfly count by 2.15× per column. Bit-reversal tables, Hann weights, and twiddles are precomputed once; the pool is warmed while the native audio render is already in flight, so worker startup and JavaScript tier-up are outside the visible spectrum stage. Forty-eight small contiguous time stripes are pulled dynamically by the pool, allowing faster performance cores to accept more work instead of waiting on one static stripe assigned to an efficiency core. Each stripe receives only its PCM range plus the FFT halo, calculates only unique visible log-frequency bins, and returns compact `Float32` values.
+
+The main map now analyzes 1.05 columns per CSS pixel—1,302 rather than 1,240 at the measured viewport—while completing in 67.5–76.4 ms, 2.30–2.61× faster than the previous 176 ms implementation. The main thread uses a cached 256-color lookup table. Resize rescales the cached spectrum and performs no FFT. The static waveform and spectrum canvases are no longer recopied on every animation frame; compositor playheads move over them instead. Source previews use a separate 420×192 map with 8,192-point native real FFTs, up from 210×96 and 4,096 points; Rayon assigns columns to reusable per-thread FFT scratch buffers.
 
 The Rust convolution path now:
 
@@ -56,7 +59,7 @@ Measured memory bandwidth was approximately 18–21 GB/s on one core, 42.5 GB/s 
 
 Correctness coverage compares the batched renderer against the prior sequential formulation on deterministic synthetic input; its measured maximum absolute difference is 1.49e-8 at 0.0931 reference RMS, far inside the 0.02%-of-reference-RMS regression limit. It also verifies two parallel renders bit for bit. Separate tests verify cancellation between bounded batches and enforce the per-worker memory ceiling. The manual `windowed_perf` example reports DSP/total time and a WAV hash for repeatable release measurements.
 
-The original browser FFT sustained about 123 million complex butterflies per second on one UI thread. A planned real-FFT implementation has a calculated single-thread target of 150–300 ms for the complete display. Four to eight optimized workers or native SIMD have a practical 70–150 ms target once transfer, merge, and image upload are included. The current 176 ms wall time uses four portable JavaScript workers and already approaches the single-thread planned-real-FFT target without adding a WASM or GPU dependency.
+The original browser FFT sustained about 123 million complex butterflies per second on one UI thread. The packed-real implementation cuts the transform core from 114,688 to 53,248 complex butterflies per time column before threading, a 2.15× algorithmic reduction. Precomputed twiddles and persistent scratch arrays avoid setup and allocation on the repeated critical path. Six portable JavaScript workers compute the higher-resolution display without a WASM or GPU dependency.
 
 The real-time pitch path processes about 375 2,048-point FFTs per second for stereo, around 4.2 million butterflies or 50–100 MFLOP/s. It performs no allocation in the 128-frame audio callback and has a fixed 2,048-frame latency: 42.7 ms at 48 kHz.
 

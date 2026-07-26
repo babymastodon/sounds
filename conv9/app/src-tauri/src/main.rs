@@ -247,7 +247,8 @@ mod tests {
         assert_eq!(preview.id, "ambient_guitar");
         assert_eq!(preview.peaks.len(), 128);
         assert_eq!(preview.spectrum_columns, 128);
-        assert_eq!(preview.spectrum_rows, 96);
+        assert_eq!(preview.spectrum_rows, 192);
+        assert_eq!(preview.spectrum_fft_size, 8_192);
         assert_eq!(
             preview.spectrum_map.len(),
             preview.spectrum_columns * preview.spectrum_rows

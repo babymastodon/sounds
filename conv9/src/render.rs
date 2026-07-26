@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use realfft::RealFftPlanner;
 use serde::Serialize;
 
@@ -80,6 +81,7 @@ pub struct SourcePreview {
     pub spectrum_map: Vec<f32>,
     pub spectrum_columns: usize,
     pub spectrum_rows: usize,
+    pub spectrum_fft_size: usize,
     pub peak: f32,
     pub rms_dbfs: f32,
     pub zero_crossing_rate: f32,
@@ -264,7 +266,7 @@ impl OnDemandRenderer {
             .windows(2)
             .filter(|pair| pair[0].is_sign_negative() != pair[1].is_sign_negative())
             .count();
-        let spectrum_rows = 96;
+        let spectrum_rows = 192;
         let spectrum_map = source_preview_spectrum_map(&clip.samples, bins, spectrum_rows)?;
         Ok(SourcePreview {
             id: clip.id.clone(),
@@ -272,6 +274,7 @@ impl OnDemandRenderer {
             spectrum_map,
             spectrum_columns: bins,
             spectrum_rows,
+            spectrum_fft_size: 8_192,
             peak: metrics.peak,
             rms_dbfs: metrics.rms_dbfs,
             zero_crossing_rate: crossings as f32
@@ -312,15 +315,11 @@ impl OnDemandRenderer {
 }
 
 fn source_preview_spectrum_map(samples: &[f32], columns: usize, rows: usize) -> Result<Vec<f32>> {
-    const FFT_FRAMES: usize = 4_096;
+    const FFT_FRAMES: usize = 8_192;
     const MINIMUM_HZ: f32 = 50.0;
     const MAXIMUM_HZ: f32 = 20_000.0;
     const FLOOR_DB: f32 = -72.0;
 
-    let mut planner = RealFftPlanner::<f32>::new();
-    let forward = planner.plan_fft_forward(FFT_FRAMES);
-    let mut time = forward.make_input_vec();
-    let mut fft = forward.make_output_vec();
     let window = (0..FFT_FRAMES)
         .map(|index| 0.5 - 0.5 * (2.0 * PI * index as f32 / (FFT_FRAMES - 1) as f32).cos())
         .collect::<Vec<_>>();
@@ -336,42 +335,57 @@ fn source_preview_spectrum_map(samples: &[f32], columns: usize, rows: usize) -> 
                 ((low_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).floor() as usize).max(1);
             let high_bin = ((high_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).ceil() as usize)
                 .max(low_bin + 1)
-                .min(fft.len());
+                .min(FFT_FRAMES / 2 + 1);
             low_bin..high_bin
         })
         .collect::<Vec<_>>();
     let mut spectrum_map = vec![FLOOR_DB; columns * rows];
-    for column in 0..columns {
-        let center = column * samples.len().saturating_sub(1) / columns.saturating_sub(1).max(1);
-        let start = center as isize - FFT_FRAMES as isize / 2;
-        for (index, (target, &weight)) in time.iter_mut().zip(&window).enumerate() {
-            let source = start + index as isize;
-            *target = if source >= 0 && (source as usize) < samples.len() {
-                samples[source as usize] * weight
-            } else {
-                0.0
-            };
-        }
-        forward.process(&mut time, &mut fft)?;
-        for (row, bins) in row_bin_ranges.iter().enumerate() {
-            let band_power = fft[bins.clone()]
-                .iter()
-                .map(|value| value.norm_sqr())
-                .fold(0.0_f32, f32::max);
-            spectrum_map[column * rows + row] = 10.0 * band_power.max(1.0e-20).log10();
-        }
-    }
+    spectrum_map
+        .par_chunks_mut(rows)
+        .enumerate()
+        .try_for_each_init(
+            || {
+                let mut planner = RealFftPlanner::<f32>::new();
+                let forward = planner.plan_fft_forward(FFT_FRAMES);
+                let time = forward.make_input_vec();
+                let fft = forward.make_output_vec();
+                (forward, time, fft)
+            },
+            |scratch, (column, column_map)| -> Result<()> {
+                let (forward, time, fft) = scratch;
+                let center =
+                    column * samples.len().saturating_sub(1) / columns.saturating_sub(1).max(1);
+                let start = center as isize - FFT_FRAMES as isize / 2;
+                for (index, (target, &weight)) in time.iter_mut().zip(&window).enumerate() {
+                    let source = start + index as isize;
+                    *target = if source >= 0 && (source as usize) < samples.len() {
+                        samples[source as usize] * weight
+                    } else {
+                        0.0
+                    };
+                }
+                forward.process(time, fft)?;
+                for (row, bins) in row_bin_ranges.iter().enumerate() {
+                    let band_power = fft[bins.clone()]
+                        .iter()
+                        .map(|value| value.norm_sqr())
+                        .fold(0.0_f32, f32::max);
+                    column_map[row] = 10.0 * band_power.max(1.0e-20).log10();
+                }
+                Ok(())
+            },
+        )?;
     let peak_db = spectrum_map
-        .iter()
+        .par_iter()
         .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+        .reduce(|| f32::NEG_INFINITY, f32::max);
     if peak_db <= -190.0 {
         spectrum_map.fill(0.0);
         return Ok(spectrum_map);
     }
-    for value in &mut spectrum_map {
+    spectrum_map.par_iter_mut().for_each(|value| {
         *value = ((*value - peak_db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
-    }
+    });
     Ok(spectrum_map)
 }
 

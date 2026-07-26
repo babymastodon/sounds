@@ -123,7 +123,7 @@ try {
           peaks.push([minimum, maximum]);
         }
         const rms = Math.sqrt(sumSquares / frameCount);
-        const spectrumRows = 96;
+        const spectrumRows = 192;
         const spectrumMap = new Array(bins * spectrumRows);
         for (let column = 0; column < bins; column += 1) {
           const [minimum, maximum] = peaks[column];
@@ -145,6 +145,7 @@ try {
           spectrumMap,
           spectrumColumns: bins,
           spectrumRows,
+          spectrumFftSize: 8192,
           peak,
           rmsDbfs: 20 * Math.log10(Math.max(rms, 1e-12)),
           zeroCrossingRate: crossings / Math.max(1, frameCount - 1),
@@ -385,8 +386,9 @@ try {
     await sourceDialog.locator(".source-preview-spectrum").evaluate((canvas) => ({
       columns: canvas.dataset.spectrumColumns,
       rows: canvas.dataset.spectrumRows,
+      fftSize: canvas.dataset.fftSize,
     })),
-    { columns: "210", rows: "96" },
+    { columns: "420", rows: "192", fftSize: "8192" },
     "source preview renders the complete FFT time-frequency map",
   );
   await assertPreviewPlotsContained(page, "#source-a-dialog");
@@ -661,16 +663,37 @@ try {
   );
   const spectrumPerformance = await page.locator("#spectrogram").evaluate((canvas) => ({
     workers: Number(canvas.dataset.spectrumWorkers),
+    stripes: Number(canvas.dataset.spectrumStripes),
     visibleBins: Number(canvas.dataset.visibleBins),
     workerWallMs: Number(canvas.dataset.workerWallMs),
     workerComputeMs: Number(canvas.dataset.workerComputeMs),
+    algorithm: canvas.dataset.spectrumAlgorithm,
+    butterflyReduction: Number(canvas.dataset.butterflyReduction),
+    analysisColumns: Number(canvas.dataset.analysisColumns),
+    clientWidth: canvas.clientWidth,
+    backingWidth: canvas.width,
     backingRows: canvas.height,
     log: state.performanceLog.at(-1),
   }));
   assert.ok(spectrumPerformance.workers >= 2, "spectrum analysis uses multiple workers");
+  assert.equal(
+    spectrumPerformance.stripes,
+    spectrumPerformance.workers * 8,
+    "fine-grained spectrum stripes dynamically balance heterogeneous cores",
+  );
   assert.ok(
     spectrumPerformance.visibleBins < spectrumPerformance.backingRows,
     "spectrum workers calculate each visible log-frequency bin only once",
+  );
+  assert.equal(
+    spectrumPerformance.analysisColumns,
+    Math.min(Math.ceil(spectrumPerformance.clientWidth * 1.05), 3840),
+    "spectrum analysis uses 1.05 FFT time columns per CSS pixel",
+  );
+  assert.equal(spectrumPerformance.algorithm, "packed-real-radix2");
+  assert.ok(
+    spectrumPerformance.butterflyReduction >= 2.1,
+    `real-input FFT should remove over half the complex work: ${JSON.stringify(spectrumPerformance)}`,
   );
   assert.ok(
     Number.isFinite(spectrumPerformance.workerWallMs) &&
@@ -678,10 +701,18 @@ try {
       Number.isFinite(spectrumPerformance.log?.spectrumMs),
     `spectrum stage timing is logged: ${JSON.stringify(spectrumPerformance)}`,
   );
+  const previousSpectrumWallMs = 176;
+  const spectrumSpeedup =
+    previousSpectrumWallMs / spectrumPerformance.workerWallMs;
+  assert.ok(
+    spectrumSpeedup >= 2,
+    `higher-resolution spectrum must remain at least 2x faster than the ` +
+      `${previousSpectrumWallMs} ms baseline: ${JSON.stringify(spectrumPerformance)}`,
+  );
   console.log(
     `spectrum ${spectrumPerformance.workerWallMs.toFixed(1)} ms wall, ` +
       `${spectrumPerformance.workerComputeMs.toFixed(1)} ms aggregate, ` +
-      `${spectrumPerformance.workers} workers`,
+      `${spectrumPerformance.workers} workers, ${spectrumSpeedup.toFixed(2)}x faster`,
   );
   await assertNoViewportOverflow(page);
   await assertControlTooltips(page);

@@ -68,6 +68,7 @@
       this.previewGeneration = 0;
       this.previewTimer = 0;
       this.previewPeaks = null;
+      this.previewSpectrum = null;
       this.previewStatus = "";
       this.opened = false;
       this.instanceId = `source-${role.toLowerCase()}`;
@@ -166,8 +167,9 @@
         "aria-live": "polite",
       });
       this.previewHeading = createElement("div", { className: "source-preview-heading" });
+      this.previewPlots = createElement("div", { className: "source-preview-plots" });
       this.previewWaveformFrame = createElement("div", {
-        className: "source-preview-waveform-frame",
+        className: "source-preview-plot source-preview-waveform-frame",
       });
       this.previewCanvas = createElement("canvas", {
         className: "source-preview-waveform",
@@ -179,10 +181,24 @@
           "moving to another result replaces stale preview work.",
       });
       this.previewWaveformFrame.append(this.previewCanvas);
+      this.previewSpectrumFrame = createElement("div", {
+        className: "source-preview-plot source-preview-spectrum-frame",
+      });
+      this.previewSpectrumCanvas = createElement("canvas", {
+        className: "source-preview-spectrum",
+        width: "420",
+        height: "116",
+        "aria-label": `Spectrum preview for highlighted clip ${this.role} source`,
+        title:
+          "Shows a lazily computed average log-frequency spectrum for the highlighted source, " +
+          "normalized over a 72 dB display range.",
+      });
+      this.previewSpectrumFrame.append(this.previewSpectrumCanvas);
+      this.previewPlots.append(this.previewWaveformFrame, this.previewSpectrumFrame);
       this.previewStats = createElement("dl", { className: "source-preview-stats" });
       this.preview.append(
         this.previewHeading,
-        this.previewWaveformFrame,
+        this.previewPlots,
         this.previewStats,
       );
       body.append(this.list, this.preview);
@@ -192,10 +208,14 @@
       this.showPreviewMetadata(this.selectedSource());
       this.previewResizeObserver = new ResizeObserver(() => {
         if (!this.opened) return;
-        if (this.previewPeaks) this.drawWaveform(this.previewPeaks);
-        else if (this.previewStatus) this.drawStatus(this.previewStatus);
+        if (this.previewPeaks) {
+          this.drawWaveform(this.previewPeaks);
+          this.drawSpectrum(this.previewSpectrum);
+        } else if (this.previewStatus) {
+          this.drawStatus(this.previewStatus);
+        }
       });
-      this.previewResizeObserver.observe(this.previewCanvas);
+      this.previewResizeObserver.observe(this.previewPlots);
     }
 
     bind() {
@@ -503,6 +523,7 @@
     paintPreview(source, preview) {
       this.previewCanvas.setAttribute("aria-busy", "false");
       this.drawWaveform(preview.peaks);
+      this.drawSpectrum(preview.spectrum);
       this.previewStats.replaceChildren(
         this.stat("duration", `${source.seconds.toFixed(1)}s`),
         this.stat("rms", `${preview.rmsDbfs.toFixed(1)} dB`),
@@ -513,8 +534,9 @@
 
     drawStatus(text) {
       this.previewPeaks = null;
+      this.previewSpectrum = null;
       this.previewStatus = text;
-      const { context, width, height } = this.canvasSurface();
+      const { context, width, height } = this.canvasSurface(this.previewCanvas);
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
@@ -523,12 +545,13 @@
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText(text, width / 2, height / 2);
+      this.clearCanvas(this.previewSpectrumCanvas);
     }
 
     drawWaveform(peaks) {
       this.previewPeaks = peaks;
       this.previewStatus = "";
-      const { context, width, height } = this.canvasSurface();
+      const { context, width, height } = this.canvasSurface(this.previewCanvas);
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#181a19";
       context.fillRect(0, 0, width, height);
@@ -547,27 +570,58 @@
       context.stroke();
     }
 
+    drawSpectrum(spectrum) {
+      this.previewSpectrum = spectrum;
+      const { context, width, height } = this.canvasSurface(
+        this.previewSpectrumCanvas,
+      );
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#181a19";
+      context.fillRect(0, 0, width, height);
+      if (!spectrum?.length) return;
+      context.beginPath();
+      context.moveTo(0, height);
+      spectrum.forEach((level, index) => {
+        const x = (index / Math.max(1, spectrum.length - 1)) * width;
+        const y = (1 - Math.max(0, Math.min(1, level))) * height;
+        context.lineTo(x, y);
+      });
+      context.lineTo(width, height);
+      context.closePath();
+      context.fillStyle = "#5d6753";
+      context.fill();
+      context.strokeStyle = "#a9b68f";
+      context.stroke();
+    }
+
     scrollActiveIntoView(block) {
       this.list
         .querySelector(`[data-source-id="${CSS.escape(this.activeId)}"]`)
         ?.scrollIntoView({ block, inline: "nearest" });
     }
 
-    canvasSurface() {
-      const bounds = this.previewCanvas.getBoundingClientRect();
+    clearCanvas(canvas) {
+      const { context, width, height } = this.canvasSurface(canvas);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#181a19";
+      context.fillRect(0, 0, width, height);
+    }
+
+    canvasSurface(canvas) {
+      const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
       const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
       const pixelWidth = Math.round(width * scale);
       const pixelHeight = Math.round(height * scale);
       if (
-        this.previewCanvas.width !== pixelWidth ||
-        this.previewCanvas.height !== pixelHeight
+        canvas.width !== pixelWidth ||
+        canvas.height !== pixelHeight
       ) {
-        this.previewCanvas.width = pixelWidth;
-        this.previewCanvas.height = pixelHeight;
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
       }
-      const context = this.previewCanvas.getContext("2d");
+      const context = canvas.getContext("2d");
       context.setTransform(scale, 0, 0, scale, 0, 0);
       return { context, width, height };
     }

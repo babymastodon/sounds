@@ -246,6 +246,7 @@ mod tests {
         let preview = renderer.source_preview("ambient_guitar", 128).unwrap();
         assert_eq!(preview.id, "ambient_guitar");
         assert_eq!(preview.peaks.len(), 128);
+        assert_eq!(preview.spectrum.len(), 128);
         assert!(preview.peak.is_finite() && preview.peak > 0.0);
         assert!(preview.rms_dbfs.is_finite());
         assert!((0.0..=1.0).contains(&preview.zero_crossing_rate));
@@ -255,6 +256,22 @@ mod tests {
                 .iter()
                 .flatten()
                 .all(|sample| sample.is_finite())
+        );
+        assert!(
+            preview
+                .spectrum
+                .iter()
+                .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        );
+        let (minimum, maximum) = preview
+            .spectrum
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(minimum, maximum), &value| {
+                (minimum.min(value), maximum.max(value))
+            });
+        assert!(
+            maximum - minimum > 0.05,
+            "source spectrum should have a visible contour"
         );
     }
 }

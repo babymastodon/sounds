@@ -425,7 +425,16 @@ select:focus-visible {
   color: var(--bright);
 }
 
-.source-preview-waveform-frame {
+.source-preview-plots {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.source-preview-plot {
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -433,7 +442,8 @@ select:focus-visible {
   background: #181a19;
 }
 
-.source-preview-waveform {
+.source-preview-waveform,
+.source-preview-spectrum {
   display: block;
   position: absolute;
   inset: 0;

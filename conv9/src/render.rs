@@ -1,10 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use realfft::RealFftPlanner;
 use serde::Serialize;
 
 use crate::audio::{
@@ -75,6 +77,7 @@ pub struct RenderedAudio {
 pub struct SourcePreview {
     pub id: String,
     pub peaks: Vec<[f32; 2]>,
+    pub spectrum: Vec<f32>,
     pub peak: f32,
     pub rms_dbfs: f32,
     pub zero_crossing_rate: f32,
@@ -259,9 +262,11 @@ impl OnDemandRenderer {
             .windows(2)
             .filter(|pair| pair[0].is_sign_negative() != pair[1].is_sign_negative())
             .count();
+        let spectrum = source_preview_spectrum(&clip.samples, bins)?;
         Ok(SourcePreview {
             id: clip.id.clone(),
             peaks,
+            spectrum,
             peak: metrics.peak,
             rms_dbfs: metrics.rms_dbfs,
             zero_crossing_rate: crossings as f32
@@ -299,6 +304,66 @@ impl OnDemandRenderer {
         cache.truncate(4);
         Ok(loaded)
     }
+}
+
+fn source_preview_spectrum(samples: &[f32], bins: usize) -> Result<Vec<f32>> {
+    const FFT_FRAMES: usize = 4_096;
+    const ANALYSIS_WINDOWS: usize = 24;
+    const MINIMUM_HZ: f32 = 30.0;
+    const FLOOR_DB: f32 = -72.0;
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let forward = planner.plan_fft_forward(FFT_FRAMES);
+    let mut time = forward.make_input_vec();
+    let mut fft = forward.make_output_vec();
+    let mut power = vec![0.0_f64; fft.len()];
+    let window = (0..FFT_FRAMES)
+        .map(|index| {
+            let phase = (index as f32 + 0.5) / FFT_FRAMES as f32;
+            0.5 - 0.5 * (2.0 * PI * phase).cos()
+        })
+        .collect::<Vec<_>>();
+
+    for analysis in 0..ANALYSIS_WINDOWS {
+        let center = (analysis * 2 + 1) * samples.len() / (ANALYSIS_WINDOWS * 2);
+        let start = center
+            .saturating_sub(FFT_FRAMES / 2)
+            .min(samples.len().saturating_sub(FFT_FRAMES));
+        for (target, (&sample, &weight)) in time
+            .iter_mut()
+            .zip(samples[start..start + FFT_FRAMES].iter().zip(&window))
+        {
+            *target = sample * weight;
+        }
+        forward.process(&mut time, &mut fft)?;
+        for (total, value) in power.iter_mut().zip(&fft) {
+            *total += f64::from(value.norm_sqr());
+        }
+    }
+
+    let maximum_hz = SAMPLE_RATE as f32 / 2.0;
+    let frequency_ratio = maximum_hz / MINIMUM_HZ;
+    let mut display_power = Vec::with_capacity(bins);
+    for index in 0..bins {
+        let low_hz = MINIMUM_HZ * frequency_ratio.powf(index as f32 / bins as f32);
+        let high_hz = MINIMUM_HZ * frequency_ratio.powf((index + 1) as f32 / bins as f32);
+        let low_bin = ((low_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).floor() as usize).max(1);
+        let high_bin = ((high_hz * FFT_FRAMES as f32 / SAMPLE_RATE as f32).ceil() as usize)
+            .max(low_bin + 1)
+            .min(power.len());
+        let mean = power[low_bin..high_bin].iter().sum::<f64>()
+            / (high_bin - low_bin).max(1) as f64
+            / ANALYSIS_WINDOWS as f64;
+        display_power.push((10.0 * mean.max(1.0e-20).log10()) as f32);
+    }
+    let peak_db = display_power
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    for value in &mut display_power {
+        *value = ((*value - peak_db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
+    }
+    Ok(display_power)
 }
 
 fn elapsed_milliseconds(started: Instant) -> f64 {

@@ -304,19 +304,29 @@ try {
     const value = await execute(port, sessionId, `
       const dialog = document.querySelector("#source-a-dialog");
       const canvas = dialog.querySelector(".source-preview-waveform");
-      const pixels = canvas.getContext("2d").getImageData(
-        0, 0, canvas.width, canvas.height
-      ).data;
-      let variation = 0;
-      for (let index = 4; index < pixels.length; index += 97) {
-        variation += Math.abs(pixels[index] - pixels[index - 4]);
-      }
+      const spectrumCanvas = dialog.querySelector(".source-preview-spectrum");
+      const canvasVariation = (target) => {
+        const pixels = target.getContext("2d").getImageData(
+          0, 0, target.width, target.height
+        ).data;
+        let variation = 0;
+        for (let index = 4; index < pixels.length; index += 97) {
+          variation += Math.abs(pixels[index] - pixels[index - 4]);
+        }
+        return variation;
+      };
       const bounds = dialog.getBoundingClientRect();
       const preview = dialog.querySelector(".source-preview").getBoundingClientRect();
-      const frame = dialog
-        .querySelector(".source-preview-waveform-frame")
-        .getBoundingClientRect();
-      const canvasBounds = canvas.getBoundingClientRect();
+      const plots = dialog.querySelector(".source-preview-plots").getBoundingClientRect();
+      const plotContainment = [...dialog.querySelectorAll(".source-preview-plot")]
+        .map((frame) => {
+          const frameBounds = frame.getBoundingClientRect();
+          const canvasBounds = frame.querySelector("canvas").getBoundingClientRect();
+          return frameBounds.top >= plots.top && frameBounds.bottom <= plots.bottom &&
+            canvasBounds.top >= frameBounds.top &&
+            canvasBounds.bottom <= frameBounds.bottom &&
+            getComputedStyle(frame).overflow === "hidden";
+        });
       const trigger = document.querySelector(
         "#sourceABrowser .source-browser-trigger"
       ).getBoundingClientRect();
@@ -327,13 +337,11 @@ try {
         open: !dialog.hidden,
         busy: canvas.getAttribute("aria-busy"),
         stats: dialog.querySelector(".source-preview-stats").textContent,
-        variation,
-        waveformContained:
-          frame.top >= preview.top && frame.bottom <= preview.bottom &&
-          canvasBounds.top >= frame.top && canvasBounds.bottom <= frame.bottom &&
-          getComputedStyle(
-            dialog.querySelector(".source-preview-waveform-frame")
-          ).overflow === "hidden",
+        waveformVariation: canvasVariation(canvas),
+        spectrumVariation: canvasVariation(spectrumCanvas),
+        plotsContained:
+          plots.top >= preview.top && plots.bottom <= preview.bottom &&
+          plotContainment.length === 2 && plotContainment.every(Boolean),
         subtitleCount: dialog.querySelectorAll(".source-preview-kind").length,
         rowSubtitleCount: dialog.querySelectorAll(".source-option-kind").length,
         caretOffset: Math.abs(
@@ -351,8 +359,9 @@ try {
   }, 30_000);
   assert.match(nativePreview.stats, /rms/);
   assert.match(nativePreview.stats, /peak/);
-  assert.ok(nativePreview.variation > 0, "native source preview waveform must vary");
-  assert.equal(nativePreview.waveformContained, true, "native waveform stays inside preview");
+  assert.ok(nativePreview.waveformVariation > 0, "native source preview waveform must vary");
+  assert.ok(nativePreview.spectrumVariation > 0, "native source preview spectrum must vary");
+  assert.equal(nativePreview.plotsContained, true, "native plots stay inside preview");
   assert.equal(nativePreview.subtitleCount, 0, "native preview has no subtitle");
   assert.equal(nativePreview.rowSubtitleCount, 0, "native result rows have no subtitles");
   assert.ok(

@@ -123,9 +123,15 @@ try {
           peaks.push([minimum, maximum]);
         }
         const rms = Math.sqrt(sumSquares / frameCount);
+        const spectrum = peaks.map(([minimum, maximum], index) => {
+          const localPeak = Math.max(Math.abs(minimum), Math.abs(maximum));
+          const contour = 0.35 + 0.65 * Math.abs(Math.sin(index * 0.071 + id.length));
+          return Math.min(1, localPeak * 2.5 * contour);
+        });
         return {
           id,
           peaks,
+          spectrum,
           peak,
           rmsDbfs: 20 * Math.log10(Math.max(rms, 1e-12)),
           zeroCrossingRate: crossings / Math.max(1, frameCount - 1),
@@ -358,7 +364,12 @@ try {
     })}`,
   );
   await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-waveform");
-  await assertPreviewWaveformContained(page, "#source-a-dialog");
+  await assertCanvasMatchesLayout(page, "#source-a-dialog .source-preview-spectrum");
+  await assertCanvasHasVariation(page, "#source-a-dialog .source-preview-spectrum");
+  await assertPreviewPlotsContained(page, "#source-a-dialog");
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.source.png` });
+  }
   assert.equal(
     await sourceDialog.locator(".source-preview-kind").count(),
     0,
@@ -1018,7 +1029,9 @@ try {
     `compact source browser should fill the usable viewport: ${JSON.stringify(compactDialogBounds)}`,
   );
   await assertCanvasMatchesLayout(page, "#source-b-dialog .source-preview-waveform");
-  await assertPreviewWaveformContained(page, "#source-b-dialog");
+  await assertCanvasMatchesLayout(page, "#source-b-dialog .source-preview-spectrum");
+  await assertCanvasHasVariation(page, "#source-b-dialog .source-preview-spectrum");
+  await assertPreviewPlotsContained(page, "#source-b-dialog");
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
@@ -1310,38 +1323,50 @@ async function assertCanvasMatchesLayout(page, selector) {
   );
 }
 
-async function assertPreviewWaveformContained(page, dialogSelector) {
+async function assertPreviewPlotsContained(page, dialogSelector) {
   const layout = await page.locator(dialogSelector).evaluate((dialog) => {
     const preview = dialog.querySelector(".source-preview").getBoundingClientRect();
-    const frame = dialog
-      .querySelector(".source-preview-waveform-frame")
-      .getBoundingClientRect();
-    const canvas = dialog.querySelector(".source-preview-waveform").getBoundingClientRect();
+    const plots = dialog.querySelector(".source-preview-plots").getBoundingClientRect();
+    const items = [...dialog.querySelectorAll(".source-preview-plot")].map((frame) => {
+      const frameBounds = frame.getBoundingClientRect();
+      const canvasBounds = frame.querySelector("canvas").getBoundingClientRect();
+      return {
+        frame: {
+          top: frameBounds.top,
+          bottom: frameBounds.bottom,
+          overflow: getComputedStyle(frame).overflow,
+        },
+        canvas: {
+          top: canvasBounds.top,
+          bottom: canvasBounds.bottom,
+        },
+      };
+    });
     return {
       preview: {
         top: preview.top,
         bottom: preview.bottom,
       },
-      frame: {
-        top: frame.top,
-        bottom: frame.bottom,
-        overflow: getComputedStyle(
-          dialog.querySelector(".source-preview-waveform-frame"),
-        ).overflow,
+      plots: {
+        top: plots.top,
+        bottom: plots.bottom,
       },
-      canvas: {
-        top: canvas.top,
-        bottom: canvas.bottom,
-      },
+      items,
     };
   });
   assert.ok(
-    layout.frame.top >= layout.preview.top &&
-      layout.frame.bottom <= layout.preview.bottom &&
-      layout.canvas.top >= layout.frame.top &&
-      layout.canvas.bottom <= layout.frame.bottom &&
-      layout.frame.overflow === "hidden",
-    `preview waveform escaped its vertical frame: ${JSON.stringify(layout)}`,
+    layout.plots.top >= layout.preview.top &&
+      layout.plots.bottom <= layout.preview.bottom &&
+      layout.items.length === 2 &&
+      layout.items.every(
+        ({ frame, canvas }) =>
+          frame.top >= layout.plots.top &&
+          frame.bottom <= layout.plots.bottom &&
+          canvas.top >= frame.top &&
+          canvas.bottom <= frame.bottom &&
+          frame.overflow === "hidden",
+      ),
+    `preview plots escaped their vertical frames: ${JSON.stringify(layout)}`,
   );
 }
 

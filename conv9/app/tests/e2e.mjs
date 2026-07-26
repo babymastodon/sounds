@@ -303,6 +303,27 @@ try {
     "listbox",
     "source results use listbox semantics",
   );
+  assert.equal(
+    await sourceDialog.locator(".source-option-kind").count(),
+    0,
+    "result rows do not repeat sound-kind subtitles",
+  );
+  const caretAlignment = await page
+    .locator("#sourceABrowser .source-browser-trigger")
+    .evaluate((trigger) => {
+      const triggerBounds = trigger.getBoundingClientRect();
+      const caretBounds = trigger
+        .querySelector(".source-trigger-chevron")
+        .getBoundingClientRect();
+      return Math.abs(
+        (triggerBounds.top + triggerBounds.bottom) / 2 -
+          (caretBounds.top + caretBounds.bottom) / 2,
+      );
+    });
+  assert.ok(
+    caretAlignment <= 1,
+    `source-browser caret is ${caretAlignment}px off vertical center`,
+  );
   const selectedOptionBounds = await sourceDialog
     .locator("[role='option'][aria-selected='true']")
     .boundingBox();

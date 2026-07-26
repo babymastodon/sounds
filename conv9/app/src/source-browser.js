@@ -98,8 +98,10 @@
       this.triggerChevron = createElement(
         "span",
         { className: "source-trigger-chevron", "aria-hidden": "true" },
-        "⌄",
       );
+      const chevronSvg = createElement("svg", { viewBox: "0 0 16 16" });
+      chevronSvg.append(createElement("path", { d: "M3.5 6 8 10.5 12.5 6" }));
+      this.triggerChevron.append(chevronSvg);
       this.trigger.append(this.triggerPrimary, this.triggerSummary, this.triggerChevron);
 
       this.dialog = createElement("section", {
@@ -297,11 +299,6 @@
         });
         option.append(
           createElement("span", { className: "source-option-name" }, source.category),
-          createElement(
-            "span",
-            { className: "source-option-kind" },
-            formatKind(source.kind),
-          ),
           createElement(
             "span",
             { className: "source-option-duration" },

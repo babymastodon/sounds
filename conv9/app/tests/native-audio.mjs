@@ -317,6 +317,12 @@ try {
         .querySelector(".source-preview-waveform-frame")
         .getBoundingClientRect();
       const canvasBounds = canvas.getBoundingClientRect();
+      const trigger = document.querySelector(
+        "#sourceABrowser .source-browser-trigger"
+      ).getBoundingClientRect();
+      const caret = document.querySelector(
+        "#sourceABrowser .source-trigger-chevron"
+      ).getBoundingClientRect();
       return {
         open: !dialog.hidden,
         busy: canvas.getAttribute("aria-busy"),
@@ -329,6 +335,10 @@ try {
             dialog.querySelector(".source-preview-waveform-frame")
           ).overflow === "hidden",
         subtitleCount: dialog.querySelectorAll(".source-preview-kind").length,
+        rowSubtitleCount: dialog.querySelectorAll(".source-option-kind").length,
+        caretOffset: Math.abs(
+          (trigger.top + trigger.bottom) / 2 - (caret.top + caret.bottom) / 2
+        ),
         inViewport:
           bounds.left >= 0 && bounds.top >= 0 &&
           bounds.right <= innerWidth && bounds.bottom <= innerHeight,
@@ -344,6 +354,11 @@ try {
   assert.ok(nativePreview.variation > 0, "native source preview waveform must vary");
   assert.equal(nativePreview.waveformContained, true, "native waveform stays inside preview");
   assert.equal(nativePreview.subtitleCount, 0, "native preview has no subtitle");
+  assert.equal(nativePreview.rowSubtitleCount, 0, "native result rows have no subtitles");
+  assert.ok(
+    nativePreview.caretOffset <= 1,
+    `native source caret is ${nativePreview.caretOffset}px off vertical center`,
+  );
   assert.equal(nativePreview.inViewport, true, "native source browser stays inside viewport");
   assert.equal(nativePreview.expanded, "true");
   await execute(port, sessionId, `

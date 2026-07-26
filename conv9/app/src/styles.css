@@ -216,14 +216,26 @@ select:focus-visible {
 }
 
 .source-trigger-chevron {
-  font-size: 20px;
-  line-height: 1;
-  text-align: center;
-  transform: translateY(-2px);
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  transform-origin: center;
+}
+
+.source-trigger-chevron svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.5;
 }
 
 .source-browser-trigger[aria-expanded="true"] .source-trigger-chevron {
-  transform: rotate(180deg) translateY(1px);
+  transform: rotate(180deg);
 }
 
 .source-browser-dialog {
@@ -356,7 +368,7 @@ select:focus-visible {
 
 .source-option {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px;
   gap: 8px;
   min-height: 40px;
   padding: 9px;
@@ -373,14 +385,12 @@ select:focus-visible {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.source-option-name,
-.source-option-kind {
+.source-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.source-option-kind,
 .source-option-duration {
   color: var(--muted);
 }

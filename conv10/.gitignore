@@ -1,9 +1,12 @@
 /target/
+/.scratch/
 /samples/raw/
 /samples/prepared/
+/outputs/batch/
 /outputs/**/*.wav
 /outputs/**/*.flac
 /outputs/**/*.m4a
+/outputs/**/*.aac
 /outputs/**/*.opus
 __pycache__/
 *.wav.part

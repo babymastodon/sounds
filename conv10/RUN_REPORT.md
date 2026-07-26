@@ -2,31 +2,51 @@
 
 Completed: 2026-07-26
 
-## Inputs and implementation
+## Results
 
-- 48 source pages and exact media URLs passed `scripts/verify_sources.sh`.
-- 24 musical inputs are exactly 12 seconds; 24 action/process inputs are exactly 30 seconds.
-- Every raw recording decodes end to end under FFmpeg strict error handling.
-- Every prepared input is mono 48 kHz with the exact manifest frame count and a matching URL/trim/preparation recipe.
-- The conv8 v14 DSP core files `audio.rs`, `concat.rs`, `convolution.rs`, `lib.rs`, and `pitch.rs` are byte-identical. `render.rs` differs only in its worker-thread label, and `main.rs` differs only in the crate import.
-- All 30 Rust tests pass.
-
-## Matrix results
-
-| Approach | Pair WAVs | RMS range | Max peak | Tone floor | Verification |
+| List | Inputs | Matrix | Render | Avg render CPU | Verification |
 |---|---:|---:|---:|---:|---|
-| Long additive synth | 576 | −20.590 to −20.124 dBFS | 0.826 | −1.500 dB | pass |
-| Short additive synth | 576 | −20.673 to −20.122 dBFS | 0.866 | −1.500 dB | pass |
+| conv10 | 24 short + 24 long | 576 | 34.02 s | 6.90 / 8 cores | pass |
+| conv8 | 24 short + 24 long | 576 | 51.04 s | 6.20 / 8 cores | pass |
 
-Both approaches use 181 modal-noise, 191 inharmonic-FM, and 204 destroyed-saw pair assignments. The complete matrix contains 1,152 stereo 48 kHz PCM16 WAVs.
+Both matrices are stereo 48 kHz PCM16. Conv10 measured −20.6 to −20.1 dBFS
+with a maximum peak of 0.826. Conv8 measured −20.5 to −20.1 dBFS with a maximum
+peak of 0.865. Every pair has distinct left and right channels, valid pitch
+metadata, no clipped samples, and no non-finite samples.
 
 ## Final programs
 
-Each final program contains 719,327,424 stereo frames, or 14,985.988 seconds (4:09:45.988). All 575 transitions use the full ten-second crossfade.
+Each program contains 719,327,424 stereo frames: 14,985.988 seconds, or
+4:09:45.988. All 575 transitions use the full ten-second crossfade.
 
-| Approach | RF64 | FLAC | AAC/M4A | Opus 128k | Opus 32k |
-|---|---:|---:|---:|---:|---:|
-| Long additive synth | 2,877,309,776 | 839,531,731 | 362,479,961 | 243,088,082 | 61,768,847 |
-| Short additive synth | 2,877,309,776 | 986,849,047 | 362,479,925 | 234,136,570 | 57,961,959 |
+| List | FLAC | AAC/M4A | Opus |
+|---|---:|---:|---:|
+| conv10 | 839,525,346 bytes | 362,479,889 bytes | 243,090,204 bytes |
+| conv8 | 1,056,278,433 bytes | 362,479,793 bytes | 226,894,369 bytes |
 
-Sizes are bytes. Every compressed master was decoded end to end after encoding and passed codec, channel, sample-rate, and duration checks. Master hashes are recorded in `outputs/final/SHA256SUMS`.
+FFprobe confirmed FLAC, AAC, and Opus respectively, with two channels at 48 kHz
+and matching durations. Every master decoded end to end after encoding.
+`sha256sum -c` passed for all six files.
+
+Generated audio remains untracked in `outputs/batch/`. Each list also has an
+ignored JSON run report, concat report, recipe, timeline, and SHA-256 file.
+
+## Timing
+
+| Stage | conv10 | conv8 |
+|---|---:|---:|
+| Preparation | 453.80 s first network run | 3.60 s cached resume |
+| Render | 34.02 s | 51.04 s |
+| Verify | 10.88 s | 12.67 s |
+| Assemble + encode + decode-check | 251.07 s | 251.56 s |
+| Parallel hashing | 0.41 s | 0.56 s |
+
+Conv10’s first-run total was 750.18 seconds. Conv8’s cached resumed run was
+319.45 seconds. See `PERFORMANCE.md` for the optimization inventory.
+
+## Source audit
+
+All 96 source pages were fetched on 2026-07-26. The audit found 58
+CC0/public-domain sources and 38 CC BY sources, all permitting commercial use.
+No source required replacement, so the verified masters remain current. The CC
+BY attribution block is in `YOUTUBE_ATTRIBUTION.md`.

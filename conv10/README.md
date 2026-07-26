@@ -1,38 +1,84 @@
 # conv10
 
-conv10 applies the complete conv8 `sparse-hashed-13edo-gradual-drones-v14` algorithm to a different 48-recording corpus. The DSP implementation is copied intact: the 24×24 short-to-long convolution matrix, complementary stereo trims, both additive-synth placements, deterministic 13-EDO chords and gestures, convolution-domain tone calibration, output verification, ten-second final crossfades, and five master formats are unchanged.
+conv10 turns arbitrary raw-audio lists into one complete short-to-long
+convolution matrix, applies the long-input additive synth, verifies every pair,
+and assembles a continuous program in exactly three final encodings:
 
-The corpus uses 24 twelve-second musical excerpts as the short side and 24 thirty-second action/process recordings as the long side. `sources.tsv` is authoritative. Seven candidate recordings were replaced after source review. The final manifest contains only the approved 48-recording set.
+- lossless FLAC
+- AAC in an M4A container
+- Opus
+
+The checked-in `lists/conv10.txt` and `lists/conv8.txt` each contain 24 short and
+24 long inputs, producing 576 stereo pairs and a 4:09:45.988 final program.
+There is no short-additive variant, persistent RF64 master, low-bitrate Opus
+variant, or other final encoding.
 
 ## Run
 
-Requirements: a current Rust toolchain, curl, FFmpeg/FFprobe, awk, and sha256sum.
+Requirements: a current Rust toolchain, Python 3, curl, FFmpeg, and FFprobe.
 
 ```bash
 cd conv10
 ./scripts/render_all.sh
 ```
 
-The pipeline downloads and prepares the 48 inputs, renders and verifies both 576-file matrices, then concatenates and validates both final programs. `DOWNLOAD_JOBS` controls preparation concurrency and `CONV_JOBS` controls rendering concurrency.
-
-Stages may also be run separately:
+Equivalent explicit command:
 
 ```bash
-./scripts/download_samples.sh
-cargo run --release -- render
-cargo run --release -- verify
-cargo run --release -- concat
+./scripts/batch.py \
+  --jobs 8 \
+  --prepare-jobs 8 \
+  lists/conv10.txt lists/conv8.txt
 ```
 
-Local media, prepared WAVs, matrix WAVs, final masters, and Rust build artifacts are ignored by Git. The checked-in code, manifest, scripts, chord table, and progress report are sufficient to reproduce the work from the published source URLs.
-
-## Completed masters
-
-The 2026-07-26 run produced and validated both 4:09:45.988 programs:
+Outputs use the input-list stem:
 
 ```text
-outputs/final/long_additive_synth/
-outputs/final/short_additive_synth/
+outputs/batch/conv10.flac
+outputs/batch/conv10.m4a
+outputs/batch/conv10.opus
+outputs/batch/conv8.flac
+outputs/batch/conv8.m4a
+outputs/batch/conv8.opus
 ```
 
-Each directory contains RF64 PCM, FLAC, AAC/M4A, 128 kbit/s Opus, and 32 kbit/s Opus. See `RUN_REPORT.md` for the matrix and master audit.
+Audio, scratch media, matrices, and Rust build artifacts are ignored by Git.
+Successful runs retain reports, timelines, recipes, and hashes but clean raw,
+prepared, and matrix WAVs unless `--keep-work` is supplied.
+
+## Input-list formats
+
+A plain text file may contain one local path or HTTP(S) URL per non-comment
+line. The first ceiling-half becomes the short side and the remainder becomes
+the long side; eventful trims are selected automatically.
+
+For explicit control, use tab-separated rows:
+
+```text
+id	role	trim_start	source
+short_one	short	0	/path/to/short.wav
+long_one	long	auto	https://example.test/long.flac
+```
+
+Short targets are 12 seconds and long targets are 30 seconds. Valid sources
+shorter than their target but still within the manifest range are
+pitch-preserving time-stretched. Preparation is content-recipe cached, and
+render/final-output recipes prevent stale output reuse.
+
+Useful modes:
+
+```bash
+./scripts/batch.py --validate-only lists/conv10.txt lists/conv8.txt
+./scripts/batch.py --prepare-only my-list.txt
+./scripts/batch.py --keep-work my-list.txt
+```
+
+## Verification and source use
+
+The 2026-07-26 runs passed matrix validation, full compressed decode checks, and
+SHA-256 verification for both lists. See `RUN_REPORT.md` and `PERFORMANCE.md`.
+
+All 96 conv10-plus-conv8 source pages were audited. They comprise 58 CC0/public
+domain and 38 CC BY recordings; no NC, ND, SA, Sampling+, or unclear source
+remains. See `SOURCE_USE.md`, the two `LICENSE_AUDIT_*.tsv` evidence tables, and
+`YOUTUBE_ATTRIBUTION.md`. CC BY entries must be credited.

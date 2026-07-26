@@ -125,7 +125,7 @@ struct VerificationReport {
     maximum_scaled_convolved_tone_rms_db_relative: f32,
     source_count: usize,
     category_count: usize,
-    sources_per_category: usize,
+    domain_count: usize,
     short_input_count: usize,
     long_input_count: usize,
     matrix_rows: usize,
@@ -152,24 +152,35 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
         bail!("--jobs must be at least 1");
     }
     let sources = load_manifest(&options.manifest)?;
-    let (clips, fingerprints) = load_clips(&sources, &options.input_dir)?;
-    fs::create_dir_all(options.output_dir.join("wav"))?;
-    let version_path = options.output_dir.join("pitch_algorithm.txt");
-    let cache_matches = !options.force
-        && fs::read_to_string(&version_path)
-            .is_ok_and(|version| version.trim() == ALGORITHM_VERSION);
-    if !cache_matches && version_path.exists() {
-        fs::remove_file(&version_path)?;
-    }
     let thread_approach = options.approach;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.jobs)
         .thread_name(move |index| format!("conv10-{}-{index}", thread_approach.slug()))
         .build()?;
-    let started = Instant::now();
+    let (clips, fingerprints) = pool.install(|| load_clips(&sources, &options.input_dir))?;
+    fs::create_dir_all(options.output_dir.join("wav"))?;
     let (short_indices, long_indices) = duration_indices(&sources);
     let all_jobs = make_jobs(&clips, &short_indices, &long_indices);
     let expected_pairs = all_jobs.len();
+    let version_path = options.output_dir.join("pitch_algorithm.txt");
+    let recipe_path = options.output_dir.join("render_recipe.txt");
+    let expected_recipe = render_recipe(&sources, &fingerprints, options.approach);
+    let cache_matches = !options.force
+        && fs::read_to_string(&version_path)
+            .is_ok_and(|version| version.trim() == ALGORITHM_VERSION)
+        && fs::read_to_string(&recipe_path).is_ok_and(|recipe| recipe == expected_recipe)
+        && cached_matrix_is_complete(&options.output_dir, &clips, &all_jobs, expected_pairs)?;
+    if cache_matches {
+        eprintln!(
+            "render cache hit: {} {} pairs already match the inputs and algorithm",
+            expected_pairs,
+            options.approach.slug()
+        );
+        return Ok(());
+    }
+    remove_stale_render_outputs(&options.output_dir)?;
+
+    let started = Instant::now();
     let grouped = group_jobs(all_jobs);
     let completed = AtomicUsize::new(0);
     let mut all_metrics = Vec::with_capacity(expected_pairs);
@@ -198,12 +209,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         chord_index(fingerprints[job.left], fingerprints[job.right]);
                     let selected_chord = chord(selected_chord_index);
                     let profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
-                    let preprocessing_input =
-                        if options.approach == PitchApproach::LongAdditiveSynth {
-                            &clips[job.right].samples
-                        } else {
-                            &clips[job.left].samples
-                        };
+                    let preprocessing_input = &clips[job.right].samples;
                     let preprocessing = preprocess(
                         preprocessing_input,
                         selected_chord,
@@ -211,33 +217,16 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         options.approach,
                     );
                     let path = pair_path(&options.output_dir, &clips, job);
-                    let (tone_track_1, tone_track_2) =
-                        if options.approach == PitchApproach::LongAdditiveSynth {
-                            (None, Some(preprocessing.tone_stem.as_slice()))
-                        } else {
-                            (Some(preprocessing.tone_stem.as_slice()), None)
-                        };
                     let (mut output, tone_calibration) = convolve_stereo_with_tone(
                         &group,
                         job,
                         &clips,
-                        tone_track_1,
-                        tone_track_2,
+                        None,
+                        Some(preprocessing.tone_stem.as_slice()),
                         TARGET_CONVOLVED_TONE_DB_RELATIVE,
                     )?;
-                    let metrics = if path.exists() && cache_matches {
-                        let metrics = measure_wav(&path)?;
-                        validate_stereo_metrics(
-                            &metrics,
-                            job.output_frames,
-                            &path.display().to_string(),
-                        )?;
-                        metrics
-                    } else {
-                        let metrics = condition_stereo_output(&mut output)?;
-                        write_pcm16_stereo(&path, &output)?;
-                        metrics
-                    };
+                    let metrics = condition_stereo_output(&mut output)?;
+                    write_pcm16_stereo(&path, &output)?;
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     if done.is_multiple_of(10) || done == expected_pairs {
                         eprintln!("completed {done}/{expected_pairs} pairs");
@@ -263,17 +252,92 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     all_metrics.sort_by(|a, b| a.pair.cmp(&b.pair));
     write_metrics(&options.output_dir, &all_metrics)?;
     write_matrix(&options.output_dir, &clips, &short_indices, &long_indices)?;
+    fs::write(&recipe_path, expected_recipe)?;
     fs::write(&version_path, format!("{ALGORITHM_VERSION}\n"))?;
     eprintln!("render completed in {:.1?}", started.elapsed());
+    Ok(())
+}
 
-    verify_loaded(
-        &sources,
-        &clips,
-        &options.output_dir,
-        &pool,
-        options.approach,
-        &fingerprints,
-    )?;
+fn render_recipe(sources: &[SourceEntry], fingerprints: &[u64], approach: PitchApproach) -> String {
+    let mut recipe = format!(
+        "algorithm={ALGORITHM_VERSION}\napproach={}\ntrim_fraction={TRIM_FRACTION_OF_SHORTER}\ncut_fade_ms={CUT_FADE_MILLISECONDS}\ntone_target_db={TARGET_CONVOLVED_TONE_DB_RELATIVE}\n",
+        approach.slug()
+    );
+    for (source, fingerprint) in sources.iter().zip(fingerprints) {
+        recipe.push_str(&format!(
+            "input={}\t{:.9}\t{}\n",
+            source.id,
+            source.seconds,
+            fingerprint_hex(*fingerprint)
+        ));
+    }
+    recipe
+}
+
+fn cached_matrix_is_complete(
+    output_dir: &Path,
+    clips: &[AudioClip],
+    jobs: &[PairJob],
+    expected_pairs: usize,
+) -> Result<bool> {
+    if !output_dir.join("matrix.csv").is_file() {
+        return Ok(false);
+    }
+    let metrics_path = output_dir.join("metrics.csv");
+    if !metrics_path.is_file() {
+        return Ok(false);
+    }
+    let mut reader = csv::Reader::from_path(metrics_path)?;
+    let cached_rows = reader
+        .deserialize::<PairMetrics>()
+        .collect::<csv::Result<Vec<_>>>();
+    if cached_rows.is_err()
+        || cached_rows
+            .as_ref()
+            .is_ok_and(|rows| rows.len() != expected_pairs)
+    {
+        return Ok(false);
+    }
+    if jobs.iter().any(|job| {
+        fs::metadata(pair_path(output_dir, clips, job))
+            .map(|metadata| metadata.len() <= 44)
+            .unwrap_or(true)
+    }) {
+        return Ok(false);
+    }
+    let wav_count = fs::read_dir(output_dir.join("wav"))?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "wav")
+        })
+        .count();
+    Ok(wav_count == expected_pairs)
+}
+
+fn remove_stale_render_outputs(output_dir: &Path) -> Result<()> {
+    for path in [
+        output_dir.join("pitch_algorithm.txt"),
+        output_dir.join("render_recipe.txt"),
+        output_dir.join("matrix.csv"),
+        output_dir.join("metrics.csv"),
+        output_dir.join("verification.json"),
+    ] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove stale render metadata {}", path.display()))?;
+        }
+    }
+    let wav_dir = output_dir.join("wav");
+    for entry in fs::read_dir(&wav_dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|extension| extension == "wav") {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove stale pair audio {}", path.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -282,11 +346,11 @@ pub fn verify_matrix(options: VerifyOptions) -> Result<()> {
         bail!("--jobs must be at least 1");
     }
     let sources = load_manifest(&options.manifest)?;
-    let (clips, fingerprints) = load_clips(&sources, &options.input_dir)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.jobs)
         .thread_name(|index| format!("verify-{index}"))
         .build()?;
+    let (clips, fingerprints) = pool.install(|| load_clips(&sources, &options.input_dir))?;
     verify_loaded(
         &sources,
         &clips,
@@ -404,8 +468,16 @@ fn verify_loaded(
         minimum_scaled_convolved_tone_rms_db_relative: pitch_audit.minimum_scaled_tone_db,
         maximum_scaled_convolved_tone_rms_db_relative: pitch_audit.maximum_scaled_tone_db,
         source_count: sources.len(),
-        category_count: crate::manifest::REQUIRED_DOMAINS.len(),
-        sources_per_category: 2,
+        category_count: sources
+            .iter()
+            .map(|source| source.category.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        domain_count: sources
+            .iter()
+            .map(|source| source.domain.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
         short_input_count: short_indices.len(),
         long_input_count: long_indices.len(),
         matrix_rows: short_indices.len(),
@@ -797,7 +869,7 @@ mod tests {
     fn pair_metrics_is_a_flat_csv_record() {
         let metrics = PairMetrics {
             pair: "01-02".into(),
-            approach: "short_additive_synth".into(),
+            approach: "long_additive_synth".into(),
             left: "left".into(),
             right: "right".into(),
             short_fingerprint: "0000000000000001".into(),
@@ -806,10 +878,10 @@ mod tests {
             chord_steps: "7;11;2".into(),
             chord_frequencies_hz: "159.766514;197.747214;122.378462".into(),
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
-            processed_role: "short".into(),
+            processed_role: "long".into(),
             gesture_fingerprint: "0000000000000003".into(),
             note_levels_db_below_local: "4.240613;6.000000;7.930500".into(),
-            note_durations_seconds: "1.500000;2.500000;3.500000".into(),
+            note_durations_seconds: "3.000000;5.000000;7.000000".into(),
             note_envelopes: "soft_drone;broad_swell;breathing_drone".into(),
             instrument: "modal_noise_resonator".into(),
             instrument_parameters: "detune_cents=46.500;mode_disorder_percent=9.500;sustained_noise_percent=37.000;drive=5.250;folds=2".into(),

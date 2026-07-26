@@ -1,34 +1,16 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+#[cfg(test)]
+use std::collections::HashSet;
+
+#[cfg(test)]
 pub const REQUIRED_DOMAINS: [&str; 24] = [
-    "cross_01",
-    "cross_02",
-    "cross_03",
-    "cross_04",
-    "cross_05",
-    "cross_06",
-    "cross_07",
-    "cross_08",
-    "cross_09",
-    "cross_10",
-    "cross_11",
-    "cross_12",
-    "cross_13",
-    "cross_14",
-    "cross_15",
-    "cross_16",
-    "cross_17",
-    "cross_18",
-    "cross_19",
-    "cross_20",
-    "cross_21",
-    "cross_22",
-    "cross_23",
-    "cross_24",
+    "cross_01", "cross_02", "cross_03", "cross_04", "cross_05", "cross_06", "cross_07", "cross_08",
+    "cross_09", "cross_10", "cross_11", "cross_12", "cross_13", "cross_14", "cross_15", "cross_16",
+    "cross_17", "cross_18", "cross_19", "cross_20", "cross_21", "cross_22", "cross_23", "cross_24",
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -82,78 +64,34 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
         entries.push(entry);
     }
 
-    if entries.len() != 48 {
-        bail!("expected exactly 48 sources; found {}", entries.len());
-    }
     let short_count = entries
         .iter()
         .filter(|entry| is_short_duration(entry.seconds))
         .count();
-    if short_count != 24 {
-        bail!("expected exactly 24 sources from 5 through 15 seconds; found {short_count}");
+    if short_count == 0 {
+        bail!("manifest must contain at least one 5..=15 second short source");
     }
     let long_count = entries
         .iter()
         .filter(|entry| is_long_duration(entry.seconds))
         .count();
-    if long_count != 24 {
-        bail!("expected exactly 24 sources from 25 through 35 seconds; found {long_count}");
-    }
-    let categories = entries
-        .iter()
-        .map(|entry| entry.category.as_str())
-        .collect::<HashSet<_>>();
-    if categories.len() != entries.len() {
-        bail!("every source must have a distinct descriptive category");
-    }
-    for domain in REQUIRED_DOMAINS {
-        let matching = entries
-            .iter()
-            .filter(|entry| entry.domain == domain)
-            .collect::<Vec<_>>();
-        if matching.len() != 2 {
-            bail!(
-                "expected exactly 2 {domain} sources; found {}",
-                matching.len()
-            );
-        }
-        let domain_short = matching
-            .iter()
-            .filter(|entry| is_short_duration(entry.seconds))
-            .count();
-        let domain_long = matching
-            .iter()
-            .filter(|entry| is_long_duration(entry.seconds))
-            .count();
-        if domain_short != 1 || domain_long != 1 {
-            bail!("{domain} must contain exactly one short and one long source");
-        }
+    if long_count == 0 {
+        bail!("manifest must contain at least one 25..=35 second long source");
     }
     for entry in &entries {
-        if entry.domain.trim().is_empty()
+        if entry.category.trim().is_empty()
+            || entry.domain.trim().is_empty()
             || entry.provider.trim().is_empty()
             || entry.creator.trim().is_empty()
         {
             bail!(
-                "{} is missing domain, provider, or creator provenance",
+                "{} is missing category, domain, provider, or creator metadata",
                 entry.id
             );
         }
-        for (label, url) in [
-            ("source", entry.source_page.as_str()),
-            ("download", entry.download_url.as_str()),
-        ] {
-            if !url.starts_with("https://") {
-                bail!("{} has a non-HTTPS {label} URL", entry.id);
-            }
+        if entry.source_page.trim().is_empty() || entry.download_url.trim().is_empty() {
+            bail!("{} is missing source or input location", entry.id);
         }
-    }
-    let download_urls = entries
-        .iter()
-        .map(|entry| entry.download_url.as_str())
-        .collect::<HashSet<_>>();
-    if download_urls.len() != entries.len() {
-        bail!("every source must have a distinct download URL");
     }
     Ok(entries)
 }
@@ -189,6 +127,22 @@ mod tests {
                 .filter(|entry| is_long_duration(entry.seconds))
                 .count(),
             24
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.category.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            entries.len()
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.download_url.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            entries.len()
         );
         for domain in REQUIRED_DOMAINS {
             let matching = entries

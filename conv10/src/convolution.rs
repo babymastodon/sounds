@@ -101,6 +101,7 @@ pub fn prepare_group(
     })
 }
 
+#[cfg(test)]
 pub fn convolve_stereo_spectra(
     group: &SpectralGroup,
     job: &PairJob,
@@ -157,17 +158,37 @@ pub fn convolve_stereo_with_tone(
     tone_track_2: Option<&[f32]>,
     target_db_relative: f32,
 ) -> Result<(StereoAudio, ToneCalibration)> {
-    if tone_track_1.is_some() == tone_track_2.is_some() {
-        anyhow::bail!("exactly one tone stem must be provided");
+    let tone_track_2 = match (tone_track_1, tone_track_2) {
+        (None, Some(tone)) => tone,
+        _ => anyhow::bail!("long-additive-synth requires a tone stem for the long input"),
+    };
+    if tone_track_2.len() != clips[job.right].samples.len() {
+        anyhow::bail!("long-input tone stem changed length");
     }
     if !target_db_relative.is_finite() {
         anyhow::bail!("tone target must be finite");
     }
 
-    let dry = convolve_stereo_spectra(group, job, clips, None, None)?;
-    let tone = convolve_stereo_spectra(group, job, clips, tone_track_1, tone_track_2)?;
-    let dry_rms = stereo_rms(&dry);
-    let tone_rms = stereo_rms(&tone);
+    let short_full = &group.spectra[&job.left];
+    let long_full = &group.spectra[&job.right];
+    let shortened_short = trim_start(&clips[job.left].samples, job.trim_frames);
+    let short_trimmed = forward_transform(&*group.forward, group.fft_len, &shortened_short)
+        .with_context(|| format!("trimmed short FFT for {}", clips[job.left].id))?;
+    let shortened_long = trim_final(&clips[job.right].samples, job.trim_frames);
+    let long_trimmed = forward_transform(&*group.forward, group.fft_len, &shortened_long)
+        .with_context(|| format!("trimmed long FFT for {}", clips[job.right].id))?;
+    let tone_full = forward_transform(&*group.forward, group.fft_len, tone_track_2)
+        .with_context(|| format!("tone FFT for {}", clips[job.right].id))?;
+    let shortened_tone = trim_final(tone_track_2, job.trim_frames);
+    let tone_trimmed = forward_transform(&*group.forward, group.fft_len, &shortened_tone)
+        .with_context(|| format!("trimmed tone FFT for {}", clips[job.right].id))?;
+
+    let mut dry_left = product_spectrum(group, short_full, &long_trimmed);
+    let mut dry_right = product_spectrum(group, &short_trimmed, long_full);
+    let tone_left = product_spectrum(group, short_full, &tone_trimmed);
+    let tone_right = product_spectrum(group, &short_trimmed, &tone_full);
+    let dry_rms = stereo_spectrum_rms(group, &dry_left, &dry_right, job.output_frames);
+    let tone_rms = stereo_spectrum_rms(group, &tone_left, &tone_right, job.output_frames);
     if dry_rms < 1.0e-12 || tone_rms < 1.0e-12 {
         anyhow::bail!("cannot calibrate silent convolution component");
     }
@@ -179,18 +200,14 @@ pub fn convolve_stereo_with_tone(
         anyhow::bail!("tone calibration produced a non-finite gain");
     }
     let scaled_db_relative = 20.0 * (tone_rms * gain / dry_rms).log10();
-    let left = dry
-        .left
-        .iter()
-        .zip(&tone.left)
-        .map(|(&dry, &tone)| tone.mul_add(gain, dry))
-        .collect();
-    let right = dry
-        .right
-        .iter()
-        .zip(&tone.right)
-        .map(|(&dry, &tone)| tone.mul_add(gain, dry))
-        .collect();
+    for (dry, &tone) in dry_left.iter_mut().zip(&tone_left) {
+        *dry = tone * gain + *dry;
+    }
+    for (dry, &tone) in dry_right.iter_mut().zip(&tone_right) {
+        *dry = tone * gain + *dry;
+    }
+    let left = inverse_product(group, job, dry_left)?;
+    let right = inverse_product(group, job, dry_right)?;
     Ok((
         StereoAudio { left, right },
         ToneCalibration {
@@ -201,6 +218,47 @@ pub fn convolve_stereo_with_tone(
     ))
 }
 
+fn product_spectrum(
+    group: &SpectralGroup,
+    track_1: &[Complex32],
+    track_2: &[Complex32],
+) -> Vec<Complex32> {
+    let scale = 1.0 / group.fft_len as f32;
+    track_1
+        .iter()
+        .zip(track_2)
+        .map(|(&left, &right)| left * right * scale)
+        .collect()
+}
+
+fn stereo_spectrum_rms(
+    group: &SpectralGroup,
+    left: &[Complex32],
+    right: &[Complex32],
+    output_frames: usize,
+) -> f32 {
+    let sum_squares = spectrum_time_energy(group, left) + spectrum_time_energy(group, right);
+    (sum_squares / (output_frames.max(1) * 2) as f64).sqrt() as f32
+}
+
+fn spectrum_time_energy(group: &SpectralGroup, spectrum: &[Complex32]) -> f64 {
+    let nyquist = spectrum.len().saturating_sub(1);
+    let weighted_sum = spectrum
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let weight = if index == 0 || index == nyquist {
+                1.0
+            } else {
+                2.0
+            };
+            weight * f64::from(value.norm_sqr())
+        })
+        .sum::<f64>();
+    weighted_sum * group.fft_len as f64
+}
+
+#[cfg(test)]
 fn stereo_rms(audio: &StereoAudio) -> f32 {
     let sum_squares = audio
         .left
@@ -252,18 +310,22 @@ fn trim_start(input: &[f32], trim_frames: usize) -> Vec<f32> {
     output
 }
 
+#[cfg(test)]
 fn inverse_channel(
     group: &SpectralGroup,
     job: &PairJob,
     track_1: &[Complex32],
     track_2: &[Complex32],
 ) -> Result<Vec<f32>> {
-    let scale = 1.0 / group.fft_len as f32;
-    let mut product = track_1
-        .iter()
-        .zip(track_2.iter())
-        .map(|(&a, &b)| a * b * scale)
-        .collect::<Vec<_>>();
+    let product = product_spectrum(group, track_1, track_2);
+    inverse_product(group, job, product)
+}
+
+fn inverse_product(
+    group: &SpectralGroup,
+    job: &PairJob,
+    mut product: Vec<Complex32>,
+) -> Result<Vec<f32>> {
     let mut output = group.inverse.make_output_vec();
     let mut scratch = group.inverse.make_scratch_vec();
     group

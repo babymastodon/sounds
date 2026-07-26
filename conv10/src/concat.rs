@@ -10,12 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::{CHANNELS, SAMPLE_RATE, StereoAudio};
 use crate::manifest::{is_long_duration, is_short_duration, load_manifest};
+use crate::pitch::{ALGORITHM_VERSION, fingerprint_bytes, fingerprint_hex};
 
-const FLAC_NAME: &str = "final_mix.flac";
-const AAC_NAME: &str = "final_mix.m4a";
-const OPUS_NAME: &str = "final_mix.opus";
-const OPUS_32K_NAME: &str = "final_mix_32k.opus";
-const RF64_NAME: &str = "final_mix.rf64.wav";
 const RF64_HEADER_BYTES: u64 = 80;
 
 #[derive(Clone, Debug)]
@@ -23,6 +19,8 @@ pub struct ConcatOptions {
     pub manifest: PathBuf,
     pub metrics: PathBuf,
     pub output_dir: PathBuf,
+    pub scratch_dir: PathBuf,
+    pub output_name: String,
     pub crossfade_seconds: f64,
     pub aac_bitrate_kbps: u32,
     pub opus_bitrate_kbps: u32,
@@ -71,18 +69,26 @@ struct ConcatReport {
     output_duration_seconds: f64,
     aac_bitrate_kbps: u32,
     opus_bitrate_kbps: u32,
-    rf64: EncodedFileReport,
     flac: EncodedFileReport,
     aac: EncodedFileReport,
     opus: EncodedFileReport,
-    opus_32k: EncodedFileReport,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+struct ConcatRecipe {
+    algorithm_version: String,
+    manifest_fingerprint: String,
+    metrics_fingerprint: String,
+    output_frames: u64,
+    crossfade_seconds: f64,
+    aac_bitrate_kbps: u32,
+    opus_bitrate_kbps: u32,
 }
 
 struct EncodingTargets<'a> {
     flac: &'a Path,
     aac: &'a Path,
-    opus_main: &'a Path,
-    opus_32k: &'a Path,
+    opus: &'a Path,
 }
 
 pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
@@ -95,6 +101,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     if options.opus_bitrate_kbps == 0 {
         bail!("--opus-bitrate-kbps must be at least 1");
     }
+    validate_output_name(&options.output_name)?;
 
     let sources = load_manifest(&options.manifest)?;
     let short_ids = sources
@@ -135,20 +142,50 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         .context("metrics path has no parent directory")?;
 
     fs::create_dir_all(&options.output_dir)?;
+    fs::create_dir_all(&options.scratch_dir)?;
     write_timeline(
-        &options.output_dir.join("timeline.csv"),
+        &options
+            .output_dir
+            .join(format!("{}.timeline.csv", options.output_name)),
         &rows,
         &starts,
         &transitions,
     )?;
 
-    let rf64_path = options.output_dir.join(RF64_NAME);
-    let flac_path = options.output_dir.join(FLAC_NAME);
-    let aac_path = options.output_dir.join(AAC_NAME);
-    let opus_path = options.output_dir.join(OPUS_NAME);
-    let opus_32k_path = options.output_dir.join(OPUS_32K_NAME);
+    let rf64_path = options
+        .scratch_dir
+        .join(format!("{}.part.rf64.wav", options.output_name));
+    let flac_path = options
+        .output_dir
+        .join(format!("{}.flac", options.output_name));
+    let aac_path = options
+        .output_dir
+        .join(format!("{}.m4a", options.output_name));
+    let opus_path = options
+        .output_dir
+        .join(format!("{}.opus", options.output_name));
+    let recipe_path = options
+        .output_dir
+        .join(format!("{}.recipe.json", options.output_name));
+    let expected_recipe = ConcatRecipe {
+        algorithm_version: ALGORITHM_VERSION.to_owned(),
+        manifest_fingerprint: fingerprint_file(&options.manifest)?,
+        metrics_fingerprint: fingerprint_file(&options.metrics)?,
+        output_frames,
+        crossfade_seconds: options.crossfade_seconds,
+        aac_bitrate_kbps: options.aac_bitrate_kbps,
+        opus_bitrate_kbps: options.opus_bitrate_kbps,
+    };
+    let recipe_matches = fs::read(&recipe_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ConcatRecipe>(&bytes).ok())
+        .is_some_and(|recipe| recipe == expected_recipe);
+    let rebuild_all = options.force || !recipe_matches;
+    let needs_encoding =
+        rebuild_all || !flac_path.is_file() || !aac_path.is_file() || !opus_path.is_file();
 
-    if !rf64_path.is_file() || options.force {
+    if needs_encoding {
+        remove_if_present(&rf64_path)?;
         assemble_sequence(
             input_root,
             &rows,
@@ -157,40 +194,30 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
             output_frames,
             &rf64_path,
         )?;
-    } else {
-        eprintln!("reusing existing RF64 PCM master");
-    }
-    let rf64 = probe_encoding(&rf64_path, "pcm_s16le", output_seconds)?;
-
-    let all_encodings_exist =
-        flac_path.is_file() && aac_path.is_file() && opus_path.is_file() && opus_32k_path.is_file();
-    if !all_encodings_exist || options.force {
         let targets = EncodingTargets {
             flac: &flac_path,
             aac: &aac_path,
-            opus_main: &opus_path,
-            opus_32k: &opus_32k_path,
+            opus: &opus_path,
         };
         encode_outputs(
             &rf64_path,
             &targets,
             options.aac_bitrate_kbps,
             options.opus_bitrate_kbps,
-            options.force,
+            rebuild_all,
         )?;
+        remove_if_present(&rf64_path)?;
     } else {
-        eprintln!("reusing existing FLAC, AAC, and Opus encodings");
+        eprintln!("reusing recipe-matched FLAC, AAC/M4A, and Opus encodings");
     }
 
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
     let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
-    let opus_32k = probe_encoding(&opus_32k_path, "opus", output_seconds)?;
     validate_decodable_in_parallel(&[
         ("FLAC", &flac_path),
         ("AAC", &aac_path),
         ("Opus", &opus_path),
-        ("Opus 32k", &opus_32k_path),
     ])?;
     let report = ConcatReport {
         status: "pass",
@@ -204,16 +231,17 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         output_duration_seconds: output_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
         opus_bitrate_kbps: options.opus_bitrate_kbps,
-        rf64,
         flac,
         aac,
         opus,
-        opus_32k,
     };
     fs::write(
-        options.output_dir.join("concat.json"),
+        options
+            .output_dir
+            .join(format!("{}.json", options.output_name)),
         serde_json::to_vec_pretty(&report)?,
     )?;
+    fs::write(&recipe_path, serde_json::to_vec_pretty(&expected_recipe)?)?;
     eprintln!(
         "concatenation passed: {} inputs, {} full {:.3}s fades, {} shortened fades, {:.2} hours",
         report.input_files,
@@ -222,6 +250,24 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         report.shortened_crossfades,
         report.output_duration_seconds / 3600.0
     );
+    Ok(())
+}
+
+fn fingerprint_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("fingerprint {}", path.display()))?;
+    Ok(fingerprint_hex(fingerprint_bytes(&bytes)))
+}
+
+fn validate_output_name(name: &str) -> Result<()> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || path.components().count() != 1
+        || path.file_name().is_none()
+    {
+        bail!("--output-name must be one non-empty file-name component");
+    }
     Ok(())
 }
 
@@ -329,7 +375,7 @@ fn assemble_sequence(
     expected_output_frames: u64,
     rf64_path: &Path,
 ) -> Result<()> {
-    let temporary_rf64 = rf64_path.with_file_name("final_mix.part.rf64.wav");
+    let temporary_rf64 = rf64_path.with_extension("assembling.wav");
     if temporary_rf64.exists() {
         fs::remove_file(&temporary_rf64)?;
     }
@@ -406,14 +452,12 @@ fn encode_outputs(
     opus_bitrate_kbps: u32,
     force: bool,
 ) -> Result<()> {
-    let temporary_flac = targets.flac.with_file_name("final_mix.part.flac");
-    let temporary_aac = targets.aac.with_file_name("final_mix.part.m4a");
-    let temporary_opus = targets.opus_main.with_file_name("final_mix.part.opus");
-    let temporary_opus_32k = targets.opus_32k.with_file_name("final_mix_32k.part.opus");
+    let temporary_flac = targets.flac.with_extension("part.flac");
+    let temporary_aac = targets.aac.with_extension("part.m4a");
+    let temporary_opus = targets.opus.with_extension("part.opus");
     let rebuild_flac = force || !targets.flac.is_file();
     let rebuild_aac = force || !targets.aac.is_file();
-    let rebuild_opus = force || !targets.opus_main.is_file();
-    let rebuild_opus_32k = force || !targets.opus_32k.is_file();
+    let rebuild_opus = force || !targets.opus.is_file();
     let mut jobs = Vec::new();
 
     if rebuild_flac {
@@ -448,7 +492,7 @@ fn encode_outputs(
             .with_context(|| format!("start parallel AAC encoder {aac_encoder}"))?;
         jobs.push(("AAC", child, temporary_aac, targets.aac.to_owned()));
     }
-    let opus_encoder = if rebuild_opus || rebuild_opus_32k {
+    let opus_encoder = if rebuild_opus {
         Some(preferred_opus_encoder()?)
     } else {
         None
@@ -461,22 +505,7 @@ fn encode_outputs(
             opus_encoder.as_deref().unwrap_or("libopus"),
             opus_bitrate_kbps,
         )?;
-        jobs.push(("Opus", child, temporary_opus, targets.opus_main.to_owned()));
-    }
-    if rebuild_opus_32k {
-        remove_if_present(&temporary_opus_32k)?;
-        let child = spawn_opus(
-            rf64_path,
-            &temporary_opus_32k,
-            opus_encoder.as_deref().unwrap_or("libopus"),
-            32,
-        )?;
-        jobs.push((
-            "Opus 32k",
-            child,
-            temporary_opus_32k,
-            targets.opus_32k.to_owned(),
-        ));
+        jobs.push(("Opus", child, temporary_opus, targets.opus.to_owned()));
     }
     let names = jobs
         .iter()
@@ -562,18 +591,6 @@ fn spawn_opus(
         .with_context(|| format!("start {bitrate_kbps}k Opus encoder {encoder}"))
 }
 
-fn preferred_aac_encoder() -> Result<String> {
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-h", "encoder=libfdk_aac"])
-        .output()
-        .context("inspect ffmpeg AAC encoders")?;
-    Ok(if output.status.success() {
-        "libfdk_aac".to_owned()
-    } else {
-        "aac".to_owned()
-    })
-}
-
 fn preferred_opus_encoder() -> Result<String> {
     let output = Command::new("ffmpeg")
         .args(["-hide_banner", "-h", "encoder=libopus"])
@@ -583,6 +600,18 @@ fn preferred_opus_encoder() -> Result<String> {
         "libopus".to_owned()
     } else {
         "opus".to_owned()
+    })
+}
+
+fn preferred_aac_encoder() -> Result<String> {
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-h", "encoder=libfdk_aac"])
+        .output()
+        .context("inspect ffmpeg AAC encoders")?;
+    Ok(if output.status.success() {
+        "libfdk_aac".to_owned()
+    } else {
+        "aac".to_owned()
     })
 }
 

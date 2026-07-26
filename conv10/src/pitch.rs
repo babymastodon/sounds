@@ -13,43 +13,25 @@ pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
 const MINIMUM_REFERENCE_NOTE_SECONDS: f32 = 0.4;
 pub const MINIMUM_LONG_NOTE_SECONDS: f32 = 3.0;
 pub const MAXIMUM_LONG_NOTE_SECONDS: f32 = 7.0;
-pub const MINIMUM_SHORT_NOTE_SECONDS: f32 = MINIMUM_LONG_NOTE_SECONDS / 2.0;
-pub const MAXIMUM_SHORT_NOTE_SECONDS: f32 = MAXIMUM_LONG_NOTE_SECONDS / 2.0;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-gradual-drones-v14";
+pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-gradual-drones-v15";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
     LongAdditiveSynth,
-    ShortAdditiveSynth,
 }
 
 impl PitchApproach {
-    pub const ALL: [Self; 2] = [Self::LongAdditiveSynth, Self::ShortAdditiveSynth];
-
     pub const fn slug(self) -> &'static str {
-        match self {
-            Self::LongAdditiveSynth => "long_additive_synth",
-            Self::ShortAdditiveSynth => "short_additive_synth",
-        }
+        "long_additive_synth"
     }
 
     pub const fn description(self) -> &'static str {
-        match self {
-            Self::LongAdditiveSynth => {
-                "locally leveled 3-7 second additive drones mixed into the unfiltered long input"
-            }
-            Self::ShortAdditiveSynth => {
-                "locally leveled 1.5-3.5 second additive drones mixed into the unfiltered short input"
-            }
-        }
+        "locally leveled 3-7 second additive drones mixed into the unfiltered long input"
     }
 
     pub const fn processed_role(self) -> &'static str {
-        match self {
-            Self::LongAdditiveSynth => "long",
-            Self::ShortAdditiveSynth => "short",
-        }
+        "long"
     }
 }
 
@@ -240,33 +222,20 @@ pub fn gesture_profile(short_name: &str, long_name: &str) -> GestureProfile {
 }
 
 pub fn scheduled_note_count(profile: GestureProfile, approach: PitchApproach) -> usize {
-    let (minimum, possibilities) = match approach {
-        PitchApproach::LongAdditiveSynth => (3, 4),
-        PitchApproach::ShortAdditiveSynth => (2, 2),
-    };
     let hash = derived_hash(profile.fingerprint, b"schedule-count", approach as u64);
-    minimum + hash as usize % possibilities
+    3 + hash as usize % 4
 }
 
-pub const fn minimum_note_seconds(approach: PitchApproach) -> f32 {
-    match approach {
-        PitchApproach::LongAdditiveSynth => MINIMUM_LONG_NOTE_SECONDS,
-        PitchApproach::ShortAdditiveSynth => MINIMUM_SHORT_NOTE_SECONDS,
-    }
+pub const fn minimum_note_seconds(_approach: PitchApproach) -> f32 {
+    MINIMUM_LONG_NOTE_SECONDS
 }
 
-pub const fn maximum_note_seconds(approach: PitchApproach) -> f32 {
-    match approach {
-        PitchApproach::LongAdditiveSynth => MAXIMUM_LONG_NOTE_SECONDS,
-        PitchApproach::ShortAdditiveSynth => MAXIMUM_SHORT_NOTE_SECONDS,
-    }
+pub const fn maximum_note_seconds(_approach: PitchApproach) -> f32 {
+    MAXIMUM_LONG_NOTE_SECONDS
 }
 
-pub fn note_duration_seconds(gesture: NoteGesture, approach: PitchApproach) -> f32 {
-    match approach {
-        PitchApproach::LongAdditiveSynth => gesture.duration_seconds,
-        PitchApproach::ShortAdditiveSynth => gesture.duration_seconds / 2.0,
-    }
+pub fn note_duration_seconds(gesture: NoteGesture, _approach: PitchApproach) -> f32 {
+    gesture.duration_seconds
 }
 
 pub fn note_db_below_local(gesture: NoteGesture, approach: PitchApproach) -> f32 {
@@ -534,34 +503,67 @@ fn modal_noise_note(
             2.0 * PI * unit_interval(derived_hash(seed, b"modal-phase", (bank * 6 + mode) as u64))
         })
     });
+    let phase_steps =
+        frequencies.map(|bank| bank.map(|frequency| 2.0 * PI * frequency / SAMPLE_RATE as f32));
+    let phase_step_sines = phase_steps.map(|bank| bank.map(f32::sin));
+    let phase_step_cosines = phase_steps.map(|bank| bank.map(f32::cos));
+    let mut oscillator_sines = phases.map(|bank| bank.map(f32::sin));
+    let mut oscillator_cosines = phases.map(|bank| bank.map(f32::cos));
+    let pole_radii = std::array::from_fn::<_, 3, _>(|bank| {
+        std::array::from_fn::<_, 6, _>(|mode| {
+            let quality = 24.0 + mode as f32 * 3.0;
+            (-PI * frequencies[bank][mode] / (quality * SAMPLE_RATE as f32)).exp()
+        })
+    });
+    let coefficients = std::array::from_fn::<_, 3, _>(|bank| {
+        std::array::from_fn::<_, 6, _>(|mode| {
+            2.0 * pole_radii[bank][mode] * phase_steps[bank][mode].cos()
+        })
+    });
+    let decay_steps = std::array::from_fn::<_, 6, _>(|mode| {
+        (-(0.25 + mode as f32 * 0.35) / (duration * SAMPLE_RATE as f32)).exp()
+    });
+    let mut modal_decays = [1.0_f32; 6];
     let mut modal_core = Vec::with_capacity(frames);
     let mut resonated_noise = Vec::with_capacity(frames);
     let mut previous_1 = [[0.0_f32; 6]; 3];
     let mut previous_2 = [[0.0_f32; 6]; 3];
     for frame in 0..frames {
         let time = frame as f32 / SAMPLE_RATE as f32;
-        let progress = (time / duration).clamp(0.0, 1.0);
         let excitation = noise_sample(seed ^ 0xa5a5_5a5a_1337_2468, frame)
             * (0.10 + 0.10 * (-time / 0.015).exp());
         let mut modes = 0.0;
         let mut resonance = 0.0;
         for bank in 0..3 {
             for mode in 0..6 {
-                let mode_frequency = frequencies[bank][mode];
-                let modal_decay = (-(0.25 + mode as f32 * 0.35) * progress).exp();
-                modes += AMPLITUDES[mode]
-                    * modal_decay
-                    * (2.0 * PI * mode_frequency * time + phases[bank][mode]).sin();
+                modes += AMPLITUDES[mode] * modal_decays[mode] * oscillator_sines[bank][mode];
 
-                let quality = 24.0 + mode as f32 * 3.0;
-                let pole_radius = (-PI * mode_frequency / (quality * SAMPLE_RATE as f32)).exp();
-                let coefficient =
-                    2.0 * pole_radius * (2.0 * PI * mode_frequency / SAMPLE_RATE as f32).cos();
-                let filtered = excitation + coefficient * previous_1[bank][mode]
+                let pole_radius = pole_radii[bank][mode];
+                let filtered = excitation + coefficients[bank][mode] * previous_1[bank][mode]
                     - pole_radius * pole_radius * previous_2[bank][mode];
                 previous_2[bank][mode] = previous_1[bank][mode];
                 previous_1[bank][mode] = filtered;
                 resonance += AMPLITUDES[mode] * (1.0 - pole_radius) * filtered;
+
+                let sine = oscillator_sines[bank][mode];
+                let cosine = oscillator_cosines[bank][mode];
+                oscillator_sines[bank][mode] =
+                    sine * phase_step_cosines[bank][mode] + cosine * phase_step_sines[bank][mode];
+                oscillator_cosines[bank][mode] =
+                    cosine * phase_step_cosines[bank][mode] - sine * phase_step_sines[bank][mode];
+            }
+        }
+        for mode in 0..6 {
+            modal_decays[mode] *= decay_steps[mode];
+        }
+        if (frame + 1).is_multiple_of(4_096) {
+            for bank in 0..3 {
+                for mode in 0..6 {
+                    normalize_oscillator(
+                        &mut oscillator_sines[bank][mode],
+                        &mut oscillator_cosines[bank][mode],
+                    );
+                }
             }
         }
         modal_core.push(modes / 3.0);
@@ -619,6 +621,31 @@ fn inharmonic_fm_note(
                 ))
         })
     });
+    let carrier_steps = frequencies.map(|frequency| 2.0 * PI * frequency / SAMPLE_RATE as f32);
+    let modulator_1_steps = carrier_steps.map(|step| step * SQRT_2);
+    let modulator_2_steps = carrier_steps.map(|step| step * 2.731);
+    let drift_steps = std::array::from_fn::<_, 3, _>(|carrier| {
+        2.0 * PI * (0.31 + carrier as f32 * 0.13) / SAMPLE_RATE as f32
+    });
+    let drift_phases = std::array::from_fn::<_, 3, _>(|carrier| {
+        2.0 * PI * unit_interval(derived_hash(seed, b"fm-drift-phase", carrier as u64))
+    });
+    let mut modulator_1_sines = phases.map(|phase| phase[0].sin());
+    let mut modulator_1_cosines = phases.map(|phase| phase[0].cos());
+    let modulator_1_step_sines = modulator_1_steps.map(f32::sin);
+    let modulator_1_step_cosines = modulator_1_steps.map(f32::cos);
+    let mut modulator_2_sines = phases.map(|phase| phase[1].sin());
+    let mut modulator_2_cosines = phases.map(|phase| phase[1].cos());
+    let modulator_2_step_sines = modulator_2_steps.map(f32::sin);
+    let modulator_2_step_cosines = modulator_2_steps.map(f32::cos);
+    let mut drift_sines = drift_phases.map(f32::sin);
+    let mut drift_cosines = drift_phases.map(f32::cos);
+    let drift_step_sines = drift_steps.map(f32::sin);
+    let drift_step_cosines = drift_steps.map(f32::cos);
+    let mut clean_sines = [0.0_f32; 3];
+    let mut clean_cosines = [1.0_f32; 3];
+    let carrier_step_sines = carrier_steps.map(f32::sin);
+    let carrier_step_cosines = carrier_steps.map(f32::cos);
     let mut previous = [0.0_f32; 3];
     let mut output = Vec::with_capacity(frames);
     for frame in 0..frames {
@@ -628,18 +655,13 @@ fn inharmonic_fm_note(
             .fm_index_start
             .mul_add(1.0 - progress, instrument.fm_index_end * progress);
         let mut carriers = 0.0;
+        let mut clean = 0.0;
         let prior = previous;
         for carrier in 0..3 {
-            let carrier_frequency = frequencies[carrier];
-            let carrier_phase = 2.0 * PI * carrier_frequency * time;
-            let modulator_1 =
-                (2.0 * PI * carrier_frequency * SQRT_2 * time + phases[carrier][0]).sin();
-            let modulator_2 =
-                (2.0 * PI * carrier_frequency * 2.731 * time + phases[carrier][1]).sin();
-            let drift_phase =
-                2.0 * PI * unit_interval(derived_hash(seed, b"fm-drift-phase", carrier as u64));
-            let phase_drift =
-                0.08 * (2.0 * PI * (0.31 + carrier as f32 * 0.13) * time + drift_phase).sin();
+            let carrier_phase = carrier_steps[carrier] * frame as f32;
+            let modulator_1 = modulator_1_sines[carrier];
+            let modulator_2 = modulator_2_sines[carrier];
+            let phase_drift = 0.08 * drift_sines[carrier];
             let value = (carrier_phase
                 + index * modulator_1
                 + 2.2 * modulator_2
@@ -649,13 +671,48 @@ fn inharmonic_fm_note(
                 .sin();
             previous[carrier] = value;
             carriers += value;
+            clean += clean_sines[carrier];
+            advance_oscillator(
+                &mut modulator_1_sines[carrier],
+                &mut modulator_1_cosines[carrier],
+                modulator_1_step_sines[carrier],
+                modulator_1_step_cosines[carrier],
+            );
+            advance_oscillator(
+                &mut modulator_2_sines[carrier],
+                &mut modulator_2_cosines[carrier],
+                modulator_2_step_sines[carrier],
+                modulator_2_step_cosines[carrier],
+            );
+            advance_oscillator(
+                &mut drift_sines[carrier],
+                &mut drift_cosines[carrier],
+                drift_step_sines[carrier],
+                drift_step_cosines[carrier],
+            );
+            advance_oscillator(
+                &mut clean_sines[carrier],
+                &mut clean_cosines[carrier],
+                carrier_step_sines[carrier],
+                carrier_step_cosines[carrier],
+            );
+        }
+        if (frame + 1).is_multiple_of(4_096) {
+            for carrier in 0..3 {
+                normalize_oscillator(
+                    &mut modulator_1_sines[carrier],
+                    &mut modulator_1_cosines[carrier],
+                );
+                normalize_oscillator(
+                    &mut modulator_2_sines[carrier],
+                    &mut modulator_2_cosines[carrier],
+                );
+                normalize_oscillator(&mut drift_sines[carrier], &mut drift_cosines[carrier]);
+                normalize_oscillator(&mut clean_sines[carrier], &mut clean_cosines[carrier]);
+            }
         }
         let fm = carriers / 3.0;
-        let clean = frequencies
-            .iter()
-            .map(|&carrier_frequency| (2.0 * PI * carrier_frequency * time).sin())
-            .sum::<f32>()
-            / 3.0;
+        let clean = clean / 3.0;
         let folded = fold_signal(fm * instrument.drive, instrument.fold_count);
         let quantized = (folded * 1_023.0).round() / 1_023.0;
         let voice = 0.45 * clean + 0.40 * fm + 0.15 * quantized;
@@ -685,6 +742,7 @@ fn saturated_saw_note(
     let drift_phases = std::array::from_fn::<_, 7, _>(|index| {
         2.0 * PI * unit_interval(derived_hash(seed, b"saw-drift-phase", index as u64))
     });
+    let fractional_drift = 2.0_f32.powf(instrument.drift_cents / 1_200.0) - 1.0;
     let levels = ((1_u32 << instrument.bit_depth) - 1) as f32;
     (0..frames)
         .map(|frame| {
@@ -700,7 +758,6 @@ fn saturated_saw_note(
                 .enumerate()
                 .map(
                     |(index, (((&frequency, phase), drift_frequency), drift_phase))| {
-                        let fractional_drift = 2.0_f32.powf(instrument.drift_cents / 1_200.0) - 1.0;
                         let drift_depth =
                             frequency * fractional_drift / (2.0 * PI * drift_frequency);
                         let phase = (frequency * held_time
@@ -738,6 +795,19 @@ fn saturated_saw_note(
             quantized * envelope(envelope_kind, time, duration)
         })
         .collect()
+}
+
+fn advance_oscillator(sine: &mut f32, cosine: &mut f32, step_sine: f32, step_cosine: f32) {
+    let prior_sine = *sine;
+    let prior_cosine = *cosine;
+    *sine = prior_sine * step_cosine + prior_cosine * step_sine;
+    *cosine = prior_cosine * step_cosine - prior_sine * step_sine;
+}
+
+fn normalize_oscillator(sine: &mut f32, cosine: &mut f32) {
+    let inverse_magnitude = sine.mul_add(*sine, *cosine * *cosine).sqrt().recip();
+    *sine *= inverse_magnitude;
+    *cosine *= inverse_magnitude;
 }
 
 fn poly_blep_saw_phase(phase: f32, increment: f32) -> f32 {
@@ -921,7 +991,7 @@ mod tests {
     use super::*;
 
     fn test_signal() -> Vec<f32> {
-        (0..SAMPLE_RATE as usize * 8)
+        (0..SAMPLE_RATE as usize * 25)
             .map(|index| {
                 let time = index as f32 / SAMPLE_RATE as f32;
                 0.4 * (2.0 * PI * 173.0 * time).sin()
@@ -971,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn pair_hash_is_stable_and_independent_of_approach() {
+    fn pair_hash_is_stable_and_ordered() {
         let short = fingerprint_bytes(b"short input file bytes");
         let long = fingerprint_bytes(b"long input file bytes");
         let selected = chord_index(short, long);
@@ -981,14 +1051,14 @@ mod tests {
     }
 
     #[test]
-    fn additive_preprocessor_is_sparse_stronger_and_preserves_length() {
+    fn additive_preprocessor_is_sparse_and_preserves_length() {
         let input = test_signal();
         let profile = gesture_profile("short-name", "long-name");
-        let output = preprocess(&input, chord(7), profile, PitchApproach::ShortAdditiveSynth);
+        let output = preprocess(&input, chord(7), profile, PitchApproach::LongAdditiveSynth);
         assert_eq!(output.tone_stem.len(), input.len());
         assert!(output.tone_stem.iter().all(|sample| sample.is_finite()));
         assert!(output.tone_stem.iter().any(|sample| sample.abs() > 1.0e-5));
-        assert_eq!(output.scheduled_note_count, 2);
+        assert!((3..=6).contains(&output.scheduled_note_count));
         assert!(
             output.dry_correlation >= 0.80,
             "correlation={}",
@@ -1003,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn gradual_durations_are_role_dependent_and_preserve_reference_energy() {
+    fn gradual_durations_preserve_reference_energy() {
         let profile = gesture_profile("short-name", "long-name");
         assert_eq!(
             profile.fingerprint,
@@ -1028,16 +1098,11 @@ mod tests {
             assert!(!note.envelope.slug().is_empty());
             let reference_energy =
                 10.0_f32.powf(-note.db_below_local / 10.0) * note.reference_duration_seconds;
-            for approach in PitchApproach::ALL {
-                let duration = note_duration_seconds(note, approach);
-                let realized_energy =
-                    10.0_f32.powf(-note_db_below_local(note, approach) / 10.0) * duration;
-                assert!((realized_energy - reference_energy).abs() < 1.0e-5);
-            }
-            assert_eq!(
-                note_duration_seconds(note, PitchApproach::LongAdditiveSynth),
-                2.0 * note_duration_seconds(note, PitchApproach::ShortAdditiveSynth)
-            );
+            let duration = note_duration_seconds(note, PitchApproach::LongAdditiveSynth);
+            let realized_energy = 10.0_f32
+                .powf(-note_db_below_local(note, PitchApproach::LongAdditiveSynth) / 10.0)
+                * duration;
+            assert!((realized_energy - reference_energy).abs() < 1.0e-5);
         }
         assert!(
             (minimum_note_db_below_local(PitchApproach::LongAdditiveSynth) - 7.250_613).abs()
@@ -1047,24 +1112,12 @@ mod tests {
             (maximum_note_db_below_local(PitchApproach::LongAdditiveSynth) - 10.930_38).abs()
                 < 1.0e-5
         );
-        assert!(
-            (minimum_note_db_below_local(PitchApproach::ShortAdditiveSynth) - 4.240_313).abs()
-                < 1.0e-5
-        );
-        assert!(
-            (maximum_note_db_below_local(PitchApproach::ShortAdditiveSynth) - 7.920_081).abs()
-                < 1.0e-5
-        );
     }
 
     #[test]
-    fn note_counts_are_sparse_and_role_dependent() {
+    fn note_counts_are_sparse() {
         for index in 0..100 {
             let profile = gesture_profile(&format!("short-{index}"), "long");
-            assert!((2..=3).contains(&scheduled_note_count(
-                profile,
-                PitchApproach::ShortAdditiveSynth
-            )));
             assert!((3..=6).contains(&scheduled_note_count(
                 profile,
                 PitchApproach::LongAdditiveSynth
@@ -1170,7 +1223,7 @@ mod tests {
 
     #[test]
     fn gradual_envelopes_have_no_fast_edges_or_onset_concentration() {
-        let duration = MINIMUM_SHORT_NOTE_SECONDS;
+        let duration = MINIMUM_LONG_NOTE_SECONDS;
         let frames = (duration * SAMPLE_RATE as f32).round() as usize;
         for envelope_kind in [
             EnvelopeKind::SoftDrone,
@@ -1208,10 +1261,7 @@ mod tests {
     fn two_lane_scheduler_fits_notes_and_limits_polyphony() {
         for index in 0..100 {
             let profile = gesture_profile(&format!("short-{index}"), "long");
-            for (approach, input_seconds) in [
-                (PitchApproach::ShortAdditiveSynth, 8.0),
-                (PitchApproach::LongAdditiveSynth, 25.0),
-            ] {
+            for (approach, input_seconds) in [(PitchApproach::LongAdditiveSynth, 25.0)] {
                 let input_frames = (input_seconds * SAMPLE_RATE as f32) as usize;
                 let schedule = schedule_notes(input_frames, profile, approach);
                 assert_eq!(schedule.len(), scheduled_note_count(profile, approach));
@@ -1306,8 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn approaches_target_opposite_input_roles() {
+    fn additive_synth_targets_the_long_input() {
         assert_eq!(PitchApproach::LongAdditiveSynth.processed_role(), "long");
-        assert_eq!(PitchApproach::ShortAdditiveSynth.processed_role(), "short");
     }
 }

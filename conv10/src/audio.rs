@@ -133,10 +133,8 @@ pub fn condition_stereo_output(audio: &mut StereoAudio) -> Result<StereoMetrics>
         remove_mean(channel);
     }
 
-    let original_left = audio.left.clone();
-    let original_right = audio.right.clone();
-    condition_output_channel(&mut audio.left, &original_left);
-    condition_output_channel(&mut audio.right, &original_right);
+    condition_output_channel(&mut audio.left);
+    condition_output_channel(&mut audio.right);
 
     remove_mean(&mut audio.left);
     remove_mean(&mut audio.right);
@@ -157,18 +155,27 @@ pub fn condition_stereo_output(audio: &mut StereoAudio) -> Result<StereoMetrics>
     Ok(metrics)
 }
 
-fn condition_output_channel(output: &mut [f32], original: &[f32]) {
-    let raw_rms = measure(original).rms.max(1.0e-12);
+fn condition_output_channel(output: &mut [f32]) {
+    let raw_rms = measure(output).rms.max(1.0e-12);
     let mut gain = OUTPUT_TARGET_RMS / raw_rms;
+    let mut applied_gain = gain;
     for _ in 0..4 {
-        for (output, input) in output.iter_mut().zip(original) {
-            *output = OUTPUT_CEILING * (*input * gain / OUTPUT_CEILING).tanh();
-        }
-        let rms = measure(output).rms;
+        applied_gain = gain;
+        let sum_squares = output
+            .iter()
+            .map(|&input| {
+                let sample = OUTPUT_CEILING * (input * gain / OUTPUT_CEILING).tanh();
+                f64::from(sample) * f64::from(sample)
+            })
+            .sum::<f64>();
+        let rms = (sum_squares / output.len().max(1) as f64).sqrt() as f32;
         if rms >= 0.055 {
             break;
         }
         gain *= (0.07 / rms.max(1.0e-12)).clamp(1.0, 4.0);
+    }
+    for sample in output {
+        *sample = OUTPUT_CEILING * (*sample * applied_gain / OUTPUT_CEILING).tanh();
     }
 }
 

@@ -17,13 +17,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Render both additive-note approaches over the 24x24 bipartite matrix.
+    /// Render the long-additive-synth short-to-long convolution matrix.
     Render {
         #[arg(long, default_value = "sources.tsv")]
         manifest: PathBuf,
         #[arg(long, default_value = "samples/prepared")]
         input_dir: PathBuf,
-        #[arg(long, default_value = "outputs")]
+        #[arg(long, default_value = "outputs/long_additive_synth")]
         output_dir: PathBuf,
         /// Number of pair renders to run concurrently. Defaults to all logical CPUs.
         #[arg(long)]
@@ -32,32 +32,36 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Exhaustively validate both 24x24 matrix outputs.
+    /// Exhaustively validate the long-additive-synth matrix.
     Verify {
         #[arg(long, default_value = "sources.tsv")]
         manifest: PathBuf,
         #[arg(long, default_value = "samples/prepared")]
         input_dir: PathBuf,
-        #[arg(long, default_value = "outputs")]
+        #[arg(long, default_value = "outputs/long_additive_synth")]
         output_dir: PathBuf,
         #[arg(long)]
         jobs: Option<usize>,
     },
-    /// Concatenate each pitch approach into its own set of final masters.
+    /// Concatenate the matrix into same-named FLAC, AAC/M4A, and Opus masters.
     Concat {
         #[arg(long, default_value = "sources.tsv")]
         manifest: PathBuf,
-        #[arg(long, default_value = "outputs")]
+        #[arg(long, default_value = "outputs/long_additive_synth")]
         matrix_dir: PathBuf,
         #[arg(long, default_value = "outputs/final")]
         output_dir: PathBuf,
+        #[arg(long, default_value = ".scratch/concat")]
+        scratch_dir: PathBuf,
+        #[arg(long, default_value = "final_mix")]
+        output_name: String,
         #[arg(long, default_value_t = 10.0)]
         crossfade_seconds: f64,
         #[arg(long, default_value_t = 192)]
         aac_bitrate_kbps: u32,
         #[arg(long, default_value_t = 128)]
         opus_bitrate_kbps: u32,
-        /// Rebuild the RF64 and all final encodings even if they already exist.
+        /// Rebuild all three final encodings even if they already exist.
         #[arg(long)]
         force: bool,
     },
@@ -75,17 +79,14 @@ fn main() -> Result<()> {
             force,
         } => {
             let jobs = jobs.unwrap_or_else(default_jobs);
-            for approach in PitchApproach::ALL {
-                render_matrix(RenderOptions {
-                    manifest: manifest.clone(),
-                    input_dir: input_dir.clone(),
-                    output_dir: output_dir.join(approach.slug()),
-                    jobs,
-                    force,
-                    approach,
-                })?;
-            }
-            Ok(())
+            render_matrix(RenderOptions {
+                manifest,
+                input_dir,
+                output_dir,
+                jobs,
+                force,
+                approach: PitchApproach::LongAdditiveSynth,
+            })
         }
         Command::Verify {
             manifest,
@@ -94,39 +95,35 @@ fn main() -> Result<()> {
             jobs,
         } => {
             let jobs = jobs.unwrap_or_else(default_jobs);
-            for approach in PitchApproach::ALL {
-                verify_matrix(VerifyOptions {
-                    manifest: manifest.clone(),
-                    input_dir: input_dir.clone(),
-                    output_dir: output_dir.join(approach.slug()),
-                    jobs,
-                    approach,
-                })?;
-            }
-            Ok(())
+            verify_matrix(VerifyOptions {
+                manifest,
+                input_dir,
+                output_dir,
+                jobs,
+                approach: PitchApproach::LongAdditiveSynth,
+            })
         }
         Command::Concat {
             manifest,
             matrix_dir,
             output_dir,
+            scratch_dir,
+            output_name,
             crossfade_seconds,
             aac_bitrate_kbps,
             opus_bitrate_kbps,
             force,
-        } => {
-            for approach in PitchApproach::ALL {
-                concatenate_master(ConcatOptions {
-                    manifest: manifest.clone(),
-                    metrics: matrix_dir.join(approach.slug()).join("metrics.csv"),
-                    output_dir: output_dir.join(approach.slug()),
-                    crossfade_seconds,
-                    aac_bitrate_kbps,
-                    opus_bitrate_kbps,
-                    force,
-                })?;
-            }
-            Ok(())
-        }
+        } => concatenate_master(ConcatOptions {
+            manifest,
+            metrics: matrix_dir.join("metrics.csv"),
+            output_dir,
+            scratch_dir,
+            output_name,
+            crossfade_seconds,
+            aac_bitrate_kbps,
+            opus_bitrate_kbps,
+            force,
+        }),
     }
 }
 

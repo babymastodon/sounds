@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>conv9 listener</title>
+    <title>Impulse Loom — Convolution Playground</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -32,10 +32,6 @@
       </section>
 
       <section class="now-playing">
-        <div>
-          <h2 id="renderTitle">—</h2>
-          <span id="windowReadout"></span>
-        </div>
         <dl class="metrics" id="metrics"></dl>
       </section>
 
@@ -95,7 +91,6 @@
 
       <section class="visuals">
         <article class="visual-card">
-          <header><span>waveform</span></header>
           <canvas
             id="waveform"
             height="220"
@@ -104,7 +99,6 @@
           ></canvas>
         </article>
         <article class="visual-card spectrogram-card">
-          <header><span>spectrum / 16384 fft</span></header>
           <canvas
             id="spectrogram"
             height="300"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "conv9 Listener",
+  "productName": "Impulse Loom",
   "version": "0.1.0",
   "identifier": "com.babymastodon.conv9-listener",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "conv9 · convolution listener",
+        "title": "Impulse Loom — Convolution Playground",
         "width": 1280,
         "height": 860,
         "minWidth": 900,
@@ -26,6 +26,9 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }

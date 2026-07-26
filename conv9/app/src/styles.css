@@ -58,7 +58,6 @@ select {
 .clip-selectors,
 .now-playing,
 .transport,
-.visual-card header,
 .tool-inputs {
   display: flex;
   align-items: center;
@@ -70,7 +69,6 @@ select {
 }
 
 label,
-.visual-card header,
 .metrics dt,
 .tool-control > span {
   color: var(--muted);
@@ -210,24 +208,9 @@ input[type="number"] {
 }
 
 .now-playing {
-  justify-content: space-between;
-  gap: 20px;
+  justify-content: flex-end;
   min-width: 0;
   min-height: 36px;
-}
-
-h2 {
-  margin: 0 0 2px;
-  color: var(--bright);
-  font-size: var(--font-base);
-  font-weight: 400;
-}
-
-#windowReadout {
-  color: var(--muted);
-  font-size: var(--font-base);
-  letter-spacing: 0.05em;
-  text-transform: lowercase;
 }
 
 .metrics {
@@ -364,15 +347,8 @@ input[type="range"]:disabled {
 }
 
 .visual-card {
-  display: grid;
-  grid-template-rows: 22px minmax(0, 1fr);
   overflow: hidden;
   background: #181a19;
-}
-
-.visual-card header {
-  padding: 0;
-  background: var(--background);
 }
 
 .visual-card canvas {
@@ -398,10 +374,6 @@ input[type="range"]:disabled {
 @media (max-width: 1050px) {
   .method-tools {
     grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-  }
-
-  .metrics {
-    display: none;
   }
 
   #renderStatus {

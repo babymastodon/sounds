@@ -8,10 +8,13 @@ import { fileURLToPath } from "node:url";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conv9Dir = resolve(appDir, "..");
+const windowTitle = "Impulse Loom — Convolution Playground";
 const application = resolve(appDir, "src-tauri/target/debug/conv9-listener");
 const manifest = resolve(conv9Dir, "sources.tsv");
 const inputDir = resolve(conv9Dir, "samples/prepared");
 const retiredOutputDir = resolve(conv9Dir, "outputs");
+const iconSvg = resolve(appDir, "src-tauri/icons/icon.svg");
+const iconPng = resolve(appDir, "src-tauri/icons/icon.png");
 const driverBinary =
   process.env.TAURI_DRIVER_BIN || "/tmp/conv9-tauri-driver/bin/tauri-driver";
 const sysroot = process.env.CONV9_TAURI_SYSROOT || "/tmp/conv9-tauri-devel";
@@ -26,6 +29,8 @@ assert.ok(
 assert.ok(existsSync(manifest), "conv9 source manifest is missing");
 assert.ok(existsSync(resolve(inputDir, "ambient_guitar.wav")), "prepared inputs are missing");
 assert.equal(existsSync(retiredOutputDir), false, "precomputed output tree must remain absent");
+assert.ok(existsSync(iconSvg), "editable SVG app icon is missing");
+assert.ok(existsSync(iconPng), "embedded PNG app icon is missing");
 
 let moduleId;
 let driver;
@@ -66,6 +71,7 @@ try {
       const spectrum = document.querySelector("#spectrogram");
       return {
         readyState: audio?.readyState,
+        documentTitle: document.title,
         duration: audio?.duration,
         source: audio?.currentSrc,
         path: audio?.dataset.path,
@@ -77,7 +83,6 @@ try {
           maximum: document.querySelector("#playbackSpeed")?.max,
           value: document.querySelector("#playbackSpeed")?.value
         },
-        title: document.querySelector("#renderTitle")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
         statusPosition: getComputedStyle(document.querySelector("#renderStatus")).position,
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
@@ -89,6 +94,21 @@ try {
         appHeaderCaptionCount: document.querySelectorAll(
           "h1, .method-field, .field-label"
         ).length,
+        repeatedDetailCount: document.querySelectorAll(
+          "#renderTitle, #windowReadout, .visual-card > header"
+        ).length,
+        metricsVisible: getComputedStyle(document.querySelector("#metrics")).display !== "none",
+        metricsText: document.querySelector("#metrics")?.textContent,
+        loadingTextStyles: [
+          {
+            fontSize: waveform?.dataset.loadingFontSize,
+            alignment: waveform?.dataset.loadingTextAlignment
+          },
+          {
+            fontSize: spectrum?.dataset.loadingFontSize,
+            alignment: spectrum?.dataset.loadingTextAlignment
+          }
+        ],
         windowCount: document.querySelectorAll("#methodTools .window-control").length,
         playDisabled: document.querySelector("#playButton")?.disabled,
         seekDisabled: document.querySelector("#seek")?.disabled,
@@ -101,7 +121,6 @@ try {
             document.querySelector("#methodTools input[type='number']")
           ).fontSize,
           statusFont: getComputedStyle(document.querySelector("#renderStatus")).fontSize,
-          readoutFont: getComputedStyle(document.querySelector("#windowReadout")).fontSize,
           metricFont: getComputedStyle(document.querySelector("#metrics dd")).fontSize,
           timeFont: getComputedStyle(document.querySelector("#currentTime")).fontSize,
           speedValueFont: getComputedStyle(
@@ -109,9 +128,6 @@ try {
           ).fontSize,
           toolLabelFont: getComputedStyle(
             document.querySelector(".tool-control > span")
-          ).fontSize,
-          plotLabelFont: getComputedStyle(
-            document.querySelector(".visual-card header")
           ).fontSize,
           buttonHeight: getComputedStyle(
             document.querySelector("#algorithmButtons button")
@@ -171,6 +187,39 @@ try {
     Math.abs(initial.duration - 132) < 0.02,
     `default windowed-convolution duration was ${initial.duration}`,
   );
+  assert.equal(initial.documentTitle, windowTitle);
+  assert.equal(
+    await webdriver(port, "GET", `/session/${sessionId}/title`),
+    windowTitle,
+    "native window title",
+  );
+  const embeddedIcon = await executeAsync(port, sessionId, `
+    const done = arguments[arguments.length - 1];
+    window.__TAURI__.app.defaultWindowIcon()
+      .then(async (icon) => {
+        if (!icon) {
+          done(null);
+          return;
+        }
+        const size = await icon.size();
+        const rgba = await icon.rgba();
+        done({
+          size,
+          byteLength: rgba.byteLength,
+          firstPixel: [...rgba.slice(0, 4)]
+        });
+      })
+      .catch((error) => done({ error: String(error) }));
+  `);
+  assert.deepEqual(
+    embeddedIcon,
+    {
+      size: { width: 512, height: 512 },
+      byteLength: 512 * 512 * 4,
+      firstPixel: [23, 27, 26, 255],
+    },
+    "Tauri must embed the 512px Impulse Loom icon",
+  );
   assert.match(initial.source, /^blob:tauri:/);
   assert.match(initial.path, /windowed_convolution\/5\.00x5\.00\//);
   assert.equal(initial.loop, true);
@@ -181,7 +230,6 @@ try {
     maximum: "1",
     value: "0",
   });
-  assert.equal(initial.title, "windowed");
   assert.match(initial.status, /^rendered \d+ ms$/);
   assert.equal(initial.statusPosition, "absolute");
   assert.equal(initial.sourceACount, 48);
@@ -189,6 +237,14 @@ try {
   assert.equal(initial.methodCount, 6);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
+  assert.equal(initial.repeatedDetailCount, 0);
+  assert.equal(initial.metricsVisible, true);
+  assert.match(initial.metricsText, /rms/);
+  assert.match(initial.metricsText, /peak/);
+  assert.deepEqual(initial.loadingTextStyles, [
+    { fontSize: "16", alignment: "center" },
+    { fontSize: "16", alignment: "center" },
+  ]);
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
   assert.equal(initial.seekDisabled, false);
@@ -197,12 +253,10 @@ try {
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",
-    readoutFont: "16px",
     metricFont: "16px",
     timeFont: "16px",
     speedValueFont: "16px",
     toolLabelFont: "16px",
-    plotLabelFont: "16px",
     buttonHeight: "36px",
     selectHeight: "38px",
     sliderHeight: "18px",
@@ -279,7 +333,6 @@ try {
         duration: audio.duration,
         path: audio.dataset.path,
         status: document.querySelector("#renderStatus")?.textContent,
-        readout: document.querySelector("#windowReadout")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
       };
@@ -291,7 +344,6 @@ try {
     Math.abs(shortWindow.duration - 122.5) < 0.02,
     `short-window convolution duration was ${shortWindow.duration}`,
   );
-  assert.match(shortWindow.readout, /overlap 75%/);
   assert.equal(shortWindow.errorHidden, true, shortWindow.error);
   await captureMonitor();
   const shortWindowWav = await readFile(capturePath);
@@ -361,8 +413,6 @@ try {
         duration: audio.duration,
         source: audio.currentSrc,
         path: audio.dataset.path,
-        title: document.querySelector("#renderTitle")?.textContent,
-        readout: document.querySelector("#windowReadout")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -371,12 +421,10 @@ try {
     return value.path.includes("/chunk_crossfade/") &&
       value.status?.startsWith("rendered ") ? value : undefined;
   }, 180_000);
-  assert.equal(chunked.title, "chunks");
   assert.ok(
     Math.abs(chunked.duration - 65.5) < 0.02,
     `chunk duration was ${chunked.duration}`,
   );
-  assert.match(chunked.readout, /40%/);
   assert.equal(chunked.errorHidden, true, chunked.error);
 
   for (const [algorithm, expectedDuration] of [["evolving_ir", 66]]) {
@@ -427,7 +475,6 @@ try {
         paused: audio.paused,
         source: audio.currentSrc,
         path: audio.dataset.path,
-        title: document.querySelector("#renderTitle")?.textContent,
         status: document.querySelector("#renderStatus")?.textContent,
         toolInputs: document.querySelectorAll("#methodTools input").length,
         error: document.querySelector("#errorPanel")?.textContent,
@@ -444,7 +491,6 @@ try {
     `default full-convolution duration was ${full.duration}`,
   );
   assert.equal(full.paused, false);
-  assert.equal(full.title, "full");
   assert.equal(full.toolInputs, 8);
   assert.equal(full.errorHidden, true, full.error);
   assert.notEqual(full.source, initial.source, "full convolution received a new in-memory WAV");
@@ -467,7 +513,6 @@ try {
         duration: audio.duration,
         path: audio.dataset.path,
         status: document.querySelector("#renderStatus")?.textContent,
-        readout: document.querySelector("#windowReadout")?.textContent,
         error: document.querySelector("#errorPanel")?.textContent,
         errorHidden: document.querySelector("#errorPanel")?.hidden
       };
@@ -480,7 +525,6 @@ try {
     Math.abs(segmentedFull.duration - 35) < 0.02,
     `segmented full-convolution duration was ${segmentedFull.duration}`,
   );
-  assert.match(segmentedFull.readout, /out 35\.00s/);
   assert.equal(segmentedFull.errorHidden, true, segmentedFull.error);
 
   await captureMonitor();
@@ -488,10 +532,7 @@ try {
   assert.ok(fullSignal.rms > 0.003, `full convolution is silent: RMS ${fullSignal.rms}`);
   assert.ok(fullSignal.peak > 0.01, `full convolution peak is too low: ${fullSignal.peak}`);
 
-  for (const [algorithm, title] of [
-    ["dry_a", "dry a"],
-    ["dry_b", "dry b"],
-  ]) {
+  for (const algorithm of ["dry_a", "dry_b"]) {
     await execute(
       port,
       sessionId,
@@ -505,7 +546,6 @@ try {
         return {
           duration: audio.duration,
           path: audio.dataset.path,
-          title: document.querySelector("#renderTitle")?.textContent,
           toolInputs: document.querySelectorAll("#methodTools input").length,
           tools: document.querySelector("#methodTools")?.textContent,
           status: document.querySelector("#renderStatus")?.textContent,
@@ -517,7 +557,6 @@ try {
         value.status?.startsWith("rendered ") ? value : undefined;
     }, 90_000);
     assert.ok(Math.abs(dry.duration - 61) < 0.02, `${algorithm} duration was ${dry.duration}`);
-    assert.equal(dry.title, title);
     assert.equal(dry.toolInputs, 0);
     assert.match(dry.tools, /no configurable parameters/);
     assert.equal(dry.errorHidden, true, dry.error);
@@ -601,6 +640,13 @@ async function playbackState(port, id) {
 
 async function execute(port, id, script) {
   return webdriver(port, "POST", `/session/${id}/execute/sync`, {
+    script,
+    args: [],
+  });
+}
+
+async function executeAsync(port, id, script) {
+  return webdriver(port, "POST", `/session/${id}/execute/async`, {
     script,
     args: [],
   });

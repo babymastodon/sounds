@@ -9,7 +9,12 @@ import { startPreviewServer } from "../preview-server.mjs";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conv9Dir = resolve(appDir, "..");
+const windowTitle = "Impulse Loom — Convolution Playground";
 const catalog = await testCatalog();
+const tauriConfig = JSON.parse(
+  await readFile(resolve(appDir, "src-tauri/tauri.conf.json"), "utf8"),
+);
+const iconSvg = await readFile(resolve(appDir, "src-tauri/icons/icon.svg"), "utf8");
 const chromeExecutable =
   process.env.CHROME_BIN ||
   ["/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/google-chrome"].find(
@@ -17,6 +22,11 @@ const chromeExecutable =
   );
 
 assert.ok(chromeExecutable, "Set CHROME_BIN to a Chrome or Chromium executable");
+assert.equal(tauriConfig.productName, "Impulse Loom");
+assert.equal(tauriConfig.app.windows[0].title, windowTitle);
+assert.deepEqual(tauriConfig.bundle.icon, ["icons/icon.png"]);
+assert.match(iconSvg, /<title id="title">Impulse Loom<\/title>/);
+assert.ok(existsSync(resolve(appDir, "src-tauri/icons/icon.png")), "raster app icon is missing");
 
 let server;
 let browser;
@@ -120,17 +130,27 @@ try {
   });
 
   await page.goto(`${baseUrl}/app/src/`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.title(), windowTitle);
   await page.waitForFunction(
     () =>
       document.querySelector("#renderStatus")?.textContent === "rendering…" &&
       document.querySelector("#playButton")?.disabled,
   );
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.loading.png` });
+  }
   await page.locator("#playButton").evaluate((button) => button.click());
   assert.equal(
     await page.locator("#audio").evaluate((audio) => audio.paused),
     true,
     "startup play is inert until rendering and analysis are complete",
   );
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.waitForFunction(
+      () => document.querySelector("#renderStatus")?.textContent === "analyzing…",
+    );
+    await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.analyzing.png` });
+  }
   await waitForReady(page);
   assert.equal(await page.locator("#playButton").isEnabled(), true);
   assert.equal(await page.locator("#seek").isEnabled(), true);
@@ -162,6 +182,11 @@ try {
     0,
     "method buttons are left-aligned without app or method captions",
   );
+  assert.equal(
+    await page.locator("#renderTitle, #windowReadout, .visual-card > header").count(),
+    0,
+    "repeated render details and visualization headings are absent",
+  );
   assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
@@ -170,12 +195,10 @@ try {
       selectFont: style("#sourceASelect").fontSize,
       numberFont: style("#methodTools input[type='number']").fontSize,
       statusFont: style("#renderStatus").fontSize,
-      readoutFont: style("#windowReadout").fontSize,
       metricFont: style("#metrics dd").fontSize,
       timeFont: style("#currentTime").fontSize,
       speedValueFont: style("#playbackSpeedValue").fontSize,
       toolLabelFont: style(".tool-control > span").fontSize,
-      plotLabelFont: style(".visual-card header").fontSize,
       buttonHeight: style("#algorithmButtons button").height,
       selectHeight: style("#sourceASelect").height,
       sliderHeight: style("#methodTools input[type='range']").height,
@@ -186,18 +209,31 @@ try {
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",
-    readoutFont: "16px",
     metricFont: "16px",
     timeFont: "16px",
     speedValueFont: "16px",
     toolLabelFont: "16px",
-    plotLabelFont: "16px",
     buttonHeight: "36px",
     selectHeight: "38px",
     sliderHeight: "18px",
   });
   await assertNoUndersizedText(page);
   await assertToolLabelsFit(page);
+  await expectContains(page, "#metrics", "rms");
+  await expectContains(page, "#metrics", "peak");
+  assert.deepEqual(
+    await page.locator("#waveform, #spectrogram").evaluateAll((canvases) =>
+      canvases.map((canvas) => ({
+        fontSize: canvas.dataset.loadingFontSize,
+        alignment: canvas.dataset.loadingTextAlignment,
+      }))
+    ),
+    [
+      { fontSize: "16", alignment: "center" },
+      { fontSize: "16", alignment: "center" },
+    ],
+    "canvas loading text uses the centered 16px treatment",
+  );
   assert.equal(
     await page.locator("#renderStatus").evaluate((status) =>
       getComputedStyle(status).position
@@ -290,7 +326,6 @@ try {
   await assertControlTooltips(page);
   await page.getByLabel("overlap exact value").fill("40");
   await waitForPath(page, "chunk_crossfade_percent=40.00");
-  await expectContains(page, "#windowReadout", "40%");
 
   await page.getByRole("button", { name: "full", exact: true }).click();
   await waitForPath(page, "/full_convolution/a0.00+61.00_b0.00+61.00");
@@ -299,7 +334,6 @@ try {
   assert.equal(await page.locator("#methodTools input").count(), 8);
   assert.equal(await page.getByLabel("A offset exact value").inputValue(), "0.0");
   assert.equal(await page.getByLabel("A duration exact value").inputValue(), "61.0");
-  await expectContains(page, "#windowReadout", "out 122.00s");
   await assertControlTooltips(page);
 
   await page.getByLabel("A offset exact value").fill("10");
@@ -320,18 +354,15 @@ try {
   await page.getByLabel("A offset exact value").fill("10");
   await page.getByLabel("B duration exact value").fill("15");
   await waitForPath(page, "/full_convolution/a10.00+20.00_b0.00+15.00");
-  await expectContains(page, "#windowReadout", "out 35.00s");
 
   await page.getByRole("button", { name: "dry a", exact: true }).click();
   await waitForPath(page, "/dry_a/source");
   assert.equal(await page.locator("#methodTools .window-control").count(), 0);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 0);
   await expectContains(page, "#methodTools", "no configurable parameters");
-  await expectContains(page, "#windowReadout", "source a / out 61.00s");
 
   await page.getByRole("button", { name: "dry b", exact: true }).click();
   await waitForPath(page, "/dry_b/source");
-  await expectContains(page, "#windowReadout", "source b / out 61.00s");
 
   await page.getByRole("button", { name: "Play" }).click();
   await page.waitForFunction(() => !document.querySelector("#audio").paused);
@@ -412,6 +443,7 @@ try {
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   await assertToolLabelsFit(page);
+  assert.equal(await page.locator("#metrics").isVisible(), true, "metrics remain on compact row");
   if (process.env.CONV9_TEST_SCREENSHOT) {
     await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.compact.png` });
   }

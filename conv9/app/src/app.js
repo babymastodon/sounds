@@ -4,7 +4,6 @@ const ui = {
   sourceBSelect: document.querySelector("#sourceBSelect"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
   methodTools: document.querySelector("#methodTools"),
-  renderTitle: document.querySelector("#renderTitle"),
   metrics: document.querySelector("#metrics"),
   audio: document.querySelector("#audio"),
   playButton: document.querySelector("#playButton"),
@@ -16,7 +15,6 @@ const ui = {
   duration: document.querySelector("#duration"),
   waveform: document.querySelector("#waveform"),
   spectrogram: document.querySelector("#spectrogram"),
-  windowReadout: document.querySelector("#windowReadout"),
   errorPanel: document.querySelector("#errorPanel"),
 };
 
@@ -36,6 +34,8 @@ const state = {
   selectionGeneration: 0,
   selectionTimer: 0,
 };
+
+const LOADING_FONT_CSS_PIXELS = 16;
 
 async function boot() {
   try {
@@ -330,8 +330,8 @@ async function selectClip(preservePlayback, generation) {
     state.waveformLayer = null;
     state.spectrumLayer = null;
     ui.renderStatus.textContent = "rendering…";
-    drawLoading(ui.waveform, "RENDERING ON DEMAND");
-    drawLoading(ui.spectrogram, "RENDERING ON DEMAND");
+    drawLoading(ui.waveform, "rendering…");
+    drawLoading(ui.spectrogram, "rendering…");
     const rendered = await state.bridge.renderSelection(request);
     if (generation !== state.selectionGeneration) return;
     const bytes = normalizeBytes(rendered.wav);
@@ -353,7 +353,7 @@ async function selectClip(preservePlayback, generation) {
       0,
       Math.min(ui.audio.duration - 0.01, phase * ui.audio.duration),
     );
-    updateMetadata(rendered.header, settings);
+    updateMetrics(rendered.header);
     ui.renderStatus.textContent = "analyzing…";
     await analyzeSelection(analysisBytes, generation);
     if (generation !== state.selectionGeneration) return;
@@ -368,42 +368,11 @@ async function selectClip(preservePlayback, generation) {
   }
 }
 
-function updateMetadata(header, settings) {
-  ui.renderTitle.textContent = shortAlgorithm(state.algorithm);
+function updateMetrics(header) {
   ui.metrics.innerHTML = [
     metricMarkup("rms", `${header.metrics.rms_dbfs.toFixed(1)} dbfs`),
     metricMarkup("peak", `${(header.metrics.peak * 100).toFixed(1)}%`),
   ].join("");
-  const clipASeconds = header.windows.clip_a_seconds;
-  const clipBSeconds = header.windows.clip_b_seconds;
-  if (clipASeconds == null) {
-    if (state.algorithm === "full_convolution") {
-      const parameters = settings.parameters;
-      ui.windowReadout.textContent =
-        `a ${parameters.full_a_duration_seconds.toFixed(1)}s @ ` +
-        `${parameters.full_a_offset_seconds.toFixed(1)}s / ` +
-        `b ${parameters.full_b_duration_seconds.toFixed(1)}s @ ` +
-        `${parameters.full_b_offset_seconds.toFixed(1)}s / ` +
-        `out ${header.metrics.duration_seconds.toFixed(2)}s`;
-    } else {
-      const source = state.algorithm === "dry_a" ? "a" : "b";
-      ui.windowReadout.textContent =
-        `source ${source} / out ${header.metrics.duration_seconds.toFixed(2)}s`;
-    }
-  } else {
-    let readout =
-      `a ${clipASeconds.toFixed(2)}s / b ${clipBSeconds.toFixed(2)}s / ` +
-      `scan ${header.hopSeconds.toFixed(2)}s`;
-    if (state.algorithm === "chunk_crossfade") {
-      const percentage = settings.parameters.chunk_crossfade_percent;
-      const duration = Math.min(clipASeconds, clipBSeconds) * percentage / 100;
-      readout += ` / overlap ${duration.toFixed(2)}s (${percentage.toFixed(0)}%)`;
-    } else {
-      readout += ` / overlap ${settings.parameters.window_overlap_percent.toFixed(0)}%`;
-    }
-    readout += ` / out ${header.metrics.duration_seconds.toFixed(2)}s`;
-    ui.windowReadout.textContent = readout;
-  }
 }
 
 function metricMarkup(label, value) {
@@ -539,8 +508,8 @@ function clamp(value, minimum, maximum) {
 }
 
 async function analyzeSelection(bytes, generation) {
-  drawLoading(ui.waveform, "DECODING WAVEFORM");
-  drawLoading(ui.spectrogram, "COMPUTING SPECTRAL FIELD");
+  drawLoading(ui.waveform, "drawing waveform…");
+  drawLoading(ui.spectrogram, "computing spectrum…");
   const context = new AudioContext();
   try {
     const decoded = await context.decodeAudioData(bytes);
@@ -733,13 +702,21 @@ function sizedLayer(canvas) {
 
 function drawLoading(canvas, label) {
   canvas.setAttribute("aria-busy", "true");
+  canvas.dataset.loadingFontSize = String(LOADING_FONT_CSS_PIXELS);
+  canvas.dataset.loadingTextAlignment = "center";
   const layer = sizedLayer(canvas);
   const context = layer.getContext("2d");
+  const scale = layer.width / Math.max(1, canvas.clientWidth);
   context.fillStyle = "#090b0b";
   context.fillRect(0, 0, layer.width, layer.height);
-  context.fillStyle = "#777";
-  context.font = `${11 * (window.devicePixelRatio || 1)}px monospace`;
-  context.fillText(label, 14, 24);
+  context.fillStyle = "#a9b68f";
+  context.globalAlpha = 0.82;
+  context.font =
+    `${LOADING_FONT_CSS_PIXELS * scale}px ` +
+    `"Berkeley Mono", "IBM Plex Mono", monospace`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(label, layer.width / 2, layer.height / 2);
   canvas.getContext("2d").drawImage(layer, 0, 0);
 }
 

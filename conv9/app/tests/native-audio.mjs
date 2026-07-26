@@ -80,6 +80,36 @@ try {
         windowCount: document.querySelectorAll("#methodTools .window-control").length,
         playDisabled: document.querySelector("#playButton")?.disabled,
         seekDisabled: document.querySelector("#seek")?.disabled,
+        uiScale: {
+          buttonFont: getComputedStyle(
+            document.querySelector("#algorithmButtons button")
+          ).fontSize,
+          labelFont: getComputedStyle(document.querySelector(".field-label")).fontSize,
+          selectFont: getComputedStyle(document.querySelector("#sourceASelect")).fontSize,
+          numberFont: getComputedStyle(
+            document.querySelector("#methodTools input[type='number']")
+          ).fontSize,
+          statusFont: getComputedStyle(document.querySelector("#renderStatus")).fontSize,
+          readoutFont: getComputedStyle(document.querySelector("#windowReadout")).fontSize,
+          metricFont: getComputedStyle(document.querySelector("#metrics dd")).fontSize,
+          timeFont: getComputedStyle(document.querySelector("#currentTime")).fontSize,
+          speedValueFont: getComputedStyle(
+            document.querySelector("#playbackSpeedValue")
+          ).fontSize,
+          toolLabelFont: getComputedStyle(
+            document.querySelector(".tool-control > span")
+          ).fontSize,
+          plotLabelFont: getComputedStyle(
+            document.querySelector(".visual-card header")
+          ).fontSize,
+          buttonHeight: getComputedStyle(
+            document.querySelector("#algorithmButtons button")
+          ).height,
+          selectHeight: getComputedStyle(document.querySelector("#sourceASelect")).height,
+          sliderHeight: getComputedStyle(
+            document.querySelector("#methodTools input[type='range']")
+          ).height
+        },
         missingTooltips: [...document.querySelectorAll("button, select, input, canvas, a[href]")]
           .filter((control) =>
             !control.title ||
@@ -125,6 +155,22 @@ try {
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
   assert.equal(initial.seekDisabled, false);
+  assert.deepEqual(initial.uiScale, {
+    buttonFont: "16px",
+    labelFont: "12px",
+    selectFont: "16px",
+    numberFont: "16px",
+    statusFont: "16px",
+    readoutFont: "16px",
+    metricFont: "16px",
+    timeFont: "16px",
+    speedValueFont: "16px",
+    toolLabelFont: "12px",
+    plotLabelFont: "12px",
+    buttonHeight: "36px",
+    selectHeight: "38px",
+    sliderHeight: "18px",
+  });
   assert.deepEqual(initial.missingTooltips, []);
   assert.equal(initial.fftSize, "16384");
   assert.equal(initial.errorHidden, true, initial.error);

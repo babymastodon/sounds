@@ -148,6 +148,41 @@ try {
   assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
   assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
   assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
+  const uiScale = await page.evaluate(() => {
+    const style = (selector) => getComputedStyle(document.querySelector(selector));
+    return {
+      buttonFont: style("#algorithmButtons button").fontSize,
+      labelFont: style(".field-label").fontSize,
+      selectFont: style("#sourceASelect").fontSize,
+      numberFont: style("#methodTools input[type='number']").fontSize,
+      statusFont: style("#renderStatus").fontSize,
+      readoutFont: style("#windowReadout").fontSize,
+      metricFont: style("#metrics dd").fontSize,
+      timeFont: style("#currentTime").fontSize,
+      speedValueFont: style("#playbackSpeedValue").fontSize,
+      toolLabelFont: style(".tool-control > span").fontSize,
+      plotLabelFont: style(".visual-card header").fontSize,
+      buttonHeight: style("#algorithmButtons button").height,
+      selectHeight: style("#sourceASelect").height,
+      sliderHeight: style("#methodTools input[type='range']").height,
+    };
+  });
+  assert.deepEqual(uiScale, {
+    buttonFont: "16px",
+    labelFont: "12px",
+    selectFont: "16px",
+    numberFont: "16px",
+    statusFont: "16px",
+    readoutFont: "16px",
+    metricFont: "16px",
+    timeFont: "16px",
+    speedValueFont: "16px",
+    toolLabelFont: "12px",
+    plotLabelFont: "12px",
+    buttonHeight: "36px",
+    selectHeight: "38px",
+    sliderHeight: "18px",
+  });
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 4);
   assert.equal(
@@ -325,6 +360,9 @@ try {
   await assertCanvasHasVariation(page, "#waveform");
   await assertCanvasHasVariation(page, "#spectrogram");
   await assertNoViewportOverflow(page);
+  if (process.env.CONV9_TEST_SCREENSHOT) {
+    await page.screenshot({ path: `${process.env.CONV9_TEST_SCREENSHOT}.compact.png` });
+  }
 
   assert.deepEqual(pageErrors, [], `page errors: ${pageErrors.join("\n")}`);
   assert.deepEqual(failedResponses, [], `failed responses: ${failedResponses.join("\n")}`);

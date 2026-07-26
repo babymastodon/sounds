@@ -3,7 +3,6 @@ const ui = {
   sourceASelect: document.querySelector("#sourceASelect"),
   sourceBSelect: document.querySelector("#sourceBSelect"),
   algorithmButtons: document.querySelector("#algorithmButtons"),
-  methodToolTitle: document.querySelector("#methodToolTitle"),
   methodTools: document.querySelector("#methodTools"),
   renderTitle: document.querySelector("#renderTitle"),
   metrics: document.querySelector("#metrics"),
@@ -193,7 +192,6 @@ function applyPlaybackSpeed() {
 function buildMethodTools() {
   const algorithm = selectedAlgorithm();
   const settings = state.settings.get(algorithm.id);
-  ui.methodToolTitle.textContent = `${shortAlgorithm(algorithm.id)} / tools`;
   ui.methodTools.replaceChildren();
   if (!algorithm.windows.length && !algorithm.parameters.length) {
     const summary = document.createElement("span");

@@ -83,6 +83,12 @@ try {
         sourceACount: document.querySelector("#sourceASelect")?.options.length,
         sourceBCount: document.querySelector("#sourceBSelect")?.options.length,
         methodCount: document.querySelectorAll("#algorithmButtons button").length,
+        methodHeaderCount: document.querySelectorAll(
+          "#methodToolTitle, .method-panel > header"
+        ).length,
+        appHeaderCaptionCount: document.querySelectorAll(
+          "h1, .method-field, .field-label"
+        ).length,
         windowCount: document.querySelectorAll("#methodTools .window-control").length,
         playDisabled: document.querySelector("#playButton")?.disabled,
         seekDisabled: document.querySelector("#seek")?.disabled,
@@ -90,7 +96,6 @@ try {
           buttonFont: getComputedStyle(
             document.querySelector("#algorithmButtons button")
           ).fontSize,
-          labelFont: getComputedStyle(document.querySelector(".field-label")).fontSize,
           selectFont: getComputedStyle(document.querySelector("#sourceASelect")).fontSize,
           numberFont: getComputedStyle(
             document.querySelector("#methodTools input[type='number']")
@@ -182,12 +187,13 @@ try {
   assert.equal(initial.sourceACount, 48);
   assert.equal(initial.sourceBCount, 48);
   assert.equal(initial.methodCount, 6);
+  assert.equal(initial.methodHeaderCount, 0);
+  assert.equal(initial.appHeaderCaptionCount, 0);
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
   assert.equal(initial.seekDisabled, false);
   assert.deepEqual(initial.uiScale, {
     buttonFont: "16px",
-    labelFont: "16px",
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",

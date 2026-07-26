@@ -9,7 +9,6 @@
   --cursor: #c77e69;
   --background: #1d1f1e;
   --font-base: 16px;
-  --font-title: 20px;
   font-family: "Berkeley Mono", "IBM Plex Mono", "SFMono-Regular", "Cascadia Mono",
     Consolas, monospace;
 }
@@ -60,7 +59,6 @@ select {
 .now-playing,
 .transport,
 .visual-card header,
-.method-panel header,
 .tool-inputs {
   display: flex;
   align-items: center;
@@ -68,17 +66,11 @@ select {
 
 .masthead {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 20px;
-  align-items: end;
   min-width: 0;
 }
 
-.field-label,
 label,
 .visual-card header,
-.method-panel header,
 .metrics dt,
 .tool-control > span {
   color: var(--muted);
@@ -86,14 +78,6 @@ label,
   line-height: 1;
   letter-spacing: 0.1em;
   text-transform: lowercase;
-}
-
-h1 {
-  margin: 0;
-  color: var(--bright);
-  font-size: var(--font-title);
-  font-weight: 500;
-  letter-spacing: -0.03em;
 }
 
 #renderStatus {
@@ -109,19 +93,11 @@ h1 {
   white-space: nowrap;
 }
 
-.method-field {
-  display: grid;
-  grid-template-columns: auto minmax(0, 680px);
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
 .segmented {
   display: grid;
   grid-template-columns: repeat(6, minmax(44px, 1fr));
   gap: 3px;
+  width: min(100%, 680px);
   height: 36px;
 }
 
@@ -173,10 +149,6 @@ select:focus-visible {
 
 .method-panel {
   min-width: 0;
-}
-
-.method-panel header {
-  height: 20px;
 }
 
 .method-tools {
@@ -398,8 +370,7 @@ input[type="range"]:disabled {
   background: #181a19;
 }
 
-.visual-card header,
-.method-panel header {
+.visual-card header {
   padding: 0;
   background: var(--background);
 }
@@ -425,14 +396,6 @@ input[type="range"]:disabled {
 }
 
 @media (max-width: 1050px) {
-  .masthead {
-    gap: 12px;
-  }
-
-  .method-field {
-    gap: 8px;
-  }
-
   .method-tools {
     grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   }
@@ -456,10 +419,6 @@ input[type="range"]:disabled {
   .shell {
     gap: 5px;
     padding-block: 8px 10px;
-  }
-
-  .method-panel header {
-    height: 20px;
   }
 
   .method-tools {

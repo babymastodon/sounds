@@ -152,12 +152,21 @@ try {
     0,
     "selector row contains only the two source controls",
   );
+  assert.equal(
+    await page.locator("#methodToolTitle, .method-panel > header").count(),
+    0,
+    "method controls have no redundant heading",
+  );
+  assert.equal(
+    await page.locator("h1, .method-field, .field-label").count(),
+    0,
+    "method buttons are left-aligned without app or method captions",
+  );
   assert.equal(await page.locator("#algorithmButtons button").count(), 6, "algorithm count");
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
     return {
       buttonFont: style("#algorithmButtons button").fontSize,
-      labelFont: style(".field-label").fontSize,
       selectFont: style("#sourceASelect").fontSize,
       numberFont: style("#methodTools input[type='number']").fontSize,
       statusFont: style("#renderStatus").fontSize,
@@ -174,7 +183,6 @@ try {
   });
   assert.deepEqual(uiScale, {
     buttonFont: "16px",
-    labelFont: "16px",
     selectFont: "16px",
     numberFont: "16px",
     statusFont: "16px",
@@ -196,12 +204,12 @@ try {
     ),
     "absolute",
   );
-  const methodBoundsBeforeStatusChange = await page.locator(".method-field").boundingBox();
+  const methodBoundsBeforeStatusChange = await page.locator("#algorithmButtons").boundingBox();
   await page.locator("#renderStatus").evaluate((status) => {
     status.dataset.previousText = status.textContent;
     status.textContent = "rendered 123456789 ms";
   });
-  const methodBoundsAfterStatusChange = await page.locator(".method-field").boundingBox();
+  const methodBoundsAfterStatusChange = await page.locator("#algorithmButtons").boundingBox();
   assert.deepEqual(
     methodBoundsAfterStatusChange,
     methodBoundsBeforeStatusChange,

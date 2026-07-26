@@ -39,7 +39,7 @@ Every output is DC-removed, high-passed at 18 Hz, gently saturated toward the sh
 ./conv9/app/run.sh
 ```
 
-The Impulse Loom desktop app uses native window decorations, disables minimize/maximize, loops audio automatically, preserves playback position across renders, provides independent volume and octave-logarithmic 0.5×–2× listening-speed controls with 1× centered, and displays waveform plus a 16,384-point, up-to-2,880-column log-frequency spectrogram. See [`app/README.md`](app/README.md) for prerequisites and tests.
+The desktop app uses native window decorations, disables minimize/maximize, loops audio automatically, preserves playback position across renders, provides independent volume and octave-logarithmic 0.5×–2× listening-speed controls with 1× centered, and displays waveform plus a 16,384-point, up-to-2,880-column log-frequency spectrogram. See [`app/README.md`](app/README.md) for prerequisites and tests.
 
 ## Test
 

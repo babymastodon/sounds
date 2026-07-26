@@ -9,7 +9,7 @@ import { startPreviewServer } from "../preview-server.mjs";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conv9Dir = resolve(appDir, "..");
-const windowTitle = "Impulse Loom — Convolution Playground";
+const windowTitle = "Convolution Playground";
 const catalog = await testCatalog();
 const tauriConfig = JSON.parse(
   await readFile(resolve(appDir, "src-tauri/tauri.conf.json"), "utf8"),
@@ -22,10 +22,10 @@ const chromeExecutable =
   );
 
 assert.ok(chromeExecutable, "Set CHROME_BIN to a Chrome or Chromium executable");
-assert.equal(tauriConfig.productName, "Impulse Loom");
+assert.equal(tauriConfig.productName, "Convolution Playground");
 assert.equal(tauriConfig.app.windows[0].title, windowTitle);
 assert.deepEqual(tauriConfig.bundle.icon, ["icons/icon.png"]);
-assert.match(iconSvg, /<title id="title">Impulse Loom<\/title>/);
+assert.match(iconSvg, /<title id="title">Convolution Playground<\/title>/);
 assert.ok(existsSync(resolve(appDir, "src-tauri/icons/icon.png")), "raster app icon is missing");
 
 let server;

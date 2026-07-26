@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conv9Dir = resolve(appDir, "..");
-const windowTitle = "Impulse Loom — Convolution Playground";
+const windowTitle = "Convolution Playground";
 const application = resolve(appDir, "src-tauri/target/debug/conv9-listener");
 const manifest = resolve(conv9Dir, "sources.tsv");
 const inputDir = resolve(conv9Dir, "samples/prepared");
@@ -218,7 +218,7 @@ try {
       byteLength: 512 * 512 * 4,
       firstPixel: [23, 27, 26, 255],
     },
-    "Tauri must embed the 512px Impulse Loom icon",
+    "Tauri must embed the 512px convolution icon",
   );
   assert.match(initial.source, /^blob:tauri:/);
   assert.match(initial.path, /windowed_convolution\/5\.00x5\.00\//);

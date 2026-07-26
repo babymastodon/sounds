@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core application capability for Impulse Loom.",
+  "description": "Core application capability for the convolution playground.",
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -120,7 +120,7 @@ fn main() {
             supersede_render
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Impulse Loom");
+        .expect("error while running the convolution playground");
 }
 
 fn encode_envelope(header: &RenderHeader, wav: Vec<u8>) -> Result<Vec<u8>, String> {

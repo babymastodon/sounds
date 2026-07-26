@@ -1,0 +1,43 @@
+{
+  "status": "pass",
+  "input_files": 576,
+  "sample_rate": 48000,
+  "channels": 2,
+  "requested_crossfade_seconds": 10.0,
+  "full_crossfades": 575,
+  "shortened_crossfades": 0,
+  "output_frames": 719327424,
+  "output_duration_seconds": 14985.988,
+  "aac_bitrate_kbps": 192,
+  "opus_bitrate_kbps": 128,
+  "rf64": {
+    "path": "outputs/final/long_additive_synth/final_mix.rf64.wav",
+    "codec": "pcm_s16le",
+    "bytes": 2877309776,
+    "duration_seconds": 14985.988
+  },
+  "flac": {
+    "path": "outputs/final/long_additive_synth/final_mix.flac",
+    "codec": "flac",
+    "bytes": 839531731,
+    "duration_seconds": 14985.988
+  },
+  "aac": {
+    "path": "outputs/final/long_additive_synth/final_mix.m4a",
+    "codec": "aac",
+    "bytes": 362479961,
+    "duration_seconds": 14985.988
+  },
+  "opus": {
+    "path": "outputs/final/long_additive_synth/final_mix.opus",
+    "codec": "opus",
+    "bytes": 243088082,
+    "duration_seconds": 14985.9945
+  },
+  "opus_32k": {
+    "path": "outputs/final/long_additive_synth/final_mix_32k.opus",
+    "codec": "opus",
+    "bytes": 61768847,
+    "duration_seconds": 14985.9945
+  }
+}

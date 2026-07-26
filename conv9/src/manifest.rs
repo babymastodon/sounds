@@ -4,8 +4,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-pub const SOURCE_COUNT: usize = 12;
-pub const SOURCE_SECONDS: f64 = 60.0;
+pub const SOURCE_COUNT: usize = 48;
+pub const SOURCE_SECONDS: f64 = 61.0;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceEntry {
@@ -47,8 +47,8 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
         .iter()
         .map(|entry| entry.kind.as_str())
         .collect::<HashSet<_>>();
-    if kinds.len() < 7 {
-        bail!("the corpus must span at least seven distinct source kinds");
+    if kinds.len() != entries.len() {
+        bail!("every source must represent a distinct sound kind");
     }
     let urls = entries
         .iter()
@@ -87,6 +87,7 @@ fn validate_entry(entry: &SourceEntry) -> Result<()> {
     }
     let expected_license_url = match entry.license.as_str() {
         "CC0 1.0" => "https://creativecommons.org/publicdomain/zero/1.0/",
+        "CC BY 3.0" => "https://creativecommons.org/licenses/by/3.0/",
         "CC BY 4.0" => "https://creativecommons.org/licenses/by/4.0/",
         "CC BY-SA 3.0" => "https://creativecommons.org/licenses/by-sa/3.0/",
         other => bail!("{} uses unsupported license {other}", entry.id),
@@ -115,6 +116,14 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("sources.tsv");
         let entries = load_manifest(&path).unwrap();
         assert_eq!(entries.len(), SOURCE_COUNT);
-        assert!(entries.iter().all(|source| source.seconds == 60.0));
+        assert!(entries.iter().all(|source| source.seconds > 60.0));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|source| source.kind.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            SOURCE_COUNT
+        );
     }
 }

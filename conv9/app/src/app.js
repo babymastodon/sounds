@@ -157,7 +157,7 @@ function bindEvents() {
       if (!state.audioReady) return;
       const bounds = canvas.getBoundingClientRect();
       const phase = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-      ui.audio.currentTime = phase * (ui.audio.duration || 60);
+      ui.audio.currentTime = phase * (ui.audio.duration || state.catalog.input_seconds);
     });
   }
   window.addEventListener("resize", debounce(resizeVisualizations, 180));
@@ -171,7 +171,10 @@ function bindEvents() {
       ui.audio.currentTime = Math.max(0, ui.audio.currentTime - 5);
     } else if (event.code === "ArrowRight") {
       if (!state.audioReady) return;
-      ui.audio.currentTime = Math.min(ui.audio.duration || 60, ui.audio.currentTime + 5);
+      ui.audio.currentTime = Math.min(
+        ui.audio.duration || state.catalog.input_seconds,
+        ui.audio.currentTime + 5,
+      );
     }
   });
 }
@@ -298,7 +301,9 @@ function scheduleSelection(preservePlayback) {
 async function selectClip(preservePlayback, generation) {
   try {
     hideError();
-    const oldDuration = Number.isFinite(ui.audio.duration) ? ui.audio.duration : 60;
+    const oldDuration = Number.isFinite(ui.audio.duration)
+      ? ui.audio.duration
+      : state.catalog.input_seconds;
     const phase = preservePlayback ? ui.audio.currentTime / oldDuration : 0;
     const resume = preservePlayback && !ui.audio.paused;
     const algorithm = selectedAlgorithm();
@@ -326,13 +331,14 @@ async function selectClip(preservePlayback, generation) {
     const previousObjectUrl = state.audioObjectUrl;
     state.audioObjectUrl = objectUrl;
     setTransportReady(false);
+    ui.audio.pause();
     ui.audio.dataset.path = selectionSignature(request);
     const metadataLoaded = once(ui.audio, "loadedmetadata");
     ui.audio.src = objectUrl;
     ui.audio.loop = true;
     ui.audio.load();
-    if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
     await metadataLoaded;
+    if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
     if (generation !== state.selectionGeneration) return;
     ui.audio.currentTime = Math.max(
       0,
@@ -429,10 +435,20 @@ function normalizeFullSegments(target, changedId) {
   const clip = changedId.startsWith("full_a_") ? "a" : "b";
   const offsetId = `full_${clip}_offset_seconds`;
   const durationId = `full_${clip}_duration_seconds`;
-  if (changedId === offsetId && target[offsetId] + target[durationId] > 60) {
-    target[durationId] = roundToStep(Math.max(0.1, 60 - target[offsetId]), 0.1);
-  } else if (changedId === durationId && target[offsetId] + target[durationId] > 60) {
-    target[offsetId] = roundToStep(Math.max(0, 60 - target[durationId]), 0.1);
+  const inputSeconds = state.catalog.input_seconds;
+  if (changedId === offsetId && target[offsetId] + target[durationId] > inputSeconds) {
+    target[durationId] = roundToStep(
+      Math.max(0.1, inputSeconds - target[offsetId]),
+      0.1,
+    );
+  } else if (
+    changedId === durationId &&
+    target[offsetId] + target[durationId] > inputSeconds
+  ) {
+    target[offsetId] = roundToStep(
+      Math.max(0, inputSeconds - target[durationId]),
+      0.1,
+    );
   }
 }
 
@@ -675,7 +691,7 @@ function fft(real, imaginary) {
 }
 
 function animateCursor() {
-  const duration = ui.audio.duration || 60;
+  const duration = ui.audio.duration || state.catalog.input_seconds;
   const phase = Math.max(0, Math.min(1, ui.audio.currentTime / duration));
   drawLayerWithCursor(ui.waveform, state.waveformLayer, phase);
   drawLayerWithCursor(ui.spectrogram, state.spectrumLayer, phase);
@@ -843,6 +859,7 @@ function showError(error) {
 
 function hideError() {
   ui.errorPanel.hidden = true;
+  ui.errorPanel.textContent = "";
 }
 
 boot();

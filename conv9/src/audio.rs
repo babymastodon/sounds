@@ -7,7 +7,7 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 
 pub const SAMPLE_RATE: u32 = 48_000;
-pub const INPUT_SECONDS: usize = 60;
+pub const INPUT_SECONDS: usize = 61;
 pub const INPUT_FRAMES: usize = SAMPLE_RATE as usize * INPUT_SECONDS;
 const INPUT_TARGET_RMS: f32 = 0.10;
 const OUTPUT_TARGET_RMS: f32 = 0.095;

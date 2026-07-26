@@ -98,12 +98,16 @@ try {
         }
       };
     `);
-    return value.readyState >= 4 && value.waveformReady && value.spectrumReady
+    return value.readyState >= 4 &&
+      value.waveformReady &&
+      value.spectrumReady &&
+      value.status?.startsWith("rendered ") &&
+      !value.playDisabled
       ? value
       : undefined;
   }, 180_000);
   assert.ok(
-    Math.abs(initial.duration - 76) < 0.02,
+    Math.abs(initial.duration - 67) < 0.02,
     `default multiresolution duration was ${initial.duration}`,
   );
   assert.match(initial.source, /^blob:tauri:/);
@@ -111,8 +115,8 @@ try {
   assert.equal(initial.loop, true);
   assert.equal(initial.title, "multi");
   assert.match(initial.status, /^rendered \d+ ms$/);
-  assert.equal(initial.sourceACount, 12);
-  assert.equal(initial.sourceBCount, 12);
+  assert.equal(initial.sourceACount, 48);
+  assert.equal(initial.sourceBCount, 48);
   assert.equal(initial.methodCount, 5);
   assert.equal(initial.windowCount, 2);
   assert.equal(initial.playDisabled, false);
@@ -159,6 +163,45 @@ try {
   assert.equal(afterCapture.errorHidden, true, afterCapture.error);
 
   await execute(port, sessionId, `
+    for (const label of ["A window", "B window"]) {
+      const input = document.querySelector(\`input[aria-label="\${label} exact value"]\`);
+      input.value = "0.25";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return true;
+  `);
+  const shortWindow = await poll(async () => {
+    const value = await execute(port, sessionId, `
+      const audio = document.querySelector("#audio");
+      return {
+        duration: audio.duration,
+        path: audio.dataset.path,
+        status: document.querySelector("#renderStatus")?.textContent,
+        readout: document.querySelector("#windowReadout")?.textContent,
+        error: document.querySelector("#errorPanel")?.textContent,
+        errorHidden: document.querySelector("#errorPanel")?.hidden
+      };
+    `);
+    return value.path.includes("/multiresolution/0.25x0.25/") &&
+      value.status?.startsWith("rendered ") ? value : undefined;
+  }, 90_000);
+  assert.ok(
+    Math.abs(shortWindow.duration - 61.3) < 0.02,
+    `short-window multiresolution duration was ${shortWindow.duration}`,
+  );
+  assert.match(shortWindow.readout, /overlap 75%/);
+  assert.equal(shortWindow.errorHidden, true, shortWindow.error);
+  await captureMonitor();
+  const shortWindowWav = await readFile(capturePath);
+  const shortWindowSignal = analyzePcm16(shortWindowWav);
+  const shortWindowRipple = phaseModulationDb(shortWindowWav, 3_000);
+  assert.ok(shortWindowSignal.rms > 0.003, "short-window convolution is silent");
+  assert.ok(
+    shortWindowRipple < 2.5,
+    `0.25-second multiresolution pulse ripple was ${shortWindowRipple.toFixed(2)} dB`,
+  );
+
+  await execute(port, sessionId, `
     document.querySelector("#algorithmButtons button[data-value='chunk_crossfade']").click();
     const setCrossfade = () => {
       const input = document.querySelector("input[aria-label='overlap exact value']");
@@ -188,15 +231,15 @@ try {
   }, 180_000);
   assert.equal(chunked.title, "chunks");
   assert.ok(
-    Math.abs(chunked.duration - 62) < 0.02,
+    Math.abs(chunked.duration - 65.5) < 0.02,
     `chunk duration was ${chunked.duration}`,
   );
   assert.match(chunked.readout, /40%/);
   assert.equal(chunked.errorHidden, true, chunked.error);
 
   for (const [algorithm, expectedDuration] of [
-    ["sliding_wola", 70],
-    ["evolving_ir", 65],
+    ["sliding_wola", 71],
+    ["evolving_ir", 66],
   ]) {
     await execute(
       port,
@@ -253,12 +296,12 @@ try {
       };
     `);
     return value.path.endsWith(
-      "/full_convolution/a0.00+60.00_b0.00+60.00",
+      "/full_convolution/a0.00+61.00_b0.00+61.00",
     ) &&
       value.status?.startsWith("rendered ") ? value : undefined;
   }, 180_000);
   assert.ok(
-    Math.abs(full.duration - 120) < 0.02,
+    Math.abs(full.duration - 122) < 0.02,
     `default full-convolution duration was ${full.duration}`,
   );
   assert.equal(full.paused, false);
@@ -308,6 +351,7 @@ try {
   assert.equal(existsSync(retiredOutputDir), false, "native renders must not create outputs");
   console.log(
     `conv9 native audio passed: windowed ${decibels(signal.rms).toFixed(2)} dBFS RMS, ` +
+      `0.25s ripple ${shortWindowRipple.toFixed(2)} dB, ` +
       `full ${decibels(fullSignal.rms).toFixed(2)} dBFS RMS`,
   );
 } finally {
@@ -426,18 +470,7 @@ async function captureMonitor() {
 }
 
 function analyzePcm16(wav) {
-  let offset = 12;
-  let data;
-  while (offset + 8 <= wav.length) {
-    const id = wav.toString("ascii", offset, offset + 4);
-    const length = wav.readUInt32LE(offset + 4);
-    if (id === "data") {
-      data = wav.subarray(offset + 8, offset + 8 + length);
-      break;
-    }
-    offset += 8 + length + (length % 2);
-  }
-  assert.ok(data, "capture has no WAV data chunk");
+  const data = pcm16Data(wav);
   let sumSquares = 0;
   let peak = 0;
   const samples = Math.floor(data.length / 2);
@@ -451,6 +484,43 @@ function analyzePcm16(wav) {
     rms: Math.sqrt(sumSquares / Math.max(1, samples)),
     peak,
   };
+}
+
+function phaseModulationDb(wav, periodFrames) {
+  const data = pcm16Data(wav);
+  const channels = 2;
+  const bins = 32;
+  const power = new Float64Array(bins);
+  const count = new Uint32Array(bins);
+  const frames = Math.floor(data.length / (2 * channels));
+  for (let frame = 0; frame < frames; frame++) {
+    const bin = Math.floor(((frame % periodFrames) * bins) / periodFrames);
+    for (let channel = 0; channel < channels; channel++) {
+      const sample = data.readInt16LE((frame * channels + channel) * 2) / 32768;
+      power[bin] += sample * sample;
+      count[bin] += 1;
+    }
+  }
+  const levels = [...power].map(
+    (sum, index) => 10 * Math.log10(Math.max(sum / count[index], Number.EPSILON)),
+  );
+  return Math.max(...levels) - Math.min(...levels);
+}
+
+function pcm16Data(wav) {
+  let offset = 12;
+  let data;
+  while (offset + 8 <= wav.length) {
+    const id = wav.toString("ascii", offset, offset + 4);
+    const length = wav.readUInt32LE(offset + 4);
+    if (id === "data") {
+      data = wav.subarray(offset + 8, offset + 8 + length);
+      break;
+    }
+    offset += 8 + length + (length % 2);
+  }
+  assert.ok(data, "capture has no WAV data chunk");
+  return data;
 }
 
 function decibels(amplitude) {

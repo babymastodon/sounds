@@ -51,17 +51,17 @@ impl Algorithm {
             Self::Multiresolution => {
                 "Splits every local convolution into complementary low, mid, and high bands. \
                  Low frequencies use longer windows for stability; highs use shorter windows \
-                 for sharper timing. Overlapping results receive normalized raised-cosine \
-                 crossfades before the three aligned bands are recombined."
+                 for sharper timing. Root-Hann synthesis and a convolution-derived power envelope \
+                 keep overlapping grains even before the three aligned bands are recombined."
             }
             Self::SlidingWola => {
                 "Extracts synchronized A/B windows along the full timeline, linearly convolves \
-                 each pair, then merges overlapping results with normalized raised-cosine \
-                 weighted overlap-add. This is the neutral local-convolution baseline."
+                 each pair, then merges them with power-normalized root-Hann overlap-add. This \
+                 suppresses window-rate pulsing and is the neutral local-convolution baseline."
             }
             Self::EvolvingIr => {
                 "Convolves synchronized A/B windows, crops the result into separate A-sized and \
-                 B-sized carriers, then blends them through normalized raised-cosine crossfades. \
+                 B-sized carriers, then blends them through power-normalized root-Hann synthesis. \
                  Carrier balance shifts which source's local timing dominates."
             }
             Self::ChunkCrossfade => {
@@ -72,7 +72,7 @@ impl Algorithm {
             Self::FullConvolution => {
                 "Selects one segment from each clip and linearly convolves them in one FFT \
                  operation. Each selected cut receives a 20 ms edge fade, both segments default \
-                 to the complete 60-second sources, and the complete A + B - 1 result is retained."
+                 to the complete 61-second sources, and the complete A + B - 1 result is retained."
             }
         }
     }
@@ -142,9 +142,9 @@ impl Default for AlgorithmParameters {
             evolving_a_mix: 0.50,
             evolving_mix_motion: 0.0,
             evolving_crop_position: 0.50,
-            window_overlap_percent: 35.0,
+            window_overlap_percent: 75.0,
             window_b_offset_seconds: 0.0,
-            chunk_crossfade_percent: 25.0,
+            chunk_crossfade_percent: 50.0,
             chunk_crop_position: 0.50,
             full_a_offset_seconds: 0.0,
             full_a_duration_seconds: INPUT_SECONDS as f32,
@@ -279,11 +279,10 @@ impl WindowConfig {
         Ok(Self {
             clip_a_seconds,
             clip_b_seconds,
-            // The shorter analysis window overlaps its neighbor by the chosen
-            // percentage, guaranteeing overlap for both A and B. The longer
-            // window overlaps more deeply.
-            // Convolution results span roughly A + B, so every pair of
-            // adjacent synthesis blocks overlaps more deeply.
+            // The shorter analysis window controls scan density. The default
+            // 75% overlap provides four analysis positions per short window;
+            // convolution results span roughly A + B and therefore overlap
+            // even more deeply during power-normalized synthesis.
             hop_seconds: clip_a_seconds.min(clip_b_seconds) * (1.0 - overlap_percent / 100.0),
         })
     }
@@ -312,7 +311,7 @@ pub fn render_algorithm_cancellable(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<f32>> {
     if clip_a.samples.len() != INPUT_FRAMES || clip_b.samples.len() != INPUT_FRAMES {
-        bail!("windowed renderer requires two one-minute clips");
+        bail!("windowed renderer requires two standard-length source clips");
     }
     if cancelled() {
         bail!("render cancelled");
@@ -420,17 +419,24 @@ fn combine_timelines(rendered: Vec<(TimelineRender, f32)>) -> Vec<f32> {
     let start_frame = rendered
         .iter()
         .map(|(band, _)| band.start_frame)
-        .min()
+        .max()
         .expect("multiresolution has bands");
     let end_frame = rendered
         .iter()
         .map(|(band, _)| band.end_frame())
-        .max()
+        .min()
         .expect("multiresolution has bands");
+    assert!(
+        end_frame > start_frame,
+        "multiresolution bands must share a common timeline"
+    );
     let mut output = vec![0.0; (end_frame - start_frame) as usize];
     for (band, mix) in rendered {
-        let offset = (band.start_frame - start_frame) as usize;
-        for (output, sample) in output[offset..].iter_mut().zip(band.samples) {
+        let source_offset = (start_frame - band.start_frame) as usize;
+        for (output, sample) in output
+            .iter_mut()
+            .zip(band.samples.into_iter().skip(source_offset))
+        {
             *output += sample * mix;
         }
     }
@@ -497,6 +503,7 @@ fn render_sliding(
         .map(|&center| (center as isize, local_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
+    let power_profile = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
     for center in render_centers {
@@ -513,7 +520,7 @@ fn render_sliding(
             parameters.multires_transition_width,
         )?;
         previous_gain = Some(level_local(&mut local, previous_gain, 0.085));
-        overlap.add_crossfade(center as isize, &local, 1.0, parameters.taper);
+        overlap.add_crossfade(center as isize, &local, &power_profile, 1.0);
     }
     Ok(overlap.finish())
 }
@@ -529,6 +536,17 @@ fn render_evolving_ir(
     let b_frames = seconds_to_frames(config.clip_b_seconds);
     let hop_frames = seconds_to_frames(config.hop_seconds);
     let mut convolver = LocalConvolver::new(a_frames + b_frames - 1);
+    let full_power = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
+    let a_power = normalized_power_profile(positioned_crop(
+        &full_power,
+        a_frames,
+        parameters.evolving_crop_position,
+    ));
+    let b_power = normalized_power_profile(positioned_crop(
+        &full_power,
+        b_frames,
+        parameters.evolving_crop_position,
+    ));
     let render_centers = centers(hop_frames);
     let mut placements = Vec::new();
     for &center in &render_centers {
@@ -561,13 +579,13 @@ fn render_evolving_ir(
             let mut a_carrier =
                 positioned_crop(&local, a_frames, parameters.evolving_crop_position);
             gain_a = Some(level_local(&mut a_carrier, gain_a, 0.078));
-            overlap.add_crossfade(center as isize, &a_carrier, mix, parameters.taper);
+            overlap.add_crossfade(center as isize, &a_carrier, &a_power, mix);
         }
         if mix < 1.0 {
             let mut b_carrier =
                 positioned_crop(&local, b_frames, parameters.evolving_crop_position);
             gain_b = Some(level_local(&mut b_carrier, gain_b, 0.078));
-            overlap.add_crossfade(center as isize, &b_carrier, 1.0 - mix, parameters.taper);
+            overlap.add_crossfade(center as isize, &b_carrier, &b_power, 1.0 - mix);
         }
     }
     Ok(overlap.finish().samples)
@@ -593,6 +611,12 @@ fn render_chunk_crossfade(
         .map(|&center| (center as isize, block_frames))
         .collect::<Vec<_>>();
     let mut convolver = LocalConvolver::new(local_frames);
+    let full_power = convolution_power_profile(&mut convolver, a_frames, b_frames, parameters)?;
+    let block_power = normalized_power_profile(positioned_crop(
+        &full_power,
+        block_frames,
+        parameters.chunk_crop_position,
+    ));
     let mut overlap = OverlapBuffer::for_placements(&placements);
     let mut previous_gain = None;
     for center in render_centers {
@@ -614,9 +638,9 @@ fn render_chunk_crossfade(
             parameters.chunk_crop_position,
         );
         previous_gain = Some(level_local(&mut block, previous_gain, 0.085));
-        overlap.add_equal_power(center as isize, &block, crossfade_frames);
+        overlap.add_equal_power(center as isize, &block, &block_power, crossfade_frames);
     }
-    Ok(overlap.finish_equal_power().samples)
+    Ok(overlap.finish().samples)
 }
 
 fn seconds_to_frames(seconds: f32) -> usize {
@@ -727,6 +751,41 @@ fn positioned_crop(input: &[f32], length: usize, position: f32) -> Vec<f32> {
     }
     let start = ((input.len() - length) as f32 * position).round() as usize;
     input[start..start + length].to_vec()
+}
+
+fn convolution_power_profile(
+    convolver: &mut LocalConvolver,
+    a_frames: usize,
+    b_frames: usize,
+    parameters: AlgorithmParameters,
+) -> Result<Vec<f32>> {
+    let analysis_power = |frames| {
+        (0..frames)
+            .map(|index| tukey(index, frames, parameters.taper).powi(2))
+            .collect::<Vec<_>>()
+    };
+    let profile = convolver.convolve(
+        &analysis_power(a_frames),
+        &analysis_power(b_frames),
+        SpectrumBand::Full,
+        parameters.multires_low_split_hz,
+        parameters.multires_high_split_hz,
+        parameters.multires_transition_width,
+    )?;
+    Ok(normalized_power_profile(profile))
+}
+
+fn normalized_power_profile(mut profile: Vec<f32>) -> Vec<f32> {
+    for power in &mut profile {
+        *power = power.max(0.0);
+    }
+    let mean =
+        profile.iter().map(|&power| f64::from(power)).sum::<f64>() / profile.len().max(1) as f64;
+    let scale = 1.0 / (mean as f32).max(1.0e-12);
+    for power in &mut profile {
+        *power *= scale;
+    }
+    profile
 }
 
 fn level_local(samples: &mut [f32], previous_gain: Option<f32>, target_rms: f32) -> f32 {
@@ -858,7 +917,7 @@ fn ascending_transition(value: f32, start: f32, end: f32) -> f32 {
 
 struct OverlapBuffer {
     samples: Vec<f32>,
-    weights: Vec<f32>,
+    power_weights: Vec<f32>,
     start_frame: isize,
 }
 
@@ -877,27 +936,35 @@ impl OverlapBuffer {
         let frames = (end_frame - start_frame) as usize;
         Self {
             samples: vec![0.0; frames],
-            weights: vec![0.0; frames],
+            power_weights: vec![0.0; frames],
             start_frame,
         }
     }
 
-    fn add_crossfade(&mut self, center: isize, local: &[f32], mix: f32, taper: f32) {
+    fn add_crossfade(&mut self, center: isize, local: &[f32], power_profile: &[f32], mix: f32) {
+        assert_eq!(local.len(), power_profile.len());
         let start = center - local.len() as isize / 2;
-        for (index, &sample) in local.iter().enumerate() {
+        for (index, (&sample, &local_power)) in local.iter().zip(power_profile).enumerate() {
             let output_index = start + index as isize - self.start_frame;
             if !(0..self.samples.len() as isize).contains(&output_index) {
                 continue;
             }
-            let weight = tukey(index, local.len(), taper).max(1.0e-5) * mix;
+            let weight = tukey(index, local.len(), 1.0).sqrt().max(1.0e-5) * mix;
             self.samples[output_index as usize] += sample * weight;
-            self.weights[output_index as usize] += weight;
+            self.power_weights[output_index as usize] += weight * weight * local_power;
         }
     }
 
-    fn add_equal_power(&mut self, center: isize, local: &[f32], fade_frames: usize) {
+    fn add_equal_power(
+        &mut self,
+        center: isize,
+        local: &[f32],
+        power_profile: &[f32],
+        fade_frames: usize,
+    ) {
+        assert_eq!(local.len(), power_profile.len());
         let start = center - local.len() as isize / 2;
-        for (index, &sample) in local.iter().enumerate() {
+        for (index, (&sample, &local_power)) in local.iter().zip(power_profile).enumerate() {
             let output_index = start + index as isize - self.start_frame;
             if !(0..self.samples.len() as isize).contains(&output_index) {
                 continue;
@@ -911,26 +978,18 @@ impl OverlapBuffer {
                     .max(1.0e-5)
             };
             self.samples[output_index as usize] += sample * weight;
-            self.weights[output_index as usize] += weight;
+            self.power_weights[output_index as usize] += weight * weight * local_power;
         }
     }
 
     fn finish(mut self) -> TimelineRender {
-        for (sample, weight) in self.samples.iter_mut().zip(self.weights) {
-            if weight > 1.0e-8 {
-                *sample /= weight;
+        for (sample, power_weight) in self.samples.iter_mut().zip(self.power_weights) {
+            if power_weight > 1.0e-14 {
+                *sample /= power_weight.sqrt();
+            } else {
+                *sample = 0.0;
             }
         }
-        TimelineRender {
-            samples: self.samples,
-            start_frame: self.start_frame,
-        }
-    }
-
-    fn finish_equal_power(self) -> TimelineRender {
-        // add_equal_power uses complementary sine/cosine ramps. Their squared
-        // gains sum to one across each overlap, so no amplitude-sum
-        // normalization is applied here.
         TimelineRender {
             samples: self.samples,
             start_frame: self.start_frame,
@@ -997,7 +1056,7 @@ mod tests {
 
         parameters = AlgorithmParameters::default();
         parameters.full_a_offset_seconds = 30.0;
-        parameters.full_a_duration_seconds = 30.1;
+        parameters.full_a_duration_seconds = 31.1;
         assert!(parameters.validate(Algorithm::FullConvolution).is_err());
 
         parameters = AlgorithmParameters::default();
@@ -1031,8 +1090,18 @@ mod tests {
         let local_frames = 101;
         let placements = [(0, local_frames), (INPUT_FRAMES as isize - 1, local_frames)];
         let mut overlap = OverlapBuffer::for_placements(&placements);
-        overlap.add_crossfade(placements[0].0, &vec![1.0; local_frames], 1.0, 1.0);
-        overlap.add_crossfade(placements[1].0, &vec![1.0; local_frames], 1.0, 1.0);
+        overlap.add_crossfade(
+            placements[0].0,
+            &vec![1.0; local_frames],
+            &vec![1.0; local_frames],
+            1.0,
+        );
+        overlap.add_crossfade(
+            placements[1].0,
+            &vec![1.0; local_frames],
+            &vec![1.0; local_frames],
+            1.0,
+        );
         let rendered = overlap.finish();
         assert_eq!(rendered.start_frame, -50);
         assert_eq!(rendered.samples.len(), INPUT_FRAMES + local_frames - 1);
@@ -1044,8 +1113,8 @@ mod tests {
     fn overlapping_results_make_a_gradual_crossfade() {
         let placements = [(0, 101), (50, 101)];
         let mut overlap = OverlapBuffer::for_placements(&placements);
-        overlap.add_crossfade(0, &vec![0.0; 101], 1.0, 1.0);
-        overlap.add_crossfade(50, &vec![1.0; 101], 1.0, 1.0);
+        overlap.add_crossfade(0, &vec![0.0; 101], &vec![1.0; 101], 1.0);
+        overlap.add_crossfade(50, &vec![1.0; 101], &vec![1.0; 101], 1.0);
         let rendered = overlap.finish();
         let transition = &rendered.samples[50..100];
         assert!(transition.windows(2).all(|pair| pair[1] >= pair[0]));
@@ -1057,11 +1126,44 @@ mod tests {
     }
 
     #[test]
-    fn multiresolution_bands_align_on_their_complete_timelines() {
+    fn default_overlap_keeps_the_expected_power_envelope_even() {
+        let frames = 1_200;
+        let hop = frames / 4;
+        let local_frames = frames * 2 - 1;
+        let placements = (0..=12)
+            .map(|index| ((index * hop) as isize, local_frames))
+            .collect::<Vec<_>>();
+        let mut convolver = LocalConvolver::new(local_frames);
+        let profile = convolution_power_profile(
+            &mut convolver,
+            frames,
+            frames,
+            AlgorithmParameters::default(),
+        )
+        .unwrap();
+        let mut overlap = OverlapBuffer::for_placements(&placements);
+        let silent = vec![0.0; local_frames];
+        for &(center, _) in &placements {
+            overlap.add_crossfade(center, &silent, &profile, 1.0);
+        }
+        let first = (4 * hop) as isize - overlap.start_frame;
+        let last = (8 * hop) as isize - overlap.start_frame;
+        let steady = &overlap.power_weights[first as usize..last as usize];
+        let minimum = steady.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = steady.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let spread_db = 10.0 * (maximum / minimum).log10();
+        assert!(
+            spread_db < 0.25,
+            "expected-power ripple was {spread_db:.3} dB"
+        );
+    }
+
+    #[test]
+    fn multiresolution_uses_the_common_band_timeline() {
         let output = combine_timelines(vec![
             (
                 TimelineRender {
-                    samples: vec![1.0; 4],
+                    samples: vec![1.0; 6],
                     start_frame: -2,
                 },
                 1.0,
@@ -1074,7 +1176,7 @@ mod tests {
                 0.5,
             ),
         ]);
-        assert_eq!(output, vec![1.0, 1.0, 2.0, 2.0]);
+        assert_eq!(output, vec![2.0, 2.0]);
     }
 
     #[test]

@@ -47,6 +47,15 @@ prepare_one() {
         fi
     fi
 
+    local source_duration
+    source_duration=$(ffprobe -v error -show_entries format=duration \
+        -of default=nw=1:nk=1 "$raw_path")
+    if ! awk -v duration="$source_duration" -v start="$trim_start" -v seconds="$seconds" \
+        'BEGIN { exit !(duration > 60 && duration + 0.001 >= start + seconds) }'; then
+        echo "$id: source is ${source_duration}s and cannot provide ${seconds}s from ${trim_start}s" >&2
+        return 1
+    fi
+
     local actual_frames=
     if [[ -s "$prepared_path" ]]; then
         actual_frames=$(ffprobe -v error -select_streams a:0 \
@@ -59,7 +68,7 @@ prepare_one() {
         ffmpeg -nostdin -hide_banner -loglevel error -y \
             -ss "$trim_start" -i "$raw_path" -t "$seconds" -vn \
             -af "highpass=f=15,lowpass=f=21000,afade=t=in:st=0:d=0.02,afade=t=out:st=$fade_out:d=0.02" \
-            -ar 48000 -ac 1 -c:a pcm_f32le "$temporary"
+            -ar 48000 -ac 1 -c:a pcm_s16le "$temporary"
         mv "$temporary" "$prepared_path"
     fi
 
@@ -113,4 +122,3 @@ cp "$manifest" "$prepared_dir/SOURCES.tsv"
 find "$raw_dir" -type f -name '*.media' -print0 | sort -z | xargs -0 sha256sum > "$raw_dir/SHA256SUMS"
 find "$prepared_dir" -type f -name '*.wav' -print0 | sort -z | xargs -0 sha256sum > "$prepared_dir/SHA256SUMS"
 echo "prepared $manifest_count sources in $prepared_dir" >&2
-

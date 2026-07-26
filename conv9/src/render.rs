@@ -1,6 +1,7 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -78,19 +79,20 @@ pub struct RenderSelection {
 
 pub struct OnDemandRenderer {
     sources: Vec<SourceEntry>,
-    clips: Vec<AudioClip>,
+    input_dir: PathBuf,
     indices: HashMap<String, usize>,
+    clip_cache: Mutex<VecDeque<Arc<AudioClip>>>,
 }
 
 impl OnDemandRenderer {
     pub fn load(manifest: &Path, input_dir: &Path) -> Result<Self> {
         let sources = load_manifest(manifest)?;
-        let clips = sources
-            .iter()
-            .map(|source| {
-                read_prepared_clip(&source.id, &input_dir.join(format!("{}.wav", source.id)))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        for source in &sources {
+            let path = input_dir.join(format!("{}.wav", source.id));
+            if !path.is_file() {
+                bail!("missing prepared input {}", path.display());
+            }
+        }
         let indices = sources
             .iter()
             .enumerate()
@@ -98,14 +100,15 @@ impl OnDemandRenderer {
             .collect();
         Ok(Self {
             sources,
-            clips,
+            input_dir: input_dir.to_owned(),
             indices,
+            clip_cache: Mutex::new(VecDeque::new()),
         })
     }
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 4,
+            schema_version: 5,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -158,27 +161,27 @@ impl OnDemandRenderer {
         let left = self.clip(&selection.left_id)?;
         let right = self.clip(&selection.right_id)?;
         let mut output =
-            render_algorithm_cancellable(algorithm, config, parameters, left, right, cancelled)
+            render_algorithm_cancellable(algorithm, config, parameters, &left, &right, cancelled)
                 .with_context(|| {
-                    format!(
-                        "{} / {} ({}) × {} ({})",
-                        algorithm.slug(),
-                        left.id,
-                        selection
-                            .windows
-                            .get("clip_a_seconds")
-                            .copied()
-                            .map(|seconds| format!("{seconds:.2} s"))
-                            .unwrap_or_else(|| "full".to_owned()),
-                        right.id,
-                        selection
-                            .windows
-                            .get("clip_b_seconds")
-                            .copied()
-                            .map(|seconds| format!("{seconds:.2} s"))
-                            .unwrap_or_else(|| "full".to_owned()),
-                    )
-                })?;
+                format!(
+                    "{} / {} ({}) × {} ({})",
+                    algorithm.slug(),
+                    left.id,
+                    selection
+                        .windows
+                        .get("clip_a_seconds")
+                        .copied()
+                        .map(|seconds| format!("{seconds:.2} s"))
+                        .unwrap_or_else(|| "full".to_owned()),
+                    right.id,
+                    selection
+                        .windows
+                        .get("clip_b_seconds")
+                        .copied()
+                        .map(|seconds| format!("{seconds:.2} s"))
+                        .unwrap_or_else(|| "full".to_owned()),
+                )
+            })?;
         if cancelled() {
             bail!("render cancelled");
         }
@@ -191,11 +194,35 @@ impl OnDemandRenderer {
         })
     }
 
-    fn clip(&self, id: &str) -> Result<&AudioClip> {
-        self.indices
-            .get(id)
-            .and_then(|index| self.clips.get(*index))
-            .ok_or_else(|| anyhow::anyhow!("unknown source {id}"))
+    fn clip(&self, id: &str) -> Result<Arc<AudioClip>> {
+        if !self.indices.contains_key(id) {
+            bail!("unknown source {id}");
+        }
+        {
+            let mut cache = self
+                .clip_cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("prepared clip cache was poisoned"))?;
+            if let Some(position) = cache.iter().position(|clip| clip.id == id) {
+                let clip = cache
+                    .remove(position)
+                    .expect("located clip must remain in cache");
+                cache.push_front(Arc::clone(&clip));
+                return Ok(clip);
+            }
+        }
+
+        let loaded = Arc::new(read_prepared_clip(
+            id,
+            &self.input_dir.join(format!("{id}.wav")),
+        )?);
+        let mut cache = self
+            .clip_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("prepared clip cache was poisoned"))?;
+        cache.push_front(Arc::clone(&loaded));
+        cache.truncate(4);
+        Ok(loaded)
     }
 }
 
@@ -233,18 +260,6 @@ fn window_catalog(algorithm: Algorithm) -> Vec<WindowCatalogEntry> {
 
 fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
     let defaults = AlgorithmParameters::default();
-    let crossfade = || ParameterCatalogEntry {
-        id: "taper",
-        label: "crossfade",
-        minimum: 0.05,
-        maximum: 1.0,
-        step: 0.01,
-        default: defaults.taper,
-        unit: "",
-        description: "Shapes both the Tukey analysis window and the normalized raised-cosine \
-                      synthesis crossfade between overlapping convolution results. Higher values \
-                      make the transition longer and more gradual; 1 uses the full window.",
-    };
     let analysis_taper = || ParameterCatalogEntry {
         id: "taper",
         label: "edge taper",
@@ -253,9 +268,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
         step: 0.01,
         default: defaults.taper,
         unit: "",
-        description: "Sets the Tukey taper applied to each independent input chunk before \
-                      convolution. Higher values soften more of each chunk edge to reduce spectral \
-                      leakage; chunk-to-chunk blending is controlled separately by overlap.",
+        description: "Sets the Tukey taper applied to each input window before convolution. Higher \
+                      values soften more of each edge and reduce spectral leakage. Synthesis uses \
+                      a fixed root-Hann shape with automatic power normalization.",
     };
     let overlap = || ParameterCatalogEntry {
         id: "window_overlap_percent",
@@ -265,9 +280,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
         step: 1.0,
         default: defaults.window_overlap_percent,
         unit: "%",
-        description: "Sets how much of the shorter A/B analysis window overlaps the next timeline \
-                      position, guaranteeing overlap for both inputs. Higher values make local \
-                      transitions denser and smoother but render more FFT blocks.",
+        description: "Sets scan overlap from the shorter A/B analysis window. The 75% default gives \
+                      four positions per short window for continuous power-normalized synthesis. \
+                      Lower values expose grain and pulse; higher values cost more FFT blocks.",
     };
     let timeline_offset = || ParameterCatalogEntry {
         id: "window_b_offset_seconds",
@@ -283,7 +298,7 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
     };
     match algorithm {
         Algorithm::Multiresolution => vec![
-            crossfade(),
+            analysis_taper(),
             overlap(),
             timeline_offset(),
             ParameterCatalogEntry {
@@ -371,9 +386,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               broadly while normalized band masks keep their sum equal to one.",
             },
         ],
-        Algorithm::SlidingWola => vec![crossfade(), overlap(), timeline_offset()],
+        Algorithm::SlidingWola => vec![analysis_taper(), overlap(), timeline_offset()],
         Algorithm::EvolvingIr => vec![
-            crossfade(),
+            analysis_taper(),
             overlap(),
             timeline_offset(),
             ParameterCatalogEntry {
@@ -423,9 +438,9 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 1.0,
                 default: defaults.chunk_crossfade_percent,
                 unit: "%",
-                description: "Sets the equal-power overlap as a percentage of the shorter A/B chunk, \
-                              which is the convolution support available beyond the longer timeline \
-                              slot. Higher values make smoother, longer transitions.",
+                description: "Sets the power-normalized overlap as a percentage of the shorter A/B \
+                              chunk, which is the convolution support available beyond the longer \
+                              timeline slot. 50% is continuous by default; lower values expose seams.",
             },
             timeline_offset(),
             ParameterCatalogEntry {
@@ -463,7 +478,7 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 default: defaults.full_a_duration_seconds,
                 unit: "s",
                 description: "Sets the duration of clip A's selected segment. It defaults to the \
-                              complete 60-second source and is automatically kept within the clip \
+                              complete 61-second source and is automatically kept within the clip \
                               after the selected A offset.",
             },
             ParameterCatalogEntry {
@@ -487,7 +502,7 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 default: defaults.full_b_duration_seconds,
                 unit: "s",
                 description: "Sets the duration of clip B's selected segment. It defaults to the \
-                              complete 60-second source and is automatically kept within the clip \
+                              complete 61-second source and is automatically kept within the clip \
                               after the selected B offset.",
             },
         ],

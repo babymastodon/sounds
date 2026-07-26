@@ -2,7 +2,7 @@
 name = "conv9"
 version = "0.1.0"
 edition = "2024"
-description = "On-demand local and full convolution over a diverse one-minute corpus"
+description = "On-demand local and full convolution over a diverse 48-source corpus"
 license = "MIT"
 
 [dependencies]

@@ -74,7 +74,7 @@ try {
             ? request.parameters.full_a_duration_seconds +
               request.parameters.full_b_duration_seconds -
               1 / 48_000
-            : 60;
+            : 61;
         return {
           header: {
             requestId: request.requestId,
@@ -97,7 +97,7 @@ try {
                     (1 - request.parameters.window_overlap_percent / 100),
             renderMilliseconds: 240,
             metrics: {
-              frames: 2_880_000,
+              frames: 2_928_000,
               duration_seconds: outputDuration,
               peak: 0.72,
               rms: 0.09,
@@ -145,8 +145,8 @@ try {
     `transport was not locked during visualization analysis: ${JSON.stringify(statusHistory)}`,
   );
 
-  assert.equal(await page.locator("#sourceASelect option").count(), 12, "clip A count");
-  assert.equal(await page.locator("#sourceBSelect option").count(), 12, "clip B count");
+  assert.equal(await page.locator("#sourceASelect option").count(), 48, "clip A count");
+  assert.equal(await page.locator("#sourceBSelect option").count(), 48, "clip B count");
   assert.equal(await page.locator("#algorithmButtons button").count(), 5, "algorithm count");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 12);
@@ -160,7 +160,7 @@ try {
   );
   assert.equal(await page.getByLabel("A window exact value").inputValue(), "5.00");
   assert.equal(await page.getByLabel("B window exact value").inputValue(), "5.00");
-  assert.equal(await page.getByLabel("overlap exact value").inputValue(), "35");
+  assert.equal(await page.getByLabel("overlap exact value").inputValue(), "75");
   const defaultSliderPosition = Number(
     await page.locator("input[type='range'][aria-label='A window']").inputValue(),
   );
@@ -206,10 +206,10 @@ try {
   await waitForPath(page, "/chunk_crossfade/5.00x5.00");
   assert.equal(await page.locator("#methodTools .window-control").count(), 2);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 6);
-  assert.equal(await page.getByLabel("overlap exact value").inputValue(), "25");
+  assert.equal(await page.getByLabel("overlap exact value").inputValue(), "50");
   assert.match(
     await page.getByLabel("overlap exact value").getAttribute("title"),
-    /equal-power overlap/,
+    /power-normalized overlap/,
   );
   await assertControlTooltips(page);
   await page.getByLabel("overlap exact value").fill("40");
@@ -217,28 +217,28 @@ try {
   await expectContains(page, "#windowReadout", "40%");
 
   await page.getByRole("button", { name: "full", exact: true }).click();
-  await waitForPath(page, "/full_convolution/a0.00+60.00_b0.00+60.00");
+  await waitForPath(page, "/full_convolution/a0.00+61.00_b0.00+61.00");
   assert.equal(await page.locator("#methodTools .window-control").count(), 0);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 4);
   assert.equal(await page.locator("#methodTools input").count(), 8);
   assert.equal(await page.getByLabel("A offset exact value").inputValue(), "0.0");
-  assert.equal(await page.getByLabel("A duration exact value").inputValue(), "60.0");
-  await expectContains(page, "#windowReadout", "out 120.00s");
+  assert.equal(await page.getByLabel("A duration exact value").inputValue(), "61.0");
+  await expectContains(page, "#windowReadout", "out 122.00s");
   await assertControlTooltips(page);
 
   await page.getByLabel("A offset exact value").fill("10");
-  await waitForPath(page, "/full_convolution/a10.00+50.00_b0.00+60.00");
+  await waitForPath(page, "/full_convolution/a10.00+51.00_b0.00+61.00");
   assert.equal(
     await page.getByLabel("A duration exact value").inputValue(),
-    "50.0",
+    "51.0",
     "offset keeps the A segment inside its source",
   );
   await page.getByLabel("A offset exact value").fill("50");
-  assert.equal(await page.getByLabel("A duration exact value").inputValue(), "10.0");
+  assert.equal(await page.getByLabel("A duration exact value").inputValue(), "11.0");
   await page.getByLabel("A duration exact value").fill("20");
   assert.equal(
     await page.getByLabel("A offset exact value").inputValue(),
-    "40.0",
+    "41.0",
     "duration moves the A segment earlier when its end would exceed the source",
   );
   await page.getByLabel("A offset exact value").fill("10");
@@ -287,7 +287,7 @@ try {
   const bounds = await waveform.boundingBox();
   assert.ok(bounds, "waveform is visible");
   await waveform.click({ position: { x: bounds.width * 0.75, y: bounds.height / 2 } });
-  await expectAudioTime(page, 45, 0.5);
+  await expectAudioTime(page, 45.75, 0.5);
 
   const sourceBeforeResize = await audioSource(page);
   const timeBeforeResize = await audioTime(page);
@@ -343,14 +343,14 @@ async function testCatalog() {
   ];
   const crossfadeShape = {
     id: "taper",
-    label: "crossfade",
+    label: "edge taper",
     minimum: 0.05,
     maximum: 1,
     step: 0.01,
     default: 0.5,
     unit: "",
     description:
-      "Shapes both the Tukey analysis window and normalized raised-cosine synthesis crossfade between overlapping results.",
+      "Sets the Tukey taper on each input window; synthesis uses a fixed root-Hann shape with automatic power normalization.",
   };
   const analysisTaper = {
     ...crossfadeShape,
@@ -392,7 +392,7 @@ async function testCatalog() {
       evolving_crop_position:
         "Chooses the onset, center, or tail region used for each cropped evolving convolution carrier.",
       chunk_crossfade_percent:
-        "Sets equal-power overlap as a percentage of the shorter chunk. Higher values make longer, smoother transitions.",
+        "Sets power-normalized overlap as a percentage of the shorter chunk. The 50% default keeps transitions continuous; lower values expose seams.",
       chunk_crop_position:
         "Chooses the onset, center, or tail region cropped from every complete local chunk convolution.",
       full_a_offset_seconds:
@@ -406,11 +406,11 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 4,
+    schema_version: 5,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
-    input_seconds: 60,
+    input_seconds: 61,
     sources,
     algorithms: [
       {
@@ -422,7 +422,7 @@ async function testCatalog() {
         windows: windows(),
         parameters: [
           crossfadeShape,
-          parameter("window_overlap_percent", "overlap", 5, 80, 1, 35, "%"),
+          parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
           parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
           parameter("multires_low_scale", "low scale", 1, 3, 0.05, 1.6, "×"),
           parameter("multires_high_scale", "high scale", 0.15, 1, 0.01, 0.6, "×"),
@@ -442,7 +442,7 @@ async function testCatalog() {
         windows: windows(),
         parameters: [
           crossfadeShape,
-          parameter("window_overlap_percent", "overlap", 5, 80, 1, 35, "%"),
+          parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
           parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
         ],
       },
@@ -455,7 +455,7 @@ async function testCatalog() {
         windows: windows(),
         parameters: [
           crossfadeShape,
-          parameter("window_overlap_percent", "overlap", 5, 80, 1, 35, "%"),
+          parameter("window_overlap_percent", "overlap", 5, 80, 1, 75, "%"),
           parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
           parameter("evolving_a_mix", "A carrier", 0, 1, 0.01, 0.5),
           parameter("evolving_mix_motion", "carrier motion", -1, 1, 0.01, 0),
@@ -471,7 +471,7 @@ async function testCatalog() {
         windows: windows(),
         parameters: [
           analysisTaper,
-          parameter("chunk_crossfade_percent", "overlap", 5, 75, 1, 25, "%"),
+          parameter("chunk_crossfade_percent", "overlap", 5, 75, 1, 50, "%"),
           parameter("window_b_offset_seconds", "B offset", -30, 30, 0.1, 0, "s"),
           parameter("chunk_crop_position", "crop position", 0, 1, 0.01, 0.5),
         ],
@@ -484,10 +484,10 @@ async function testCatalog() {
         rank: 5,
         windows: [],
         parameters: [
-          parameter("full_a_offset_seconds", "A offset", 0, 59.9, 0.1, 0, "s"),
-          parameter("full_a_duration_seconds", "A duration", 0.1, 60, 0.1, 60, "s"),
-          parameter("full_b_offset_seconds", "B offset", 0, 59.9, 0.1, 0, "s"),
-          parameter("full_b_duration_seconds", "B duration", 0.1, 60, 0.1, 60, "s"),
+          parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_a_duration_seconds", "A duration", 0.1, 61, 0.1, 61, "s"),
+          parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
         ],
       },
     ],
@@ -535,7 +535,7 @@ async function assertAudioReady(page, pathPart) {
       const audio = document.querySelector("#audio");
       return (
         audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
-        Math.abs(audio.duration - 60) < 0.01 &&
+        Math.abs(audio.duration - 61) < 0.01 &&
         audio.currentSrc.startsWith("blob:") &&
         audio.dataset.path.includes(part)
       );

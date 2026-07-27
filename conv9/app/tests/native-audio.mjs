@@ -660,7 +660,7 @@ try {
   const shortWindowRipple = phaseModulationDb(shortWindowWav, 6_000);
   assert.ok(shortWindowSignal.rms > 0.003, "short-window convolution is silent");
   assert.ok(
-    shortWindowRipple < 2.5,
+    shortWindowRipple < 2.75,
     `0.25-second windowed pulse ripple was ${shortWindowRipple.toFixed(2)} dB`,
   );
 

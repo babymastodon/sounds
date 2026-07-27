@@ -6,11 +6,9 @@
 
 The corpus keeps the same 24 themes as `conv6`: ocean surf, river rapids, ice cracking, underwater hydrophones, campfires, beehives, farm barns, airport terminals, ferry interiors, harbors, restaurant kitchens, school cafeterias, cathedrals, bowling alleys, amusement arcades, casino floors, electrical substations, laundromats, printing presses, metalworking, street festivals, protest marches, choir rehearsals, and shortwave radio.
 
-Each theme contributes two entirely new recordings: one 5–15 second excerpt and one 25–35 second excerpt. `sources.tsv` therefore contains exactly 24 short and 24 long inputs. Its 48 direct media URLs are distinct from every URL in `conv1`, `conv4`, `conv5`, and `conv6`; 29 sources are CC0 and 19 are CC BY.
+Each theme contributes two entirely new recordings: one 5–15 second excerpt and one 25–35 second excerpt. `sources.tsv` therefore contains exactly 24 short and 24 long inputs. Its 48 direct media URLs are distinct from every URL in `conv1`, `conv4`, `conv5`, and `conv6`.
 
-Sources were discovered through the [Openverse audio API](https://api.openverse.org/). The manifest records the source page, creator, license, excerpt duration, trim offset, and direct media URL. The loader rejects unknown licenses, mismatched license URLs, duplicate URLs, durations in the 15–25 second gap, and any theme without exactly one source in each duration class.
-
-Rights-sensitive material follows the same policy as `conv6`: choir clips are non-compositional rehearsal notes, shortwave clips are noise and tones, and public ambience recordings should have their source pages and applicable personality or third-party rights reviewed before redistribution.
+Sources were discovered through the [Openverse audio API](https://api.openverse.org/). The manifest records the source page, creator, excerpt duration, trim offset, and direct media URL. The loader rejects malformed source metadata, duplicate URLs, durations in the 15–25 second gap, and any theme without exactly one source in each duration class.
 
 ## 24×24 cross-duration algorithm
 
@@ -57,7 +55,7 @@ Verification requires exactly 576 WAVs and checks their bipartite membership, st
 
 ## Full-run audit
 
-The complete pipeline was downloaded, rendered, verified, concatenated, and encoded on 2026-07-19 with eight logical CPU cores. All 48 Openverse media URLs worked and produced exact-length prepared inputs. The corpus has 29 CC0 and 19 CC BY sources, no duplicate URLs, and no URL overlap with `conv1`, `conv4`, `conv5`, or `conv6`. Parallel download and preparation took 10:55.51 with 71,316 KiB peak resident memory; most of that wall time was one large carnival source recording.
+The complete pipeline was downloaded, rendered, verified, concatenated, and encoded on 2026-07-19 with eight logical CPU cores. All 48 Openverse media URLs worked and produced exact-length prepared inputs, with no duplicate URLs or URL overlap with `conv1`, `conv4`, `conv5`, or `conv6`. Parallel download and preparation took 10:55.51 with 71,316 KiB peak resident memory; most of that wall time was one large carnival source recording.
 
 The run produced exactly 576 short-to-long stereo WAVs totaling 3,889,175,040 bytes. `matrix.csv` is exactly 24 rows × 24 columns, and every metric row has a short input in track-1 position and a long input in track-2 position. FFT rendering itself took 10.7 seconds; release compilation, rendering, and exhaustive built-in verification took 36.26 seconds with peak resident memory of 997,908 KiB. A second independent verification pass took 5.71 seconds. Overall RMS ranged from −20.64 to −20.07 dBFS, maximum peak was 0.887, maximum left/right RMS imbalance was 0.388 dB, and stereo difference ranged from −26.62 to −16.20 dBFS. Every pair had distinct stereo channels.
 

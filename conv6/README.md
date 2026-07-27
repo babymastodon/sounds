@@ -8,9 +8,7 @@ The checked choices in `category_candidates.md` are authoritative. Each selected
 
 The 24 categories are ocean surf, river rapids, ice cracking, underwater hydrophones, campfires, beehives, farm barns, airport terminals, ferry interiors, harbors, restaurant kitchens, school cafeterias, cathedrals, bowling alleys, amusement arcades, casino floors, electrical substations, laundromats, printing presses, metalworking, street festivals, protest marches, choir rehearsals, and shortwave radio.
 
-Sources were discovered through the [Openverse audio API](https://api.openverse.org/). Every chosen item is explicitly CC0 or CC BY. `sources.tsv` records the authoritative source page, creator, license, excerpt duration, trim offset, and direct media URL; the manifest loader rejects unknown licenses, mismatched license URLs, duplicate URLs, missing categories, and any category without exactly one short and one long source.
-
-Rights-sensitive categories use field ambience or mechanical texture where possible. Choir material is limited to rehearsal ambience and non-compositional single notes; shortwave sources are static, tones, and beeps rather than intelligible broadcasts. Arcade, casino, festival, cafeteria, and protest recordings remain public field recordings, so review their source pages and applicable personality or third-party rights before redistribution.
+Sources were discovered through the [Openverse audio API](https://api.openverse.org/). `sources.tsv` records the authoritative source page, creator, excerpt duration, trim offset, and direct media URL; the manifest loader rejects malformed source metadata, duplicate URLs, missing categories, and any category without exactly one short and one long source.
 
 ## Stereo algorithm inherited from conv3
 
@@ -57,7 +55,7 @@ Verification checks all 1,176 files for stereo 48 kHz PCM16 encoding, exact leng
 
 ## Full-run audit
 
-The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs. The corpus contains 26 CC0 and 22 CC BY sources, and its download URLs have no overlap with any earlier corpus.
+The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs, with no download URL overlap with any earlier corpus.
 
 The run produced 1,176 canonical stereo WAVs totaling 13,520,495,040 bytes for all 2,304 matrix cells. Rendering took 57.8 seconds; release compilation, rendering, and exhaustive verification took 106.89 seconds with peak resident memory of 2,062,156 KiB. Overall RMS ranged from −20.53 to −20.11 dBFS, maximum peak was 0.879, and maximum left/right RMS imbalance was 0.583 dB. Every pair, including all 48 self-pairs, had a verified stereo difference from −21.71 to −15.66 dBFS.
 

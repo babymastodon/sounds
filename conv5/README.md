@@ -17,7 +17,7 @@ The 48 distinct sources contain exactly six recordings from each group:
 
 Every group has three excerpts from 10 through 35 seconds and three excerpts over 35 through 60 seconds. The complete corpus therefore has exactly 24 short and 24 long inputs. None of its download URLs appear in `conv1`–`conv4`.
 
-Sources were discovered through the [Openverse audio API](https://api.openverse.org/). Every chosen item is explicitly CC0, CC BY, or CC BY-SA. The authoritative source page, creator, license, excerpt duration, trim offset, and direct media URL are recorded in `sources.tsv`; the manifest loader rejects unknown licenses or mismatched license URLs. Freesound preview files are used for Freesound items. Review the manifest and comply with attribution/share-alike terms before redistributing inputs or derivatives.
+Sources were discovered through the [Openverse audio API](https://api.openverse.org/). The authoritative source page, creator, excerpt duration, trim offset, and direct media URL are recorded in `sources.tsv`; the manifest loader rejects malformed source metadata. Freesound preview files are used for Freesound items.
 
 ## Stereo algorithm inherited from conv3
 
@@ -64,7 +64,7 @@ Verification checks all 1,176 files for stereo 48 kHz PCM16 encoding, exact leng
 
 ## Full-run audit
 
-The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs. The corpus contains 23 CC0, 24 CC BY, and one CC BY-SA source across Freesound, Jamendo, and Wikimedia Commons; its download URLs have no overlap with any earlier corpus.
+The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs, with no download URL overlap with any earlier corpus.
 
 The run produced 1,176 canonical stereo WAVs totaling 12,762,863,040 bytes for all 2,304 matrix cells. Rendering took 53.6 seconds; release compilation, rendering, and exhaustive verification took 100.23 seconds with peak resident memory of 1,989,556 KiB. Overall RMS ranged from −20.47 to −20.08 dBFS, maximum peak was 0.863, and maximum left/right RMS imbalance was 0.493 dB. Every pair, including all 48 self-pairs, had a verified stereo difference from −26.26 to −14.91 dBFS.
 

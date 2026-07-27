@@ -12,7 +12,7 @@ The 48 distinct sources are split exactly three ways:
 
 Each group contains eight excerpts from 10 through 35 seconds and eight excerpts over 35 through 60 seconds. The full corpus therefore has exactly 24 short and 24 long inputs. None of its download URLs appear in the `conv1`–`conv3` corpus.
 
-Sources were discovered through the [Openverse audio API](https://api.openverse.org/). Every chosen item is explicitly CC0, CC BY, or CC BY-SA; the authoritative source page, creator, license, excerpt duration, trim offset, and direct media URL are recorded in `sources.tsv`. Freesound preview files are used for Freesound items. Review the manifest and comply with attribution/share-alike terms before redistributing inputs or derivatives.
+Sources were discovered through the [Openverse audio API](https://api.openverse.org/). The authoritative source page, creator, excerpt duration, trim offset, and direct media URL are recorded in `sources.tsv`. Freesound preview files are used for Freesound items.
 
 ## Stereo algorithm inherited from conv3
 
@@ -66,7 +66,7 @@ Verification checks all 1,176 files for stereo 48 kHz PCM16 encoding, exact leng
 
 ## Full-run audit
 
-The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs. The corpus contains 23 CC0, 23 CC BY, and two CC BY-SA sources across Freesound, Jamendo, and Wikimedia Commons; its download URLs have no overlap with the earlier corpus.
+The complete pipeline was downloaded, rendered, and verified on 2026-07-19 with eight logical CPU cores. All 48 direct media URLs worked and produced exact-length prepared inputs, with no download URL overlap with the earlier corpus.
 
 The run produced 1,176 canonical stereo WAVs totaling 12,472,559,040 bytes for all 2,304 matrix cells. Rendering took 53.1 seconds; release compilation, rendering, and exhaustive verification took 99.62 seconds with peak resident memory of 1,967,868 KiB. Overall RMS ranged from −21.44 to −20.09 dBFS, maximum peak was 0.885, and maximum left/right RMS imbalance was 1.589 dB. Every pair, including all 48 self-pairs, had a verified stereo difference from −25.41 to −14.40 dBFS.
 

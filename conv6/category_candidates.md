@@ -2,7 +2,7 @@
 
 Mark exactly 24 categories by changing `[ ]` to `[x]`. Please leave the numeric IDs intact.
 
-The planned corpus will use two entirely new, openly licensed sources per selected category: one excerpt from 10 through 35 seconds and one excerpt over 35 through 60 seconds. That yields 48 sources with the same 24-short/24-long duration balance as `conv4` and `conv5`.
+The planned corpus will use two entirely new sources per selected category: one excerpt from 10 through 35 seconds and one excerpt over 35 through 60 seconds. That yields 48 sources with the same 24-short/24-long duration balance as `conv4` and `conv5`.
 
 ## Water, earth, and elemental textures
 

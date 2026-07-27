@@ -2,8 +2,7 @@
 
 Last updated: 2026-07-26
 
-- [x] Keep all implementation, lists, audit evidence, and reports inside
-  `conv10`.
+- [x] Keep conv10 implementation, lists, evidence, and reports inside `conv10`.
 - [x] Remove the short-additive approach and obsolete v14 output reports.
 - [x] Accept arbitrary plain or explicit raw-input lists.
 - [x] Check in and validate 48-input conv10 and conv8 lists.
@@ -23,8 +22,10 @@ Last updated: 2026-07-26
 - [x] Generate and independently verify conv8: 576/576 stereo pairs and all
   three final encodings.
 - [x] Record per-stage wall time and CPU utilization.
-- [x] Audit all 96 source pages for commercial-use permission.
-- [x] Confirm 58 CC0/public-domain and 38 CC BY sources; reject none.
-- [x] Generate YouTube-ready attribution text for all 38 CC BY sources.
-- [x] Commit only conv10 code, lists, tests, audits, and reports; never commit
-  generated audio.
+- [x] Replace 132 distinct sources across the repository and validate every
+  downloaded file end to end.
+- [x] Recheck 295 distinct live source pages and write the consolidated
+  `SOURCE_INVENTORY.tsv`.
+- [x] Build and test every project whose source audio changed.
+- [x] Commit only code, manifests, lists, tests, inventories, and reports;
+  never commit generated audio.

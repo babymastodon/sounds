@@ -2,7 +2,7 @@
 
 `conv9` compares two independently selected 61-second clips without retaining rendered audio. Every UI selection invokes the Rust DSP, conditions the result, encodes a mono 48 kHz PCM16 WAV in memory, and transfers it directly to the Tauri webview. Changing a clip, method, window, or method parameter starts a new render; stale work is cancelled between FFT blocks. There is no output directory or render cache.
 
-The 96 CC0 1.0 sources each represent a distinct sound kind. Both the downloader and manifest loader reject every other license. The original broad field-recording set is joined by 48 deliberately foreground-focused additions: 24 music or instrument recordings with clear notes, attacks, and phrases, and 24 non-musical recordings built around identifiable voices, impacts, vehicles, tools, alarms, or physical processes. The additions avoid drones and generic atmosphere beds, and favor recordings whose content changes substantially during the selected minute. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
+The 96 sources each represent a distinct sound kind. The original broad field-recording set is joined by 48 deliberately foreground-focused additions: 24 music or instrument recordings with clear notes, attacks, and phrases, and 24 non-musical recordings built around identifiable voices, impacts, vehicles, tools, alarms, or physical processes. The additions avoid drones and generic atmosphere beds, and favor recordings whose content changes substantially during the selected minute. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
 
 ```bash
 cd conv9

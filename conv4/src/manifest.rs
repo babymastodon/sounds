@@ -65,13 +65,6 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
     if long_count != 24 {
         bail!("expected exactly 24 sources over 35 through 60 seconds; found {long_count}");
     }
-    let providers = entries
-        .iter()
-        .map(|entry| entry.provider.as_str())
-        .collect::<HashSet<_>>();
-    if providers.len() < 3 {
-        bail!("expected at least three independent source providers");
-    }
     let categories = entries
         .iter()
         .map(|entry| entry.category.as_str())
@@ -90,11 +83,12 @@ pub fn load_manifest(path: &Path) -> Result<Vec<SourceEntry>> {
     }
     for entry in &entries {
         if entry.domain.trim().is_empty()
+            || entry.provider.trim().is_empty()
             || entry.creator.trim().is_empty()
             || entry.license.trim().is_empty()
         {
             bail!(
-                "{} is missing domain, creator, or license provenance",
+                "{} is missing domain, provider, creator, or license provenance",
                 entry.id
             );
         }

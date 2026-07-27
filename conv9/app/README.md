@@ -16,7 +16,7 @@ sudo dnf install webkit2gtk4.1-devel \
 sudo dnf group install "c-development"
 ```
 
-All 96 sources must be CC0 1.0. Prepare the source material once, then launch from the repository root:
+Prepare all 96 source clips once, then launch from the repository root:
 
 ```bash
 cd conv9

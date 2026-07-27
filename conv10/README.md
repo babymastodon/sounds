@@ -73,12 +73,8 @@ Useful modes:
 ./scripts/batch.py --keep-work my-list.txt
 ```
 
-## Verification and source use
+## Verification
 
 The 2026-07-26 runs passed matrix validation, full compressed decode checks, and
 SHA-256 verification for both lists. See `RUN_REPORT.md` and `PERFORMANCE.md`.
-
-All 96 conv10-plus-conv8 source pages were audited. They comprise 58 CC0/public
-domain and 38 CC BY recordings; no NC, ND, SA, Sampling+, or unclear source
-remains. See `SOURCE_USE.md`, the two `LICENSE_AUDIT_*.tsv` evidence tables, and
-`YOUTUBE_ATTRIBUTION.md`. CC BY entries must be credited.
+The consolidated repository source record is `SOURCE_INVENTORY.tsv`.

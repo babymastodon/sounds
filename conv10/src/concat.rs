@@ -20,6 +20,7 @@ pub struct ConcatOptions {
     pub metrics: PathBuf,
     pub output_dir: PathBuf,
     pub scratch_dir: PathBuf,
+    pub cover_art: PathBuf,
     pub output_name: String,
     pub crossfade_seconds: f64,
     pub aac_bitrate_kbps: u32,
@@ -95,6 +96,7 @@ struct ConcatRecipe {
     algorithm_version: String,
     manifest_fingerprint: String,
     metrics_fingerprint: String,
+    cover_art_fingerprint: String,
     output_frames: u64,
     crossfade_seconds: f64,
     aac_bitrate_kbps: u32,
@@ -120,6 +122,9 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
     }
     validate_output_name(&options.output_name)?;
     validate_metadata(&options.metadata)?;
+    if !options.cover_art.is_file() {
+        bail!("cover art not found: {}", options.cover_art.display());
+    }
 
     let sources = load_manifest(&options.manifest)?;
     let short_ids = sources
@@ -195,6 +200,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         algorithm_version: ALGORITHM_VERSION.to_owned(),
         manifest_fingerprint: fingerprint_file(&options.manifest)?,
         metrics_fingerprint: fingerprint_file(&options.metrics)?,
+        cover_art_fingerprint: fingerprint_file(&options.cover_art)?,
         output_frames,
         crossfade_seconds: options.crossfade_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
@@ -230,6 +236,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
             options.aac_bitrate_kbps,
             options.opus_bitrate_kbps,
             &options.metadata,
+            &options.cover_art,
             rebuild_all,
         )?;
         remove_if_present(&rf64_path)?;
@@ -239,6 +246,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
 
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
+    validate_attached_cover(&aac_path)?;
     let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
     validate_decodable_in_parallel(&[
         ("FLAC", &flac_path),
@@ -498,6 +506,7 @@ fn encode_outputs(
     aac_bitrate_kbps: u32,
     opus_bitrate_kbps: u32,
     metadata: &AudioMetadata,
+    cover_art: &Path,
     force: bool,
 ) -> Result<()> {
     let temporary_flac = targets.flac.with_extension("part.flac");
@@ -532,10 +541,22 @@ fn encode_outputs(
         command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(rf64_path)
-            .args(["-map", "0:a:0", "-c:a"])
+            .args(["-i"])
+            .arg(cover_art)
+            .args(["-map", "0:a:0", "-map", "1:v:0", "-c:a"])
             .arg(&aac_encoder)
             .arg("-b:a")
-            .arg(format!("{aac_bitrate_kbps}k"));
+            .arg(format!("{aac_bitrate_kbps}k"))
+            .args([
+                "-c:v",
+                "copy",
+                "-disposition:v:0",
+                "attached_pic",
+                "-metadata:s:v:0",
+                "title=Album cover",
+                "-metadata:s:v:0",
+                "comment=Cover (front)",
+            ]);
         append_metadata(&mut command, metadata);
         let child = command
             .arg(&temporary_aac)
@@ -890,6 +911,42 @@ fn probe_encoding(
         bytes: fs::metadata(path)?.len(),
         duration_seconds: duration,
     })
+}
+
+fn validate_attached_cover(path: &Path) -> Result<()> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0"])
+        .args([
+            "-show_entries",
+            "stream=codec_name:stream_disposition=attached_pic",
+        ])
+        .args(["-of", "json"])
+        .arg(path)
+        .output()
+        .with_context(|| format!("probe cover art in {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let stream = value["streams"]
+        .as_array()
+        .and_then(|streams| streams.first())
+        .context("M4A has no embedded cover stream")?;
+    let codec = stream["codec_name"]
+        .as_str()
+        .context("embedded cover has no codec name")?;
+    let attached = stream["disposition"]["attached_pic"].as_u64() == Some(1);
+    if codec != "mjpeg" || !attached {
+        bail!(
+            "{} has invalid cover stream: codec={codec}, attached_pic={attached}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -748,6 +748,8 @@ def run_pipeline(
         str(output_dir),
         "--scratch-dir",
         str(job_dir / "concat"),
+        "--cover-art",
+        str(PROJECT_DIR / "cover.jpg"),
         "--output-name",
         output_name,
         "--crossfade-seconds",
@@ -768,6 +770,7 @@ def run_pipeline(
     opus_path = output_dir / "opus" / f"{output_name}.opus"
     for path in (flac_path, aac_path, opus_path):
         validate_embedded_metadata(path, metadata)
+    validate_embedded_cover(aac_path)
     hash_started = time.monotonic()
     output_paths = [flac_path, aac_path, opus_path]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(output_paths)) as executor:
@@ -859,6 +862,33 @@ def validate_embedded_metadata(path: Path, expected: dict[str, str]) -> None:
             mismatches.append(f"{field}={actual!r}, expected {value!r}")
     if mismatches:
         raise ValueError(f"{path}: metadata mismatch: {'; '.join(mismatches)}")
+
+
+def validate_embedded_cover(path: Path) -> None:
+    payload = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name:stream_disposition=attached_pic",
+                "-of",
+                "json",
+                str(path),
+            ],
+            text=True,
+        )
+    )
+    streams = payload.get("streams", [])
+    if not streams:
+        raise ValueError(f"{path}: missing embedded cover art")
+    stream = streams[0]
+    attached = stream.get("disposition", {}).get("attached_pic") == 1
+    if stream.get("codec_name") != "mjpeg" or not attached:
+        raise ValueError(f"{path}: invalid embedded JPEG cover art")
 
 
 def positive_integer(value: str) -> int:

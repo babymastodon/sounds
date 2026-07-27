@@ -67,19 +67,23 @@ Force synthesis and final encoding to be regenerated:
 The final audio is grouped by format for easy copying:
 
 ```text
-outputs/batch/
-├── flac/
-│   ├── fieldatlas.flac
-│   └── ...
-├── m4a/
-│   ├── fieldatlas.m4a
-│   └── ...
-└── opus/
-    ├── fieldatlas.opus
-    └── ...
+conv10/
+├── cover.jpg
+└── outputs/batch/
+    ├── flac/
+    │   ├── fieldatlas.flac
+    │   └── ...
+    ├── m4a/
+    │   ├── fieldatlas.m4a
+    │   └── ...
+    └── opus/
+        ├── fieldatlas.opus
+        └── ...
 ```
 
-FLAC is lossless, M4A contains AAC audio, and Opus is the third delivery format.
+FLAC is lossless, M4A contains AAC audio and embedded JPEG cover art, and Opus
+is the third delivery format. The checked-in `cover.jpg` is also suitable for
+copying beside the album files.
 All 42 files identify the album as `Convolutions 10` and the artist, album
 artist, and composer as `babymastodon`. Track title, number, disc, year, genre,
 and a short piece description are embedded as well.

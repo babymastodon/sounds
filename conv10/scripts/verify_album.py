@@ -9,7 +9,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from batch import load_catalog, validate_embedded_metadata
+from batch import load_catalog, validate_embedded_cover, validate_embedded_metadata
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -112,6 +112,8 @@ def main() -> None:
         for directory, (extension, codec) in FORMATS.items():
             path = output_dir / directory / f"{name}.{extension}"
             validate_embedded_metadata(path, metadata)
+            if directory == "m4a":
+                validate_embedded_cover(path)
             payload = probe(path)
             stream = payload["streams"][0]
             duration = float(payload["format"]["duration"])

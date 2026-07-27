@@ -16,6 +16,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Render the long-additive-synth short-to-long convolution matrix.
     Render {
@@ -53,6 +54,8 @@ enum Command {
         output_dir: PathBuf,
         #[arg(long, default_value = ".scratch/concat")]
         scratch_dir: PathBuf,
+        #[arg(long, default_value = "cover.jpg")]
+        cover_art: PathBuf,
         #[arg(long, default_value = "final_mix")]
         output_name: String,
         #[arg(long, default_value_t = 10.0)]
@@ -128,6 +131,7 @@ fn main() -> Result<()> {
             matrix_dir,
             output_dir,
             scratch_dir,
+            cover_art,
             output_name,
             crossfade_seconds,
             aac_bitrate_kbps,
@@ -150,6 +154,7 @@ fn main() -> Result<()> {
                 metrics: matrix_dir.join("metrics.csv"),
                 output_dir,
                 scratch_dir,
+                cover_art,
                 output_name,
                 crossfade_seconds,
                 aac_bitrate_kbps,

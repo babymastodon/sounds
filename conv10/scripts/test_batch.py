@@ -3,13 +3,20 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from batch import default_metadata, load_catalog, parse_list
+from batch import (
+    PROJECT_DIR,
+    default_metadata,
+    load_catalog,
+    parse_list,
+    validate_embedded_cover,
+)
 
 
 class ParseListTests(unittest.TestCase):
@@ -85,6 +92,60 @@ class ParseListTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "New Song")
         self.assertEqual(metadata["album"], "Convolutions 10")
         self.assertTrue(all(metadata.values()))
+
+    def test_embedded_jpeg_cover_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plain_path = root / "plain.m4a"
+            covered_path = root / "covered.m4a"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=48000:cl=stereo",
+                    "-t",
+                    "0.1",
+                    "-c:a",
+                    "aac",
+                    str(plain_path),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=48000:cl=stereo",
+                    "-i",
+                    str(PROJECT_DIR / "cover.jpg"),
+                    "-t",
+                    "0.1",
+                    "-map",
+                    "0:a:0",
+                    "-map",
+                    "1:v:0",
+                    "-c:a",
+                    "aac",
+                    "-c:v",
+                    "copy",
+                    "-disposition:v:0",
+                    "attached_pic",
+                    str(covered_path),
+                ],
+                check=True,
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing embedded cover"):
+                validate_embedded_cover(plain_path)
+            validate_embedded_cover(covered_path)
 
 
 if __name__ == "__main__":

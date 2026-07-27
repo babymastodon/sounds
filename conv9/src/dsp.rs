@@ -14,6 +14,7 @@ pub enum Algorithm {
     WindowedConvolution,
     SourceFilterVocoder,
     PredictiveResonatorBank,
+    MovingImpulseResponse,
     ChunkCrossfade,
     FullConvolution,
     DryA,
@@ -269,10 +270,11 @@ mod windowed_performance_characterization {
 }
 
 impl Algorithm {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::WindowedConvolution,
         Self::SourceFilterVocoder,
         Self::PredictiveResonatorBank,
+        Self::MovingImpulseResponse,
         Self::ChunkCrossfade,
         Self::FullConvolution,
         Self::DryA,
@@ -284,6 +286,7 @@ impl Algorithm {
             Self::WindowedConvolution => "windowed_convolution",
             Self::SourceFilterVocoder => "source_filter_vocoder",
             Self::PredictiveResonatorBank => "predictive_resonator_bank",
+            Self::MovingImpulseResponse => "moving_impulse_response",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
             Self::DryA => "dry_a",
@@ -296,6 +299,7 @@ impl Algorithm {
             Self::WindowedConvolution => "Windowed convolution",
             Self::SourceFilterVocoder => "Source-filter vocoder",
             Self::PredictiveResonatorBank => "Predictive resonator bank",
+            Self::MovingImpulseResponse => "Moving impulse response",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
             Self::DryA => "Dry source A",
@@ -322,6 +326,12 @@ impl Algorithm {
                  clip B's predictable response to recover its innovation signal, then drives an \
                  interpolation toward clip A's learned acoustic system. B supplies the exact \
                  61-second event timeline while A supplies reusable resonances and spectral body."
+            }
+            Self::MovingImpulseResponse => {
+                "Keeps every sample and event of clip A on its continuous timeline while a segment \
+                 near the matching point in clip B becomes a causal, time-varying FIR reverb. \
+                 Adjacent B impulse responses are coherence-normalized and interpolated for every \
+                 1,024-sample A block, and the complete convolution tail is retained."
             }
             Self::ChunkCrossfade => {
                 "Convolves independent synchronized chunks, crops each result to its timeline slot, \
@@ -351,10 +361,11 @@ impl Algorithm {
             Self::WindowedConvolution => 1,
             Self::SourceFilterVocoder => 2,
             Self::PredictiveResonatorBank => 3,
-            Self::ChunkCrossfade => 4,
-            Self::FullConvolution => 5,
-            Self::DryA => 6,
-            Self::DryB => 7,
+            Self::MovingImpulseResponse => 4,
+            Self::ChunkCrossfade => 5,
+            Self::FullConvolution => 6,
+            Self::DryA => 7,
+            Self::DryB => 8,
         }
     }
 
@@ -395,6 +406,9 @@ pub struct AlgorithmParameters {
     pub vocoder_transient_protection: f32,
     pub resonator_transfer: f32,
     pub resonator_ring: f32,
+    pub moving_ir_seconds: f32,
+    pub moving_ir_update_seconds: f32,
+    pub moving_ir_taper: f32,
     pub window_overlap_percent: f32,
     pub chunk_crossfade_percent: f32,
     pub chunk_crop_position: f32,
@@ -413,6 +427,9 @@ impl Default for AlgorithmParameters {
             vocoder_transient_protection: 0.65,
             resonator_transfer: 1.0,
             resonator_ring: 0.75,
+            moving_ir_seconds: 0.75,
+            moving_ir_update_seconds: 0.50,
+            moving_ir_taper: 0.50,
             window_overlap_percent: 75.0,
             chunk_crossfade_percent: 50.0,
             chunk_crop_position: 0.50,
@@ -449,6 +466,11 @@ impl AlgorithmParameters {
             Algorithm::PredictiveResonatorBank => {
                 validate_range("resonator transfer", self.resonator_transfer, 0.0, 1.0)?;
                 validate_range("resonator ring", self.resonator_ring, 0.0, 1.0)?;
+            }
+            Algorithm::MovingImpulseResponse => {
+                validate_range("IR length", self.moving_ir_seconds, 0.05, 2.0)?;
+                validate_range("IR update", self.moving_ir_update_seconds, 0.25, 3.0)?;
+                validate_range("IR taper", self.moving_ir_taper, 0.05, 1.0)?;
             }
             Algorithm::ChunkCrossfade => {
                 validate_range("input taper", self.input_taper, 0.05, 1.0)?;
@@ -568,6 +590,9 @@ pub fn render_algorithm_cancellable(
             parameters.resonator_ring,
             cancelled,
         )?,
+        Algorithm::MovingImpulseResponse => {
+            crate::moving_ir::render_moving_impulse_response(clip_a, clip_b, parameters, cancelled)?
+        }
         Algorithm::ChunkCrossfade => render_chunk_crossfade(
             clip_a,
             clip_b,

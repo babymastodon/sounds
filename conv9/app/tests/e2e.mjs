@@ -524,7 +524,7 @@ try {
     "rgba(0, 0, 0, 0)",
     "waveform metrics must not show a mismatched box while loading",
   );
-  assert.equal(await page.locator("#algorithmButtons button").count(), 7, "algorithm count");
+  assert.equal(await page.locator("#algorithmButtons button").count(), 8, "algorithm count");
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
     return {
@@ -856,6 +856,24 @@ try {
     "predictive_resonator_bank",
     "resonator selection retains its catalog parameters and request identity",
   );
+  await page.getByRole("button", { name: "moving IR", exact: true }).click();
+  await waitForPath(
+    page,
+    "/moving_impulse_response/moving_ir_seconds=0.75,moving_ir_taper=0.50,moving_ir_update_seconds=0.50",
+  );
+  assert.equal(await page.locator("#methodTools .window-control").count(), 0);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 3);
+  assert.equal(await page.getByLabel("IR length exact value").inputValue(), "0.75");
+  assert.match(
+    await page.getByLabel("IR update exact value").getAttribute("title"),
+    /impulse-response snapshots.*interpolated/,
+  );
+  await assertControlTooltips(page);
+  if (process.env.CONV9_TEST_MOVING_IR_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CONV9_TEST_MOVING_IR_SCREENSHOT });
+  }
+  await page.getByLabel("IR length exact value").fill("1.20");
+  await waitForPath(page, "moving_ir_seconds=1.20");
 
   await page.getByRole("button", { name: "Pause" }).click();
   await page.locator("body").press("Space");
@@ -1158,6 +1176,12 @@ async function testCatalog() {
         "Moves clip B from its own response toward clip A's learned resonances while preserving B's innovation, events, and timeline.",
       resonator_ring:
         "Controls damping of clip A's learned stable resonances; higher values retain narrower modes and longer ringing.",
+      moving_ir_seconds:
+        "Sets the duration of each causal FIR captured around the matching point in clip B and controls the retained tail.",
+      moving_ir_update_seconds:
+        "Sets the spacing between clip-B impulse-response snapshots while filters remain interpolated for each processing block.",
+      moving_ir_taper:
+        "Sets the Tukey taper applied to each clip-B impulse response before energy normalization.",
       chunk_crossfade_percent:
         "Sets power-normalized overlap as a percentage of the shorter chunk. The 50% default keeps transitions continuous; lower values expose seams.",
       chunk_crop_position:
@@ -1173,7 +1197,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 9,
+    schema_version: 10,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -1233,11 +1257,24 @@ async function testCatalog() {
         ],
       },
       {
+        id: "moving_impulse_response",
+        title: "Moving impulse response",
+        description:
+          "Keeps A continuous while matching points in B provide interpolated causal FIR reverbs with complete tails.",
+        rank: 4,
+        windows: [],
+        parameters: [
+          parameter("moving_ir_seconds", "IR length", 0.05, 2, 0.01, 0.75, "s"),
+          parameter("moving_ir_update_seconds", "IR update", 0.25, 3, 0.05, 0.5, "s"),
+          parameter("moving_ir_taper", "IR taper", 0.05, 1, 0.01, 0.5),
+        ],
+      },
+      {
         id: "chunk_crossfade",
         title: "Independent chunks + crossfade",
         description:
           "Convolves synchronized chunks and joins adjacent results with an equal-power crossfade of configurable length.",
-        rank: 4,
+        rank: 5,
         windows: windows(),
         parameters: [
           parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
@@ -1250,7 +1287,7 @@ async function testCatalog() {
         title: "Full linear convolution",
         description:
           "Selects one segment from each clip, convolves them as the smear reference, and retains the complete linear result.",
-        rank: 5,
+        rank: 6,
         windows: [],
         parameters: [
           parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
@@ -1264,7 +1301,7 @@ async function testCatalog() {
         title: "Dry source A",
         description:
           "Plays the complete conditioned clip A without convolution, output saturation, or a second level-normalization pass.",
-        rank: 6,
+        rank: 7,
         windows: [],
         parameters: [],
       },
@@ -1273,7 +1310,7 @@ async function testCatalog() {
         title: "Dry source B",
         description:
           "Plays the complete conditioned clip B without convolution, output saturation, or a second level-normalization pass.",
-        rank: 7,
+        rank: 8,
         windows: [],
         parameters: [],
       },

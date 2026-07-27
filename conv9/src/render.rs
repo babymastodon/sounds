@@ -137,7 +137,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 9,
+            schema_version: 10,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -519,6 +519,44 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               strictly stable. It is neutral when transfer is 0.",
             },
         ],
+        Algorithm::MovingImpulseResponse => vec![
+            ParameterCatalogEntry {
+                id: "moving_ir_seconds",
+                label: "IR length",
+                minimum: 0.05,
+                maximum: 2.0,
+                step: 0.01,
+                default: defaults.moving_ir_seconds,
+                unit: "s",
+                description: "Sets the duration of each causal FIR captured around the matching \
+                              point in clip B. Short values add tight color; long values retain more \
+                              of B and produce a deeper reverb tail, which also lengthens the output.",
+            },
+            ParameterCatalogEntry {
+                id: "moving_ir_update_seconds",
+                label: "IR update",
+                minimum: 0.25,
+                maximum: 3.0,
+                step: 0.05,
+                default: defaults.moving_ir_update_seconds,
+                unit: "s",
+                description: "Sets the spacing between impulse-response snapshots along clip B. \
+                              Every 1,024-sample A block still receives an interpolated filter; this \
+                              control changes how quickly B's captured acoustic character evolves.",
+            },
+            ParameterCatalogEntry {
+                id: "moving_ir_taper",
+                label: "IR taper",
+                minimum: 0.05,
+                maximum: 1.0,
+                step: 0.01,
+                default: defaults.moving_ir_taper,
+                unit: "",
+                description: "Sets the Tukey taper applied to each clip-B impulse response before \
+                              energy normalization. Low values retain harder captured edges; 1.0 is \
+                              a full Hann shape with the smoothest entry and exit.",
+            },
+        ],
         Algorithm::ChunkCrossfade => vec![
             input_taper(),
             ParameterCatalogEntry {
@@ -680,6 +718,7 @@ mod tests {
                 let expected_count = match algorithm {
                     Algorithm::SourceFilterVocoder => 3,
                     Algorithm::PredictiveResonatorBank => 2,
+                    Algorithm::MovingImpulseResponse => 3,
                     _ => panic!("unexpected non-windowed configurable algorithm"),
                 };
                 assert_eq!(parameters.len(), expected_count);
@@ -718,6 +757,14 @@ mod tests {
             (
                 Algorithm::PredictiveResonatorBank,
                 &["resonator_transfer", "resonator_ring"][..],
+            ),
+            (
+                Algorithm::MovingImpulseResponse,
+                &[
+                    "moving_ir_seconds",
+                    "moving_ir_update_seconds",
+                    "moving_ir_taper",
+                ][..],
             ),
             (
                 Algorithm::ChunkCrossfade,

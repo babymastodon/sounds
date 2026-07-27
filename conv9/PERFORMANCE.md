@@ -15,6 +15,7 @@ Measurements were taken on an Intel Core Ultra 7 268V with four performance core
 | Full convolution, 61 s × 61 s | 348 ms | 340 ms | 1.02× |
 | Source-filter vocoder, 61 s | not present | 279–281 ms warm | — |
 | Predictive resonator bank, 61 s | not present | 252–383 ms warm | — |
+| Moving IR, 61 s A / 0.75 s IR / 0.5 s updates | 410 ms, 1 thread | 91 ms, 8 threads | 4.51× |
 
 The spectrogram now uses six cancelable, persistent workers. Since every input frame is real, each worker packs its even/odd samples into one 8,192-point complex transform and exactly recovers the positive half of the requested 16,384-point real spectrum. This replaces the former 16,384-point complex core and reduces its butterfly count by 2.15× per column. Bit-reversal tables, Hann weights, and twiddles are precomputed once; the pool is warmed while the native audio render is already in flight, so worker startup and JavaScript tier-up are outside the visible spectrum stage. Forty-eight small contiguous time stripes are pulled dynamically by the pool, allowing faster performance cores to accept more work instead of waiting on one static stripe assigned to an efficiency core. Each stripe receives only its PCM range plus the FFT halo, calculates only unique visible log-frequency bins, and returns compact `Float32` values.
 
@@ -36,6 +37,8 @@ The batch pool is also memory-bounded. A 0.1 s × 30 s worker needs approximatel
 The source-filter vocoder uses a fixed 1,024-frame STFT and 128-frame hop. FFT plans and all time, spectrum, envelope, prefix-sum, and smoothing buffers are reused throughout the 61-second render.
 
 The predictive resonator bank computes each source's 65 biased autocorrelation lags in bounded eight-lag Rayon batches, solves the resulting Toeplitz systems with Levinson–Durbin recursion, and performs one allocation-free, sample-continuous analysis/synthesis pass after reserving its exact output. Cancellation is checked between autocorrelation batches and every 16,384 synthesis frames. The reported 252–383 ms excludes source loading and common output conditioning.
+
+The moving-IR method uses uniform partitioned convolution: 1,024 input frames and 1,024-tap FIR partitions share fixed 2,048-point real FFT plans. For the default 61-second render, 2,860 A blocks and 36 IR partitions require 105.5 million interpolated frequency-bin products. Only 124 B snapshots are transformed, rather than transforming a new 0.75-second filter for all 2,860 A blocks. Input transforms, B-snapshot transforms, output-block inverse transforms, coherence calculation, and final overlap-add all use bounded Rayon batches. Every output block is independent until the final disjoint overlap-add, so one- and multi-thread output is bit-identical. The spectral workspace is approximately 80 MiB at the default and is rejected above a fixed 384 MiB ceiling.
 
 Every native response carries source-load, DSP, conditioning, encoding, and total timings. The frontend records those with decode, waveform, and spectrum timings in a bounded `state.performanceLog` and emits each record as `[conv9 performance]` in the developer console.
 
@@ -62,6 +65,8 @@ Correctness coverage compares the batched renderer against the prior sequential 
 The original browser FFT sustained about 123 million complex butterflies per second on one UI thread. The packed-real implementation cuts the transform core from 114,688 to 53,248 complex butterflies per time column before threading, a 2.15× algorithmic reduction. Precomputed twiddles and persistent scratch arrays avoid setup and allocation on the repeated critical path. Six portable JavaScript workers compute the higher-resolution display without a WASM or GPU dependency.
 
 The real-time pitch path processes about 375 2,048-point FFTs per second for stereo, around 4.2 million butterflies or 50–100 MFLOP/s. It performs no allocation in the 128-frame audio callback and has a fixed 2,048-frame latency: 42.7 ms at 48 kHz.
+
+The default moving-IR render performs 4,464 filter, 2,860 input, and 2,895 output real transforms of size 2,048 plus its 105.5 million interpolated complex products. A direct sample-domain time-varying FIR would require about 105 billion tap products. Recomputing a complete filter transform at each 1,024-frame update would require 102,960 filter-partition transforms instead of 4,464. The measured optimized path sustains 148.7× real time on one thread and 671.1× on all eight heterogeneous cores: 410.3 ms and 90.9 ms respectively, using the median of three warm release renders. A forced scalar-style fused-multiply-add formulation measured 740 ms and was rejected; the retained plain complex arithmetic lets LLVM vectorize the critical bin loop. Keeping short IR normalization serial inside each already-parallel snapshot batch reduced the eight-core result from 100.7 ms to 90.9 ms by avoiding nested scheduling.
 
 ## Remaining expensive cases
 

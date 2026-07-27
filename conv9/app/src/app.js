@@ -1477,6 +1477,7 @@ function shortAlgorithm(value) {
     windowed_convolution: "windowed",
     source_filter_vocoder: "vocoder",
     predictive_resonator_bank: "resonators",
+    moving_impulse_response: "moving IR",
     chunk_crossfade: "chunks",
     full_convolution: "full",
     dry_a: "dry a",

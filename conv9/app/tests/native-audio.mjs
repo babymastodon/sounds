@@ -261,7 +261,7 @@ try {
   assert.equal(initial.sourceBCount, 96);
   assert.equal(initial.sourceA, "gamelan_court");
   assert.equal(initial.sourceB, "chainsaw_cycle");
-  assert.equal(initial.methodCount, 7);
+  assert.equal(initial.methodCount, 8);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
   assert.equal(initial.repeatedDetailCount, 0);
@@ -736,7 +736,10 @@ try {
   );
   assert.equal(chunked.errorHidden, true, chunked.error);
 
-  for (const [algorithm, expectedDuration] of [["source_filter_vocoder", 61]]) {
+  for (const [algorithm, expectedDuration, expectedToolInputs] of [
+    ["source_filter_vocoder", 61, 6],
+    ["moving_impulse_response", 61.75, 6],
+  ]) {
     await execute(
       port,
       sessionId,
@@ -750,6 +753,7 @@ try {
         return {
           duration: transport.duration,
           path: transport.path,
+          toolInputs: document.querySelectorAll("#methodTools input").length,
           status: document.querySelector("#renderStatus")?.textContent,
           error: document.querySelector("#errorPanel")?.textContent,
           errorHidden: document.querySelector("#errorPanel")?.hidden
@@ -767,6 +771,7 @@ try {
       Math.abs(rendered.duration - expectedDuration) < 0.02,
       `${algorithm} duration was ${rendered.duration}`,
     );
+    assert.equal(rendered.toolInputs, expectedToolInputs);
     assert.equal(rendered.errorHidden, true, rendered.error);
   }
 

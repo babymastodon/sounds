@@ -2,6 +2,7 @@ mod audio;
 mod convbank;
 mod dsp;
 mod manifest;
+mod moving_ir;
 mod render;
 
 pub use audio::AudioMetrics;

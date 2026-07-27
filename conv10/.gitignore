@@ -2,6 +2,7 @@
 /.scratch/
 /samples/raw/
 /samples/prepared/
+/samples/song_pool/
 /outputs/batch/
 /outputs/**/*.wav
 /outputs/**/*.flac

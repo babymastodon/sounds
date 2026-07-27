@@ -42,15 +42,15 @@ FORCED_SOURCES = {
     )
 }
 LIST_OVERRIDES = {
-    ("conv8", "river_rapids_short"): {
+    ("fieldatlas", "river_rapids_short"): {
         "trim_start": "10",
         "source": "https://cdn.freesound.org/previews/642/642774_457982-hq.mp3",
     },
-    ("conv8", "burning_fire_short"): {"trim_start": "0"},
-    ("conv8", "sheep_barn_short"): {"trim_start": "0"},
-    ("conv8", "transformer_short"): {"trim_start": "0"},
-    ("conv8", "printing_rhythm_short"): {"trim_start": "0"},
-    ("conv8", "shortwave_noise_short"): {"trim_start": "0"},
+    ("fieldatlas", "burning_fire_short"): {"trim_start": "0"},
+    ("fieldatlas", "sheep_barn_short"): {"trim_start": "0"},
+    ("fieldatlas", "transformer_short"): {"trim_start": "0"},
+    ("fieldatlas", "printing_rhythm_short"): {"trim_start": "0"},
+    ("fieldatlas", "shortwave_noise_short"): {"trim_start": "0"},
 }
 STOPWORDS = {
     "a",
@@ -433,8 +433,14 @@ def apply_replacements(mapping_path: Path) -> None:
             changed += 1
         write_tsv(path, fieldnames, rows)
 
-    sync_list(ROOT / "conv10" / "lists" / "conv10.txt", ROOT / "conv10" / "sources.tsv")
-    sync_list(ROOT / "conv10" / "lists" / "conv8.txt", ROOT / "conv8" / "sources.tsv")
+    sync_list(
+        ROOT / "conv10" / "lists" / "melodyworks.txt",
+        ROOT / "conv10" / "sources.tsv",
+    )
+    sync_list(
+        ROOT / "conv10" / "lists" / "fieldatlas.txt",
+        ROOT / "conv8" / "sources.tsv",
+    )
     print(f"updated {changed} manifest rows from {len(replacement_list)} replacements")
 
 
@@ -472,7 +478,10 @@ def write_inventory(mapping_path: Path, audit_path: Path, output: Path) -> None:
     keys_by_download: dict[str, list[str]] = defaultdict(list)
     for key, rows in grouped.items():
         keys_by_download[rows[0]["download_url"]].append(key)
-    for list_path in sorted((ROOT / "conv10" / "lists").glob("*.txt")):
+    for list_path in (
+        ROOT / "conv10" / "lists" / "fieldatlas.txt",
+        ROOT / "conv10" / "lists" / "melodyworks.txt",
+    ):
         for row in read_tsv(list_path):
             keys = keys_by_download.get(row["source"], [])
             if len(keys) != 1:

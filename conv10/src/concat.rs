@@ -24,7 +24,22 @@ pub struct ConcatOptions {
     pub crossfade_seconds: f64,
     pub aac_bitrate_kbps: u32,
     pub opus_bitrate_kbps: u32,
+    pub metadata: AudioMetadata,
     pub force: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AudioMetadata {
+    pub title: String,
+    pub album: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub composer: String,
+    pub genre: String,
+    pub date: String,
+    pub track: String,
+    pub disc: String,
+    pub comment: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -69,6 +84,7 @@ struct ConcatReport {
     output_duration_seconds: f64,
     aac_bitrate_kbps: u32,
     opus_bitrate_kbps: u32,
+    metadata: AudioMetadata,
     flac: EncodedFileReport,
     aac: EncodedFileReport,
     opus: EncodedFileReport,
@@ -83,6 +99,7 @@ struct ConcatRecipe {
     crossfade_seconds: f64,
     aac_bitrate_kbps: u32,
     opus_bitrate_kbps: u32,
+    metadata: AudioMetadata,
 }
 
 struct EncodingTargets<'a> {
@@ -102,6 +119,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         bail!("--opus-bitrate-kbps must be at least 1");
     }
     validate_output_name(&options.output_name)?;
+    validate_metadata(&options.metadata)?;
 
     let sources = load_manifest(&options.manifest)?;
     let short_ids = sources
@@ -143,6 +161,9 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
 
     fs::create_dir_all(&options.output_dir)?;
     fs::create_dir_all(&options.scratch_dir)?;
+    for extension in ["flac", "m4a", "opus"] {
+        fs::create_dir_all(options.output_dir.join(extension))?;
+    }
     write_timeline(
         &options
             .output_dir
@@ -157,12 +178,15 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         .join(format!("{}.part.rf64.wav", options.output_name));
     let flac_path = options
         .output_dir
+        .join("flac")
         .join(format!("{}.flac", options.output_name));
     let aac_path = options
         .output_dir
+        .join("m4a")
         .join(format!("{}.m4a", options.output_name));
     let opus_path = options
         .output_dir
+        .join("opus")
         .join(format!("{}.opus", options.output_name));
     let recipe_path = options
         .output_dir
@@ -175,6 +199,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         crossfade_seconds: options.crossfade_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
         opus_bitrate_kbps: options.opus_bitrate_kbps,
+        metadata: options.metadata.clone(),
     };
     let recipe_matches = fs::read(&recipe_path)
         .ok()
@@ -204,6 +229,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
             &targets,
             options.aac_bitrate_kbps,
             options.opus_bitrate_kbps,
+            &options.metadata,
             rebuild_all,
         )?;
         remove_if_present(&rf64_path)?;
@@ -231,6 +257,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         output_duration_seconds: output_seconds,
         aac_bitrate_kbps: options.aac_bitrate_kbps,
         opus_bitrate_kbps: options.opus_bitrate_kbps,
+        metadata: options.metadata.clone(),
         flac,
         aac,
         opus,
@@ -267,6 +294,26 @@ fn validate_output_name(name: &str) -> Result<()> {
         || path.file_name().is_none()
     {
         bail!("--output-name must be one non-empty file-name component");
+    }
+    Ok(())
+}
+
+fn validate_metadata(metadata: &AudioMetadata) -> Result<()> {
+    for (field, value) in [
+        ("title", metadata.title.as_str()),
+        ("album", metadata.album.as_str()),
+        ("artist", metadata.artist.as_str()),
+        ("album_artist", metadata.album_artist.as_str()),
+        ("composer", metadata.composer.as_str()),
+        ("genre", metadata.genre.as_str()),
+        ("date", metadata.date.as_str()),
+        ("track", metadata.track.as_str()),
+        ("disc", metadata.disc.as_str()),
+        ("comment", metadata.comment.as_str()),
+    ] {
+        if value.trim().is_empty() || value.chars().any(char::is_control) {
+            bail!("audio metadata field {field} must be non-empty and single-line");
+        }
     }
     Ok(())
 }
@@ -450,6 +497,7 @@ fn encode_outputs(
     targets: &EncodingTargets<'_>,
     aac_bitrate_kbps: u32,
     opus_bitrate_kbps: u32,
+    metadata: &AudioMetadata,
     force: bool,
 ) -> Result<()> {
     let temporary_flac = targets.flac.with_extension("part.flac");
@@ -462,10 +510,13 @@ fn encode_outputs(
 
     if rebuild_flac {
         remove_if_present(&temporary_flac)?;
-        let child = Command::new("ffmpeg")
+        let mut command = Command::new("ffmpeg");
+        command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(rf64_path)
-            .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"])
+            .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"]);
+        append_metadata(&mut command, metadata);
+        let child = command
             .arg(&temporary_flac)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -477,13 +528,16 @@ fn encode_outputs(
     if rebuild_aac {
         remove_if_present(&temporary_aac)?;
         let aac_encoder = preferred_aac_encoder()?;
-        let child = Command::new("ffmpeg")
+        let mut command = Command::new("ffmpeg");
+        command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(rf64_path)
             .args(["-map", "0:a:0", "-c:a"])
             .arg(&aac_encoder)
             .arg("-b:a")
-            .arg(format!("{aac_bitrate_kbps}k"))
+            .arg(format!("{aac_bitrate_kbps}k"));
+        append_metadata(&mut command, metadata);
+        let child = command
             .arg(&temporary_aac)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -504,6 +558,7 @@ fn encode_outputs(
             &temporary_opus,
             opus_encoder.as_deref().unwrap_or("libopus"),
             opus_bitrate_kbps,
+            metadata,
         )?;
         jobs.push(("Opus", child, temporary_opus, targets.opus.to_owned()));
     }
@@ -565,8 +620,10 @@ fn spawn_opus(
     output: &Path,
     encoder: &str,
     bitrate_kbps: u32,
+    metadata: &AudioMetadata,
 ) -> Result<std::process::Child> {
-    Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(rf64_path)
         .args(["-map", "0:a:0", "-c:a"])
@@ -582,13 +639,32 @@ fn spawn_opus(
             "audio",
             "-compression_level",
             "10",
-        ])
+        ]);
+    append_metadata(&mut command, metadata);
+    command
         .arg(output)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("start {bitrate_kbps}k Opus encoder {encoder}"))
+}
+
+fn append_metadata(command: &mut Command, metadata: &AudioMetadata) {
+    for (key, value) in [
+        ("title", metadata.title.as_str()),
+        ("album", metadata.album.as_str()),
+        ("artist", metadata.artist.as_str()),
+        ("album_artist", metadata.album_artist.as_str()),
+        ("composer", metadata.composer.as_str()),
+        ("genre", metadata.genre.as_str()),
+        ("date", metadata.date.as_str()),
+        ("track", metadata.track.as_str()),
+        ("disc", metadata.disc.as_str()),
+        ("comment", metadata.comment.as_str()),
+    ] {
+        command.arg("-metadata").arg(format!("{key}={value}"));
+    }
 }
 
 fn preferred_opus_encoder() -> Result<String> {
@@ -886,5 +962,30 @@ mod tests {
         assert_eq!(u64::from_le_bytes(header[36..44].try_into().unwrap()), 100);
         assert_eq!(u16::from_le_bytes(header[58..60].try_into().unwrap()), 2);
         assert_eq!(&header[72..76], b"data");
+    }
+
+    #[test]
+    fn complete_single_line_metadata_is_required() {
+        let valid = AudioMetadata {
+            title: "Drift".into(),
+            album: "Convolutions 10".into(),
+            artist: "babymastodon".into(),
+            album_artist: "babymastodon".into(),
+            composer: "babymastodon".into(),
+            genre: "Experimental".into(),
+            date: "2026".into(),
+            track: "3/14".into(),
+            disc: "1/1".into(),
+            comment: "Calm environmental flow.".into(),
+        };
+        assert!(validate_metadata(&valid).is_ok());
+
+        let mut empty = valid.clone();
+        empty.comment.clear();
+        assert!(validate_metadata(&empty).is_err());
+
+        let mut multiline = valid;
+        multiline.title = "Drift\nAlternate".into();
+        assert!(validate_metadata(&multiline).is_err());
     }
 }

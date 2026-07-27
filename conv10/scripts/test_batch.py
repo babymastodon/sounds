@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from batch import parse_list
+from batch import default_metadata, load_catalog, parse_list
 
 
 class ParseListTests(unittest.TestCase):
@@ -60,6 +60,31 @@ class ParseListTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "long input"):
                 parse_list(list_path)
+
+    def test_catalog_preserves_complete_track_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog_path = Path(temporary) / "songs.tsv"
+            catalog_path.write_text(
+                "name\ttitle\talbum\tartist\talbum_artist\tcomposer\tgenre\tdate"
+                "\ttrack\tdisc\tcomment\n"
+                "drift\tDrift\tConvolutions 10\tbabymastodon\tbabymastodon"
+                "\tbabymastodon\tExperimental\t2026\t3/14\t1/1"
+                "\tCalm environmental flow.\n",
+                encoding="utf-8",
+            )
+
+            catalog = load_catalog(catalog_path)
+
+            self.assertEqual(catalog["drift"]["album"], "Convolutions 10")
+            self.assertEqual(catalog["drift"]["track"], "3/14")
+            self.assertEqual(catalog["drift"]["artist"], "babymastodon")
+
+    def test_default_metadata_is_complete(self) -> None:
+        metadata = default_metadata("new_song")
+
+        self.assertEqual(metadata["title"], "New Song")
+        self.assertEqual(metadata["album"], "Convolutions 10")
+        self.assertTrue(all(metadata.values()))
 
 
 if __name__ == "__main__":

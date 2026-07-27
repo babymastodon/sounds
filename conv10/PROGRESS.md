@@ -1,31 +1,31 @@
-# conv10 progress
+# Convolutions 10 progress
 
 Last updated: 2026-07-26
 
-- [x] Keep conv10 implementation, lists, evidence, and reports inside `conv10`.
-- [x] Remove the short-additive approach and obsolete v14 output reports.
-- [x] Accept arbitrary plain or explicit raw-input lists.
-- [x] Check in and validate 48-input conv10 and conv8 lists.
-- [x] Prepare inputs concurrently with strict first-download decoding and
-  recipe-based reuse.
-- [x] Support valid short sources below 12 seconds with pitch-preserving
-  time-stretch.
-- [x] Render only the long-input additive-synth matrix.
-- [x] Optimize invariant synthesis work and oscillator recurrences.
-- [x] Honor the requested worker count in input loading, rendering, and
-  verification.
-- [x] Add early input-aware render caching and output-recipe validation.
-- [x] Encode FLAC, AAC/M4A, and Opus concurrently.
-- [x] Remove persistent RF64, 32-kbit Opus, and all other final variants.
-- [x] Generate and independently verify conv10: 576/576 stereo pairs and all
-  three final encodings.
-- [x] Generate and independently verify conv8: 576/576 stereo pairs and all
-  three final encodings.
-- [x] Record per-stage wall time and CPU utilization.
-- [x] Replace 132 distinct sources across the repository and validate every
-  downloaded file end to end.
-- [x] Recheck 295 distinct live source pages and write the consolidated
-  `SOURCE_INVENTORY.tsv`.
-- [x] Build and test every project whose source audio changed.
-- [x] Commit only code, manifests, lists, tests, inventories, and reports;
-  never commit generated audio.
+- [x] Keep implementation, lists, inventories, tests, and reports inside
+  `conv10`.
+- [x] Rename the original two programs to Field Atlas and Melody Works.
+- [x] Define eight focused and four hybrid new pieces.
+- [x] Select 384 distinct online source snippets across 192 topics.
+- [x] Validate 384 unique source pages, media URLs, durations, selected audio
+  windows, and content hashes.
+- [x] Write one explicit 48-input list for each new piece.
+- [x] Confirm all 14 lists contain 24 short and 24 long inputs.
+- [x] Reuse 192 sources in one focused and one hybrid piece, producing 576 total
+  list uses without adding duplicate source records.
+- [x] Add the ordered 14-track `SONGS.tsv` album catalog.
+- [x] Embed title, album, artist, album artist, composer, genre, year, track,
+  disc, and description in every output.
+- [x] Group final audio under `flac/`, `m4a/`, and `opus/`.
+- [x] Capture bounded lossless prefixes for explicit online trims instead of
+  downloading arbitrarily long recordings in full.
+- [x] Decode-validate exact selected source windows concurrently.
+- [x] Render and verify all 8,064 convolution pairs across 14 matrices.
+- [x] Generate 14 FLAC, 14 AAC/M4A, and 14 Opus masters.
+- [x] Decode every compressed master end to end.
+- [x] Independently verify all 42 codecs, durations, channel/rate properties,
+  metadata records, directory membership, and SHA-256 hashes.
+- [x] Remove obsolete generated `conv8.*` and `conv10.*` outputs.
+- [x] Build the release binary and pass 31 Rust tests plus 9 Python tests.
+- [x] Record complete run and performance results.
+- [x] Keep all generated and downloaded audio out of Git.

@@ -4,11 +4,11 @@ Measured on an 8-core Intel Core Ultra 7 268V with the release build.
 
 ## Outcome
 
-The final conv10 24×24 render completed in 31.04 seconds while averaging 5.99
-cores. The imported conv8 list completed in 29.03 seconds while averaging 6.55
-cores. The earlier
-pre-optimization renderer took 69.7 seconds for the same 576 pairs, so matrix
-render wall time fell by about 52 percent.
+The completed 14-track album rendered 8,064 convolution pairs in 472.42
+aggregate seconds. A 24×24 matrix averaged 33.74 seconds while using 7.05 of 8
+cores; individual tracks ranged from 28.02 to 37.07 seconds and 6.38 to 7.48
+average cores. The earlier pre-optimization renderer took 69.7 seconds for one
+576-pair matrix, so current matrix wall time is roughly half that baseline.
 
 A controlled 60-second single-worker partial run advanced from 140/576 pairs in
 the old build to 190/576 in the optimized build, a 36 percent throughput gain.
@@ -30,23 +30,27 @@ earlier 8-worker benchmark peaked near 1.46 GiB RSS.
 - Parallelized input preparation, pair rendering, verification, the three
   encoders, compressed decode checks, and output hashing.
 - Pipelined preparation behind completed downloads and cached automatic trims.
+- Captured only the lossless source prefix needed for explicit trims instead of
+  downloading arbitrarily long recordings in full.
+- Changed source validation from full-file decoding to strict decoding of the
+  exact selected window.
 - Recorded render samples once per second plus per-stage wall and aggregate CPU
   time.
 
 ## Measured parallel behavior
 
-| Workload | Wall time | Average cores | Longest low-use render run |
-|---|---:|---:|---:|
-| conv10 render | 31.04 s | 5.99 | 4 s |
-| conv10 verify | 6.43 s | 6.90 | — |
-| conv8 render | 29.03 s | 6.55 | 1 s |
-| conv8 verify | 6.24 s | 7.09 | — |
-| conv10 assemble/encode/check | 187.74 s | 2.04 | expected codec tail |
-| conv8 assemble/encode/check | 201.35 s | 2.01 | expected codec tail |
+| Workload | Wall time | Average cores |
+|---|---:|---:|
+| 14 matrix renders, mean | 33.74 s | 7.05 |
+| Fastest matrix: Field Atlas | 28.02 s | 6.58 |
+| Highest utilization: Wildwire | 33.02 s | 7.48 |
+| Slowest matrix: Railchime | 37.07 s | 6.61 |
+| 14 verification passes, mean | 8.10 s | recorded per run |
+| 14 assemble/encode/decode-check stages, mean | 180.26 s | codec-limited |
 
 Pair cost depends on the selected instrument and gesture, explaining the
-content-dependent conv8/conv10 difference and short queue-drain tail. The
-renderer is no longer behaving like a single-core workload.
+track-to-track difference and short queue-drain tail. The renderer is no longer
+behaving like a single-core workload.
 
 ## Remaining optimization inventory
 
@@ -64,24 +68,23 @@ renderer is no longer behaving like a single-core workload.
    A full dry-trim spectrum cache was slower in testing because its extra
    hundreds of MiB increased pressure on the 12 MiB shared L3 cache; a bounded
    worker-local or one-sided cache still needs measurement.
-5. Preparation fully decodes cached raw files, may scan them again for automatic
-   cuts, and can decode them again for conversion. Its fetch/prepare pipeline
-   still has expensive single-file tails, and FFmpeg children have no shared
-   CPU-token budget.
-6. A shared content-addressed raw/prepared cache would reuse identical sources
-   across lists and avoid the per-list cache gap observed by the imported conv8
-   run.
+5. Automatic-trim inputs still require an activity scan before conversion.
+   Explicit-trim downloads now capture bounded lossless prefixes, but FFmpeg
+   children still have no global CPU-token budget.
+6. The source-pool seeder reuses downloaded media across focused and hybrid
+   lists, but a shared content-addressed prepared cache could also eliminate
+   their repeated preparation.
 7. List processing remains sequential. Add `--list-jobs` with a global CPU and
    memory budget for multiple small lists.
-8. Output names use only the list stem. Reject same-basename lists or add a
-   stable list digest, and keep list/source/algorithm/crossfade/bitrate
-   fingerprints in every reuse recipe.
+8. The batch runner rejects same-basename collisions within one invocation, but
+   independent invocations can still target the same stem. A stable list digest
+   would close that remaining naming gap.
 9. Streaming PCM into a single multi-output FFmpeg process could remove the
    temporary RF64 and three rereads. Segmented AAC/Opus encoding needs careful
    boundary testing because encoder delay can introduce gaps.
-10. Compressed-output hashes are still read sequentially after the decode
-    checks. Hashing during encoding or decode validation would eliminate the
-    final read pass.
+10. The three compressed-output hashes run in parallel but still reread every
+    file after decode validation. Hashing during encoding or decode validation
+    would eliminate the final read pass.
 
 The next high-value benchmark is a streamed master-assembly prototype, followed
 by jobs 1/2/4/6/8 scaling on the same warm-cache 24×24 corpus. Record p50, p95,

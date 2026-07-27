@@ -28,6 +28,20 @@ SHORT_SECONDS = 12.0
 LONG_SECONDS = 30.0
 PREPARATION_VERSION = "conv10-batch-mono-f32-48k-v2"
 ID_PATTERN = re.compile(r"^[a-z0-9_]+$")
+DEFAULT_ALBUM = "Convolutions 10"
+DEFAULT_ARTIST = "babymastodon"
+METADATA_FIELDS = [
+    "title",
+    "album",
+    "artist",
+    "album_artist",
+    "composer",
+    "genre",
+    "date",
+    "track",
+    "disc",
+    "comment",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -159,6 +173,50 @@ def parse_list(path: Path) -> list[Entry]:
     return entries
 
 
+def load_catalog(path: Path) -> dict[str, dict[str, str]]:
+    if not path.is_file():
+        return {}
+    with path.open(encoding="utf-8", newline="") as source:
+        rows = list(csv.DictReader(source, delimiter="\t"))
+    if not rows:
+        raise ValueError(f"{path}: catalog is empty")
+    required = {"name", *METADATA_FIELDS}
+    missing = required - set(rows[0])
+    if missing:
+        raise ValueError(f"{path}: missing catalog fields: {', '.join(sorted(missing))}")
+    catalog: dict[str, dict[str, str]] = {}
+    for line_number, row in enumerate(rows, start=2):
+        name = row["name"].strip()
+        if not ID_PATTERN.fullmatch(name):
+            raise ValueError(f"{path}:{line_number}: invalid track name {name!r}")
+        if name in catalog:
+            raise ValueError(f"{path}:{line_number}: duplicate track name {name!r}")
+        metadata = {field: row[field].strip() for field in METADATA_FIELDS}
+        empty = [field for field, value in metadata.items() if not value]
+        if empty:
+            raise ValueError(
+                f"{path}:{line_number}: empty metadata: {', '.join(empty)}"
+            )
+        catalog[name] = metadata
+    return catalog
+
+
+def default_metadata(name: str) -> dict[str, str]:
+    title = name.replace("_", " ").replace("-", " ").title()
+    return {
+        "title": title,
+        "album": DEFAULT_ALBUM,
+        "artist": DEFAULT_ARTIST,
+        "album_artist": DEFAULT_ARTIST,
+        "composer": DEFAULT_ARTIST,
+        "genre": "Experimental",
+        "date": "2026",
+        "track": "1/1",
+        "disc": "1/1",
+        "comment": f"Convolution program generated from the {name} input list.",
+    }
+
+
 def require_commands(commands: list[str]) -> None:
     missing = [command for command in commands if shutil.which(command) is None]
     if missing:
@@ -192,25 +250,59 @@ def fetch_entry(entry: Entry, raw_dir: Path) -> tuple[Entry, Path, str]:
     temporary.unlink(missing_ok=True)
     parsed = urllib.parse.urlparse(entry.source)
     if parsed.scheme in {"http", "https"}:
-        print(f"download {entry.identifier}", file=sys.stderr)
-        run_checked(
-            [
-                "curl",
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--retry",
-                "4",
-                "--retry-delay",
-                "2",
-                "--user-agent",
-                "conv10-batch/1.0",
-                "--output",
-                str(temporary),
-                entry.source,
-            ]
-        )
+        if entry.trim_start is None:
+            print(f"download {entry.identifier}", file=sys.stderr)
+            run_checked(
+                [
+                    "curl",
+                    "--fail",
+                    "--location",
+                    "--silent",
+                    "--show-error",
+                    "--retry",
+                    "4",
+                    "--retry-delay",
+                    "2",
+                    "--user-agent",
+                    "conv10-batch/1.0",
+                    "--output",
+                    str(temporary),
+                    entry.source,
+                ]
+            )
+        else:
+            capture_seconds = entry.trim_start + entry.seconds + 0.1
+            print(
+                f"capture {entry.identifier} through {capture_seconds:.3f}s",
+                file=sys.stderr,
+            )
+            run_checked(
+                [
+                    "ffmpeg",
+                    "-xerror",
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-threads",
+                    "1",
+                    "-y",
+                    "-i",
+                    entry.source,
+                    "-t",
+                    f"{capture_seconds:.6f}",
+                    "-map",
+                    "0:a:0",
+                    "-vn",
+                    "-c:a",
+                    "flac",
+                    "-compression_level",
+                    "0",
+                    "-f",
+                    "flac",
+                    str(temporary),
+                ]
+            )
     else:
         local_source = Path(entry.source)
         if not local_source.is_file():
@@ -219,11 +311,11 @@ def fetch_entry(entry: Entry, raw_dir: Path) -> tuple[Entry, Path, str]:
         shutil.copyfile(local_source, temporary)
     temporary.replace(raw_path)
     recipe_path.write_text(f"{signature}\n", encoding="utf-8")
-    validate_raw(raw_path)
+    validate_raw(raw_path, entry.seconds)
     return entry, raw_path, signature
 
 
-def validate_raw(path: Path) -> None:
+def validate_raw(path: Path, required_seconds: float) -> None:
     run_checked(
         [
             "ffmpeg",
@@ -234,6 +326,8 @@ def validate_raw(path: Path) -> None:
             "error",
             "-i",
             str(path),
+            "-t",
+            f"{required_seconds:.6f}",
             "-map",
             "0:a:0",
             "-f",
@@ -587,6 +681,7 @@ def run_pipeline(
     force_output: bool,
     keep_work: bool,
     prepare_only: bool,
+    metadata: dict[str, str],
 ) -> None:
     started = time.monotonic()
     prepare_started = time.monotonic()
@@ -662,18 +757,28 @@ def run_pipeline(
         "--opus-bitrate-kbps",
         str(opus_bitrate_kbps),
     ]
+    for field in METADATA_FIELDS:
+        concat_command.extend([f"--{field.replace('_', '-')}", metadata[field]])
     if force_output:
         concat_command.append("--force")
     concat_seconds, concat_cpu = run_profiled(concat_command, cwd=PROJECT_DIR)
 
-    flac_path = output_dir / f"{output_name}.flac"
-    aac_path = output_dir / f"{output_name}.m4a"
-    opus_path = output_dir / f"{output_name}.opus"
+    flac_path = output_dir / "flac" / f"{output_name}.flac"
+    aac_path = output_dir / "m4a" / f"{output_name}.m4a"
+    opus_path = output_dir / "opus" / f"{output_name}.opus"
+    for path in (flac_path, aac_path, opus_path):
+        validate_embedded_metadata(path, metadata)
     hash_started = time.monotonic()
     output_paths = [flac_path, aac_path, opus_path]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(output_paths)) as executor:
         hashes = dict(
-            executor.map(lambda path: (path.name, file_sha256(path)), output_paths)
+            executor.map(
+                lambda path: (
+                    str(path.relative_to(output_dir)),
+                    file_sha256(path),
+                ),
+                output_paths,
+            )
         )
     hash_seconds = time.monotonic() - hash_started
     hash_path = output_dir / f"{output_name}.sha256"
@@ -705,6 +810,7 @@ def run_pipeline(
             "opus": str(opus_path),
             "hashes": str(hash_path),
         },
+        "metadata": metadata,
     }
     (output_dir / f"{output_name}.run.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -717,6 +823,42 @@ def run_pipeline(
         f"render CPU averaged {cpu_summary['average_cores_used']:.2f} cores",
         file=sys.stderr,
     )
+
+
+def validate_embedded_metadata(path: Path, expected: dict[str, str]) -> None:
+    payload = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags:stream_tags",
+                "-of",
+                "json",
+                str(path),
+            ],
+            text=True,
+        )
+    )
+    raw_tags: dict[str, str] = {}
+    for stream in payload.get("streams", []):
+        raw_tags.update(stream.get("tags", {}))
+    raw_tags.update(payload.get("format", {}).get("tags", {}))
+    tags = {key.lower(): str(value) for key, value in raw_tags.items()}
+    aliases = {
+        "album_artist": ("album_artist", "albumartist"),
+        "track": ("track", "tracknumber"),
+        "disc": ("disc", "discnumber"),
+    }
+    mismatches = []
+    for field, value in expected.items():
+        keys = aliases.get(field, (field,))
+        actual = next((tags[key] for key in keys if key in tags), None)
+        if actual != value:
+            mismatches.append(f"{field}={actual!r}, expected {value!r}")
+    if mismatches:
+        raise ValueError(f"{path}: metadata mismatch: {'; '.join(mismatches)}")
 
 
 def positive_integer(value: str) -> int:
@@ -741,6 +883,9 @@ def main() -> None:
         "--output-dir", type=Path, default=PROJECT_DIR / "outputs" / "batch"
     )
     parser.add_argument(
+        "--catalog", type=Path, default=PROJECT_DIR / "SONGS.tsv"
+    )
+    parser.add_argument(
         "--prepare-jobs",
         type=positive_integer,
         default=min(os.cpu_count() or 1, 8),
@@ -763,6 +908,7 @@ def main() -> None:
     args = parser.parse_args()
 
     list_paths = [path.expanduser().resolve() for path in args.lists]
+    catalog = load_catalog(args.catalog.expanduser().resolve())
     output_names: dict[str, Path] = {}
     scratch_names: dict[str, Path] = {}
     for path in list_paths:
@@ -804,6 +950,7 @@ def main() -> None:
             args.force_output,
             args.keep_work,
             args.prepare_only,
+            catalog.get(path.stem, default_metadata(path.stem)),
         )
 
 

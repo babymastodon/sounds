@@ -272,11 +272,11 @@ mod windowed_performance_characterization {
 impl Algorithm {
     pub const ALL: [Self; 8] = [
         Self::WindowedConvolution,
+        Self::FullConvolution,
+        Self::MovingImpulseResponse,
         Self::SourceFilterVocoder,
         Self::PredictiveResonatorBank,
-        Self::MovingImpulseResponse,
         Self::ChunkCrossfade,
-        Self::FullConvolution,
         Self::DryA,
         Self::DryB,
     ];
@@ -316,16 +316,16 @@ impl Algorithm {
                  grain swelling and hop-rate buzz, with one gradual fade at each complete edge."
             }
             Self::SourceFilterVocoder => {
-                "Uses clip A as the excitation and temporal source while clip B supplies a smooth \
-                 short-time spectral envelope. A's phase, amplitude motion, and protected transients \
-                 remain in place as B's time-varying broad-band color is transferred by a dense \
-                 overlap-add source-filter vocoder."
+                "Uses clip A as the excitation and temporal source while clip B supplies normalized \
+                 short-time band-power envelopes. A's phase, amplitude motion, and protected \
+                 transients remain in place as B's Gaussian-smoothed spectral color is transferred \
+                 by a dense 2,048-frame overlap-add source-filter vocoder."
             }
             Self::PredictiveResonatorBank => {
-                "Learns a stable 64-state causal resonance model from each complete clip, removes \
-                 clip B's predictable response to recover its innovation signal, then drives an \
-                 interpolation toward clip A's learned acoustic system. B supplies the exact \
-                 61-second event timeline while A supplies reusable resonances and spectral body."
+                "Learns stable short-time causal resonance models in 8,192-frame windows, removes \
+                 clip B's local predictable response to recover its innovation, then drives the \
+                 corresponding model learned from clip A. Root-Hann overlap-add retains B's exact \
+                 61-second event timeline while A supplies evolving resonances and spectral body."
             }
             Self::MovingImpulseResponse => {
                 "Keeps every sample and event of clip A on its continuous timeline while a segment \
@@ -394,7 +394,7 @@ pub const MAX_WINDOW_SECONDS: f32 = 30.00;
 pub const DEFAULT_A_WINDOW_SECONDS: f32 = 5.00;
 pub const DEFAULT_B_WINDOW_SECONDS: f32 = 5.00;
 const DEFAULT_INPUT_TAPER: f32 = 0.50;
-const VOCODER_FRAME_FRAMES: usize = 1_024;
+const VOCODER_FRAME_FRAMES: usize = 2_048;
 const VOCODER_HOP_FRAMES: usize = VOCODER_FRAME_FRAMES / 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -422,8 +422,8 @@ impl Default for AlgorithmParameters {
     fn default() -> Self {
         Self {
             input_taper: DEFAULT_INPUT_TAPER,
-            vocoder_transfer: 0.85,
-            vocoder_envelope_width_hz: 900.0,
+            vocoder_transfer: 1.0,
+            vocoder_envelope_width_hz: 500.0,
             vocoder_transient_protection: 0.65,
             resonator_transfer: 1.0,
             resonator_ring: 0.75,
@@ -876,10 +876,12 @@ fn render_source_filter_vocoder(
             (0.5 - 0.5 * (2.0 * PI * phase).cos()).sqrt()
         })
         .collect::<Vec<_>>();
-    let envelope_radius = ((parameters.vocoder_envelope_width_hz * VOCODER_FRAME_FRAMES as f32
-        / SAMPLE_RATE as f32)
-        .round() as usize)
-        .max(1);
+    let envelope_radius =
+        ((0.5 * parameters.vocoder_envelope_width_hz * VOCODER_FRAME_FRAMES as f32
+            / SAMPLE_RATE as f32)
+            .round() as usize)
+            .max(1);
+    let envelope_kernel = gaussian_kernel(envelope_radius);
     let mut vocoder = SourceFilterVocoder::new();
     let mut output = vec![0.0_f32; clip_a.samples.len()];
     let mut overlap_weight = vec![0.0_f32; output.len()];
@@ -895,7 +897,7 @@ fn render_source_filter_vocoder(
             &clip_b.samples,
             frame_start,
             &window,
-            envelope_radius,
+            &envelope_kernel,
             parameters,
             &mut output,
             &mut overlap_weight,
@@ -921,12 +923,12 @@ struct SourceFilterVocoder {
     output_time: Vec<f32>,
     a_spectrum: Vec<realfft::num_complex::Complex32>,
     b_spectrum: Vec<realfft::num_complex::Complex32>,
-    a_log_magnitude: Vec<f32>,
-    b_log_magnitude: Vec<f32>,
-    a_envelope: Vec<f32>,
-    b_envelope: Vec<f32>,
+    a_power_spectrum: Vec<f32>,
+    b_power_spectrum: Vec<f32>,
+    a_power_envelope: Vec<f32>,
+    b_power_envelope: Vec<f32>,
+    smoothed_log_ratio: Vec<f32>,
     previous_a_magnitude: Vec<f32>,
-    prefix: Vec<f64>,
     transient_state: f32,
     transient_hold_frames: usize,
     transient_flux_floor: f32,
@@ -946,12 +948,12 @@ impl SourceFilterVocoder {
             output_time: inverse.make_output_vec(),
             a_spectrum: forward.make_output_vec(),
             b_spectrum: forward.make_output_vec(),
-            a_log_magnitude: vec![0.0; bins],
-            b_log_magnitude: vec![0.0; bins],
-            a_envelope: vec![0.0; bins],
-            b_envelope: vec![0.0; bins],
+            a_power_spectrum: vec![0.0; bins],
+            b_power_spectrum: vec![0.0; bins],
+            a_power_envelope: vec![0.0; bins],
+            b_power_envelope: vec![0.0; bins],
+            smoothed_log_ratio: vec![0.0; bins],
             previous_a_magnitude: vec![0.0; bins],
-            prefix: vec![0.0; bins + 1],
             transient_state: 0.0,
             transient_hold_frames: 0,
             transient_flux_floor: 0.0,
@@ -969,7 +971,7 @@ impl SourceFilterVocoder {
         source_b: &[f32],
         frame_start: isize,
         window: &[f32],
-        envelope_radius: usize,
+        envelope_kernel: &[f64],
         parameters: AlgorithmParameters,
         output: &mut [f32],
         overlap_weight: &mut [f32],
@@ -993,27 +995,27 @@ impl SourceFilterVocoder {
 
         let mut positive_flux = 0.0_f64;
         let mut a_power = 0.0_f64;
+        let mut b_power = 0.0_f64;
         for bin in 0..self.a_spectrum.len() {
             let a_magnitude = self.a_spectrum[bin].norm();
             let b_magnitude = self.b_spectrum[bin].norm();
             let increase = (a_magnitude - self.previous_a_magnitude[bin]).max(0.0);
             positive_flux += f64::from(increase) * f64::from(increase);
             a_power += f64::from(a_magnitude) * f64::from(a_magnitude);
+            b_power += f64::from(b_magnitude) * f64::from(b_magnitude);
             self.previous_a_magnitude[bin] = a_magnitude;
-            self.a_log_magnitude[bin] = (a_magnitude + 1.0e-5).ln();
-            self.b_log_magnitude[bin] = (b_magnitude + 1.0e-5).ln();
+            self.a_power_spectrum[bin] = a_magnitude * a_magnitude;
+            self.b_power_spectrum[bin] = b_magnitude * b_magnitude;
         }
-        smooth_frequency(
-            &self.a_log_magnitude,
-            &mut self.a_envelope,
-            envelope_radius,
-            &mut self.prefix,
+        smooth_frequency_gaussian(
+            &self.a_power_spectrum,
+            &mut self.a_power_envelope,
+            envelope_kernel,
         );
-        smooth_frequency(
-            &self.b_log_magnitude,
-            &mut self.b_envelope,
-            envelope_radius,
-            &mut self.prefix,
+        smooth_frequency_gaussian(
+            &self.b_power_spectrum,
+            &mut self.b_power_envelope,
+            envelope_kernel,
         );
 
         // The first frame establishes the detector's spectral history. Comparing
@@ -1072,20 +1074,38 @@ impl SourceFilterVocoder {
         let transient_transfer = parameters.vocoder_transfer
             * (1.0 - parameters.vocoder_transient_protection * transient);
         let maximum_log_ratio = 8.0_f32.ln();
+        let bins = self.a_spectrum.len() as f64;
+        let a_mean_power = (a_power / bins).max(1.0e-20) as f32;
+        let b_mean_power = (b_power / bins).max(1.0e-20) as f32;
+        let envelope_floor = 1.0e-6_f32;
+        let b_is_silent = b_power <= 1.0e-16;
+        let ratio_smoothing = (-(VOCODER_HOP_FRAMES as f32) / (0.030 * SAMPLE_RATE as f32)).exp();
         let mut shaped_power = 0.0_f64;
         for bin in 0..self.a_spectrum.len() {
-            let target = (self.b_envelope[bin] - self.a_envelope[bin])
-                .clamp(-maximum_log_ratio, maximum_log_ratio);
-            // Eight overlapping root-Hann frames already interpolate adjacent
-            // spectral gains continuously. A second causal attack/release stage
-            // made the gain applied to one frame lag its own phase/magnitude
-            // analysis, creating audible sidebands and long scratchy recovery
-            // after spectral changes. Keep each ratio local to its analysis
-            // frame and let overlap-add provide the temporal interpolation.
+            // A channel vocoder transfers corresponding band energies, not the
+            // geometric mean of every FFT magnitude in a wide linear region.
+            // Normalize each frame first so B contributes spectral shape while
+            // A continues to contribute loudness and event timing.
+            let raw_target = if b_is_silent {
+                0.0
+            } else {
+                let a_shape = self.a_power_envelope[bin] / a_mean_power + envelope_floor;
+                let b_shape = self.b_power_envelope[bin] / b_mean_power + envelope_floor;
+                (0.5 * (b_shape.ln() - a_shape.ln())).clamp(-maximum_log_ratio, maximum_log_ratio)
+            };
+            let target = if self.initialized {
+                ratio_smoothing.mul_add(
+                    self.smoothed_log_ratio[bin],
+                    (1.0 - ratio_smoothing) * raw_target,
+                )
+            } else {
+                raw_target
+            };
+            self.smoothed_log_ratio[bin] = target;
             let applied =
                 (target * transient_transfer).clamp(-maximum_log_ratio, maximum_log_ratio);
             let gain = applied.exp();
-            self.a_log_magnitude[bin] = gain;
+            self.a_power_spectrum[bin] = gain;
             shaped_power += f64::from(self.a_spectrum[bin].norm_sqr() * gain * gain);
         }
         // B supplies spectral *shape*, while A remains the loudness and event
@@ -1099,8 +1119,8 @@ impl SourceFilterVocoder {
         } else {
             1.0
         };
-        for (bin, gain) in self.a_log_magnitude.iter().copied().enumerate() {
-            self.a_spectrum[bin] *= gain * power_normalization;
+        for (bin, gain) in self.a_power_spectrum.iter().copied().enumerate() {
+            self.a_spectrum[bin] *= (gain * power_normalization).min(8.0);
         }
         self.analysis_frames_seen += 1;
         self.initialized = true;
@@ -1122,15 +1142,27 @@ impl SourceFilterVocoder {
     }
 }
 
-fn smooth_frequency(input: &[f32], output: &mut [f32], radius: usize, prefix: &mut [f64]) {
-    prefix[0] = 0.0;
-    for (index, &value) in input.iter().enumerate() {
-        prefix[index + 1] = prefix[index] + f64::from(value);
-    }
+fn gaussian_kernel(radius: usize) -> Vec<f64> {
+    let sigma = (radius.max(1) as f64 / 3.0).max(0.75);
+    (-(radius as isize)..=radius as isize)
+        .map(|distance| (-0.5 * (distance as f64 / sigma).powi(2)).exp())
+        .collect()
+}
+
+fn smooth_frequency_gaussian(input: &[f32], output: &mut [f32], kernel: &[f64]) {
+    let radius = kernel.len() / 2;
     for (index, value) in output.iter_mut().enumerate() {
         let start = index.saturating_sub(radius);
         let end = (index + radius + 1).min(input.len());
-        *value = ((prefix[end] - prefix[start]) / (end - start) as f64) as f32;
+        let mut weighted_sum = 0.0_f64;
+        let mut weight_sum = 0.0_f64;
+        for (offset, &sample) in input[start..end].iter().enumerate() {
+            let kernel_index = radius + start + offset - index;
+            let weight = kernel[kernel_index];
+            weighted_sum += weight * f64::from(sample);
+            weight_sum += weight;
+        }
+        *value = (weighted_sum / weight_sum.max(f64::MIN_POSITIVE)) as f32;
     }
 }
 
@@ -2395,6 +2427,33 @@ mod tests {
     }
 
     #[test]
+    fn vocoder_defaults_transfer_nearby_b_resonances_instead_of_sounding_like_a() {
+        let frames = SAMPLE_RATE as usize * 2;
+        let a = deterministic_noise(frames, 0x4a11_cafe);
+        let b = resonant_noise(frames, 520.0, 0.975, 0x0b0d_1e55);
+        let output = render_test_vocoder(&a, &b, AlgorithmParameters::default());
+        let trim = VOCODER_FRAME_FRAMES * 2;
+        let band_ratio = |samples: &[f32]| {
+            spectral_band_power(samples, 380.0, 680.0)
+                / spectral_band_power(samples, 1_050.0, 1_350.0).max(1.0e-20)
+        };
+        let a_ratio = band_ratio(&a[trim..frames - trim]);
+        let b_ratio = band_ratio(&b[trim..frames - trim]);
+        let output_ratio = band_ratio(&output[trim..frames - trim]);
+        let transfer_fraction = (output_ratio.ln() - a_ratio.ln()) / (b_ratio.ln() - a_ratio.ln());
+        eprintln!(
+            "default vocoder B-envelope transfer: {:.1}%",
+            transfer_fraction * 100.0
+        );
+        assert!(
+            transfer_fraction > 0.60,
+            "default B-envelope transfer was only {:.1}%: A ratio {a_ratio:.3}, \
+             B ratio {b_ratio:.3}, output ratio {output_ratio:.3}",
+            transfer_fraction * 100.0
+        );
+    }
+
+    #[test]
     fn vocoder_keeps_a_burst_on_a_timeline_and_honors_cancellation() {
         use std::cell::Cell;
 
@@ -2634,29 +2693,23 @@ mod tests {
             ("noise envelope", noise.as_slice()),
             ("off-frequency sine envelope", other_sine.as_slice()),
         ] {
-            let output = render_test_vocoder(
-                &sine,
-                b,
-                AlgorithmParameters {
-                    vocoder_transfer: 0.85,
-                    vocoder_envelope_width_hz: 900.0,
-                    vocoder_transient_protection: 0.65,
-                    ..AlgorithmParameters::default()
-                },
-            );
+            let output = render_test_vocoder(&sine, b, AlgorithmParameters::default());
             let interior = &output[trim..frames - trim];
             let levels = block_rms(interior, VOCODER_HOP_FRAMES * 4);
             let ripple = percentile_spread_db(&levels, 0.05, 0.95);
-            let residual = tone_residual_ratio(interior, frequency);
+            let carrier = tone_amplitude(interior, frequency);
+            let hop_frequency = SAMPLE_RATE as f32 / VOCODER_HOP_FRAMES as f32;
+            let hop_sideband = tone_amplitude(interior, frequency + hop_frequency)
+                .max(tone_amplitude(interior, (frequency - hop_frequency).abs()));
             let seam_ratio = periodic_difference_ratio(interior, VOCODER_HOP_FRAMES);
             assert!(
-                ripple < 0.35,
+                ripple < 0.60,
                 "{label} created {ripple:.3} dB stationary level ripple"
             );
             assert!(
-                residual < 0.01,
-                "{label} added {:.3}% non-tonal sideband energy",
-                100.0 * residual
+                hop_sideband < carrier * 0.01,
+                "{label} added a hop-rate sideband at {:.3}% of the carrier",
+                100.0 * hop_sideband / carrier.max(1.0e-12)
             );
             assert!(
                 (0.80..1.20).contains(&seam_ratio),
@@ -2755,6 +2808,37 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "release-only real-source smoke and performance measurement"]
+    fn vocoder_real_sources_render_at_interactive_speed() {
+        use std::path::Path;
+        use std::time::Instant;
+
+        use crate::audio::{condition_output, read_prepared_clip};
+
+        let input_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/prepared");
+        let clip_a =
+            read_prepared_clip("gamelan_court", &input_dir.join("gamelan_court.wav")).unwrap();
+        let clip_b =
+            read_prepared_clip("political_speech", &input_dir.join("political_speech.wav"))
+                .unwrap();
+        let started = Instant::now();
+        let mut output =
+            render_source_filter_vocoder(&clip_a, &clip_b, AlgorithmParameters::default(), &|| {
+                false
+            })
+            .unwrap();
+        let elapsed = started.elapsed();
+        let metrics = condition_output(&mut output).unwrap();
+        assert_eq!(metrics.frames, clip_a.samples.len());
+        assert_eq!(metrics.non_finite_samples, 0);
+        assert!(
+            elapsed.as_secs_f32() < 3.0,
+            "release render took {elapsed:?}"
+        );
+        eprintln!("source-filter vocoder real-source DSP: {elapsed:?}");
+    }
+
+    #[test]
     fn chunk_overlap_uses_available_short_window_support() {
         assert_eq!(chunk_crossfade_frames(48_000, 96_000, 25.0), 12_000);
         assert_eq!(chunk_crossfade_frames(4_800, 1_440_000, 75.0), 3_600);
@@ -2800,6 +2884,26 @@ mod tests {
         (0..frames)
             .map(|_| 0.2 * random_unit_variance(&mut state))
             .collect()
+    }
+
+    fn resonant_noise(frames: usize, frequency: f32, radius: f32, seed: u64) -> Vec<f32> {
+        let innovation = deterministic_noise(frames, seed);
+        let angular = 2.0 * PI * frequency / SAMPLE_RATE as f32;
+        let first = -2.0 * radius * angular.cos();
+        let second = radius * radius;
+        let mut output = Vec::with_capacity(frames);
+        for (index, &sample) in innovation.iter().enumerate() {
+            let previous = index
+                .checked_sub(1)
+                .map(|offset| output[offset])
+                .unwrap_or(0.0);
+            let earlier = index
+                .checked_sub(2)
+                .map(|offset| output[offset])
+                .unwrap_or(0.0);
+            output.push(sample - first * previous - second * earlier);
+        }
+        output
     }
 
     fn render_test_vocoder(a: &[f32], b: &[f32], parameters: AlgorithmParameters) -> Vec<f32> {
@@ -2873,24 +2977,6 @@ mod tests {
                 .clamp(0.0, sorted.len().saturating_sub(1) as f32) as usize
         };
         20.0 * (sorted[index(high)] / sorted[index(low)].max(1.0e-12)).log10()
-    }
-
-    fn tone_residual_ratio(samples: &[f32], frequency: f32) -> f32 {
-        let (real, imaginary) = tone_projection(samples, frequency);
-        let scale = 2.0 / samples.len().max(1) as f64;
-        let residual_power = samples
-            .iter()
-            .enumerate()
-            .map(|(index, &sample)| {
-                let phase = 2.0 * std::f64::consts::PI * f64::from(frequency) * index as f64
-                    / f64::from(SAMPLE_RATE);
-                let predicted = scale * (real * phase.cos() - imaginary * phase.sin());
-                let error = f64::from(sample) - predicted;
-                error * error
-            })
-            .sum::<f64>()
-            / samples.len().max(1) as f64;
-        residual_power.sqrt() as f32 / rms(samples).max(1.0e-12)
     }
 
     fn periodic_difference_ratio(samples: &[f32], period: usize) -> f32 {

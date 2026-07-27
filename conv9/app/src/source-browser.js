@@ -464,25 +464,24 @@
       document.querySelectorAll(".source-browser-dialog:not([hidden])").forEach((dialog) => {
         dialog.closest(".source-browser")?.sourceBrowser?.close(false);
       });
+      const selected = this.selectedSource();
+      this.filter = "";
+      this.search.value = "";
+      this.group = selected?.browserGroup || "all";
+      this.groups.querySelectorAll("[data-group]").forEach((button) => {
+        button.setAttribute(
+          "aria-pressed",
+          String(button.dataset.group === this.group),
+        );
+      });
       this.opened = true;
       this.dialog.hidden = false;
       this.trigger.setAttribute("aria-expanded", "true");
-      if (!this.filteredSources().some((source) => source.id === this.value)) {
-        this.filter = "";
-        this.group = "all";
-        this.search.value = "";
-        this.groups.querySelectorAll("[data-group]").forEach((button) => {
-          button.setAttribute(
-            "aria-pressed",
-            String(button.dataset.group === "all"),
-          );
-        });
-      }
       this.activeId = this.value;
       this.renderList();
       this.scrollActiveIntoView("center");
       this.search.focus();
-      this.queuePreview(this.selectedSource(), 0);
+      this.queuePreview(selected, 0);
     }
 
     close(returnFocus) {

@@ -307,6 +307,16 @@ try {
   await page.locator("#sourceABrowser .source-browser-trigger").click();
   const sourceDialog = page.locator("#source-a-dialog");
   await sourceDialog.waitFor({ state: "visible" });
+  assert.equal(
+    await sourceDialog.locator("[data-group='voice']").getAttribute("aria-pressed"),
+    "true",
+    "opening the browser defaults to the selected clip's category",
+  );
+  assert.equal(
+    await sourceDialog.locator("[data-group='all']").getAttribute("aria-pressed"),
+    "false",
+    "the all-sources category is not selected by default",
+  );
   const initialDialogBounds = await sourceDialog.boundingBox();
   const initialPreviewBounds = await sourceDialog
     .locator(".source-preview-waveform")
@@ -405,6 +415,7 @@ try {
     page,
     "#source-a-dialog .source-preview-waveform",
   );
+  await sourceDialog.locator("[data-group='all']").click();
   await sourceDialog.locator(".source-search").fill("helicopter");
   await page.waitForFunction(
     () =>
@@ -442,6 +453,11 @@ try {
     "keyboard selection updates the hidden state mirror and render request",
   );
   await page.locator("#sourceABrowser .source-browser-trigger").click();
+  assert.equal(
+    await sourceDialog.locator("[data-group='motion']").getAttribute("aria-pressed"),
+    "true",
+    "reopening follows the newly selected clip's category",
+  );
   await sourceDialog.locator(".source-search").fill("");
   await sourceDialog.locator("[data-group='music']").click();
   const musicalMatches = await sourceDialog.locator("[role='option']").count();
@@ -526,6 +542,13 @@ try {
     "waveform metrics must not show a mismatched box while loading",
   );
   assert.equal(await page.locator("#algorithmButtons button").count(), 8, "algorithm count");
+  assert.deepEqual(
+    await page.locator("#algorithmButtons button").evaluateAll((buttons) =>
+      buttons.slice(0, 3).map((button) => button.dataset.value),
+    ),
+    ["windowed_convolution", "full_convolution", "moving_impulse_response"],
+    "the primary convolution methods appear first in the requested order",
+  );
   const uiScale = await page.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
     return {
@@ -836,7 +859,7 @@ try {
   await page.getByRole("button", { name: "vocoder", exact: true }).click();
   await waitForPath(
     page,
-    "/source_filter_vocoder/vocoder_envelope_width_hz=900.00,vocoder_transfer=0.85,vocoder_transient_protection=0.65",
+    "/source_filter_vocoder/vocoder_envelope_width_hz=500.00,vocoder_transfer=1.00,vocoder_transient_protection=0.65",
   );
   assert.equal(await page.locator("#methodTools .window-control").count(), 0);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 3);
@@ -1226,6 +1249,33 @@ async function testCatalog() {
         ],
       },
       {
+        id: "full_convolution",
+        title: "Full linear convolution",
+        description:
+          "Selects one segment from each clip, convolves them as the smear reference, and retains the complete linear result.",
+        rank: 6,
+        windows: [],
+        parameters: [
+          parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_a_duration_seconds", "A duration", 0.1, 61, 0.1, 61, "s"),
+          parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
+        ],
+      },
+      {
+        id: "moving_impulse_response",
+        title: "Moving impulse response",
+        description:
+          "Keeps A continuous while matching points in B provide interpolated causal FIR reverbs with complete tails.",
+        rank: 4,
+        windows: [],
+        parameters: [
+          parameter("moving_ir_seconds", "IR length", 0.05, 30, 0.01, 0.75, "s"),
+          parameter("moving_ir_update_seconds", "IR update", 0.25, 3, 0.05, 0.5, "s"),
+          parameter("moving_ir_taper", "IR taper", 0.05, 1, 0.01, 0.5),
+        ],
+      },
+      {
         id: "source_filter_vocoder",
         title: "Source-filter vocoder",
         description:
@@ -1233,14 +1283,14 @@ async function testCatalog() {
         rank: 2,
         windows: [],
         parameters: [
-          parameter("vocoder_transfer", "transfer", 0, 1.5, 0.01, 0.85),
+          parameter("vocoder_transfer", "transfer", 0, 1.5, 0.01, 1),
           parameter(
             "vocoder_envelope_width_hz",
             "envelope width",
             100,
             3000,
             50,
-            900,
+            500,
             "Hz",
           ),
           parameter(
@@ -1266,19 +1316,6 @@ async function testCatalog() {
         ],
       },
       {
-        id: "moving_impulse_response",
-        title: "Moving impulse response",
-        description:
-          "Keeps A continuous while matching points in B provide interpolated causal FIR reverbs with complete tails.",
-        rank: 4,
-        windows: [],
-        parameters: [
-          parameter("moving_ir_seconds", "IR length", 0.05, 30, 0.01, 0.75, "s"),
-          parameter("moving_ir_update_seconds", "IR update", 0.25, 3, 0.05, 0.5, "s"),
-          parameter("moving_ir_taper", "IR taper", 0.05, 1, 0.01, 0.5),
-        ],
-      },
-      {
         id: "chunk_crossfade",
         title: "Independent chunks + crossfade",
         description:
@@ -1289,20 +1326,6 @@ async function testCatalog() {
           parameter("input_taper", "input taper", 0.05, 1, 0.01, 0.5),
           parameter("chunk_crossfade_percent", "overlap", 5, 75, 1, 50, "%"),
           parameter("chunk_crop_position", "crop position", 0, 1, 0.01, 0.5),
-        ],
-      },
-      {
-        id: "full_convolution",
-        title: "Full linear convolution",
-        description:
-          "Selects one segment from each clip, convolves them as the smear reference, and retains the complete linear result.",
-        rank: 6,
-        windows: [],
-        parameters: [
-          parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
-          parameter("full_a_duration_seconds", "A duration", 0.1, 61, 0.1, 61, "s"),
-          parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
-          parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
         ],
       },
       {

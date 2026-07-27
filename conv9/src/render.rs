@@ -490,9 +490,10 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 step: 50.0,
                 default: defaults.vocoder_envelope_width_hz,
                 unit: "Hz",
-                description: "Sets the frequency span used to smooth both short-time spectra before \
-                              their ratio is transferred. Narrow values retain detailed resonances; \
-                              broad values emphasize stable formants and overall timbral shape.",
+                description: "Sets the full Gaussian frequency span used to smooth normalized \
+                              short-time band power before the B/A envelope ratio is transferred. \
+                              Narrow values retain nearby resonances; broad values retain only \
+                              large-scale spectral color.",
             },
             ParameterCatalogEntry {
                 id: "vocoder_transient_protection",
@@ -517,9 +518,10 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 default: defaults.resonator_transfer,
                 unit: "",
                 description: "Moves the stable synthesis model from clip B's own response toward \
-                              clip A's learned resonances. 0 is an exact B identity transform before \
-                              shared output conditioning, while 1 gives A full spectral character \
-                              and keeps B's innovation, events, and complete timeline.",
+                              clip A's corresponding short-time resonances. 0 is an exact B identity \
+                              transform before shared output conditioning, while 1 gives A full \
+                              modeled spectral character and keeps B's innovation, events, and \
+                              complete timeline.",
             },
             ParameterCatalogEntry {
                 id: "resonator_ring",

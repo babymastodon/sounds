@@ -13,8 +13,8 @@ Measurements were taken on an Intel Core Ultra 7 268V with four performance core
 | Windowed convolution, 0.1 s × 30 s, 8 threads | 75,257 ms | 20,907–22,492 ms | 3.35–3.60× |
 | Windowed convolution, 0.1 s × 0.1 s | 695 ms | 171–183 ms | 3.8–4.1× |
 | Full convolution, 61 s × 61 s | 348 ms | 340 ms | 1.02× |
-| Source-filter vocoder, 61 s | not present | 279–281 ms warm | — |
-| Predictive resonator bank, 61 s | not present | 252–383 ms warm | — |
+| Source-filter vocoder, 61 s | 279–281 ms, weak geometric envelope | 466 ms, corrected band-power transfer | 1.66× more work |
+| Predictive resonator bank, 61 s | 252–383 ms, one global model | 164 ms, parallel local models | 1.54–2.34× |
 | Moving IR, 61 s A / 0.75 s IR / 0.5 s updates | 410 ms, 1 thread | 91 ms, 8 threads | 4.51× |
 | Moving IR, 61 s A / 30 s IR / 0.5 s updates | 2,836–2,923 ms, 1 thread | 1,120–1,155 ms, 8 threads | 2.53× |
 
@@ -35,9 +35,9 @@ The Rust convolution path now:
 
 The batch pool is also memory-bounded. A 0.1 s × 30 s worker needs approximately 51 MiB for FFT buffers, extracted inputs, and its result. All eight cores are used on the measured machine, while a fixed 768 MiB worker-workspace ceiling prevents machines with very high core counts from creating an unbounded number of giant FFT buffers. Including the five complete overlap arrays, the measured eight-worker case remains near 0.55 GiB rather than retaining thousands of multi-megabyte grains.
 
-The source-filter vocoder uses a fixed 1,024-frame STFT and 128-frame hop. FFT plans and all time, spectrum, envelope, prefix-sum, and smoothing buffers are reused throughout the 61-second render.
+The source-filter vocoder uses a fixed 2,048-frame STFT and 256-frame hop. FFT plans and all time, spectrum, envelope, and smoothing buffers are reused throughout the 61-second render. Its Gaussian frequency kernel is precomputed once per render; recomputing the exponentials in the inner frame/bin loop took 1.95 seconds, while the retained precomputed kernel completes the corrected real-source DSP in 466 ms. The larger transform and normalized band-power envelope eliminate the measured hop image at the stronger default transfer.
 
-The predictive resonator bank computes each source's 65 biased autocorrelation lags in bounded eight-lag Rayon batches, solves the resulting Toeplitz systems with Levinson–Durbin recursion, and performs one allocation-free, sample-continuous analysis/synthesis pass after reserving its exact output. Cancellation is checked between autocorrelation batches and every 16,384 synthesis frames. The reported 252–383 ms excludes source loading and common output conditioning.
+The predictive resonator bank analyzes overlapping 8,192-frame local windows at a 2,048-frame hop. Each independent frame fits 32-pole A/B models with Levinson–Durbin recursion, whitens the windowed B frame, synthesizes it through A's corresponding stable model, preserves B's local power, and returns it for root-Hann overlap-add. Bounded 32-frame Rayon batches provide cancellation points and parallelize the expensive local autocorrelations without concurrent output writes. The corrected real-source DSP takes 164 ms, excluding source loading and common output conditioning; the former minute-long stationary fit took 252–383 ms yet could mathematically collapse to B passthrough when A and B shared a global spectrum.
 
 The moving-IR method uses uniform partitioned convolution through two seconds: 1,024 input frames and 1,024-tap FIR partitions share fixed 2,048-point real FFT plans. For the default 61-second render, 2,860 A blocks and 36 IR partitions require 105.5 million interpolated frequency-bin products. Only 124 B snapshots are transformed, rather than transforming a new 0.75-second filter for all 2,860 A blocks. Input transforms, B-snapshot transforms, output-block inverse transforms, coherence calculation, and final overlap-add all use bounded Rayon batches. Every output block is independent until the final disjoint overlap-add, so one- and multi-thread output is bit-identical. The spectral workspace is approximately 80 MiB at the default and is rejected above a fixed 384 MiB ceiling.
 

@@ -13,7 +13,7 @@ use crate::audio::{AudioClip, INPUT_FRAMES, INPUT_SECONDS, SAMPLE_RATE};
 pub enum Algorithm {
     WindowedConvolution,
     SourceFilterVocoder,
-    PredictiveResonatorBank,
+    LatentConvolutionBank,
     MovingImpulseResponse,
     ChunkCrossfade,
     FullConvolution,
@@ -275,7 +275,7 @@ impl Algorithm {
         Self::FullConvolution,
         Self::MovingImpulseResponse,
         Self::SourceFilterVocoder,
-        Self::PredictiveResonatorBank,
+        Self::LatentConvolutionBank,
         Self::ChunkCrossfade,
         Self::DryA,
         Self::DryB,
@@ -285,7 +285,7 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => "windowed_convolution",
             Self::SourceFilterVocoder => "source_filter_vocoder",
-            Self::PredictiveResonatorBank => "predictive_resonator_bank",
+            Self::LatentConvolutionBank => "latent_convolution_bank",
             Self::MovingImpulseResponse => "moving_impulse_response",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
@@ -298,7 +298,7 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => "Windowed convolution",
             Self::SourceFilterVocoder => "Source-filter vocoder",
-            Self::PredictiveResonatorBank => "Predictive resonator bank",
+            Self::LatentConvolutionBank => "Latent convolution bank",
             Self::MovingImpulseResponse => "Moving impulse response",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
@@ -321,11 +321,11 @@ impl Algorithm {
                  transients remain in place as B's Gaussian-smoothed spectral color is transferred \
                  by a dense 2,048-frame overlap-add source-filter vocoder."
             }
-            Self::PredictiveResonatorBank => {
-                "Learns stable short-time causal resonance models in 8,192-frame windows, removes \
-                 clip B's local predictable response to recover its innovation, then drives the \
-                 corresponding model learned from clip A. Root-Hann overlap-add retains B's exact \
-                 61-second event timeline while A supplies evolving resonances and spectral body."
+            Self::LatentConvolutionBank => {
+                "Self-supervises an overcomplete bank of sparse spectro-temporal response patterns \
+                 and an explicit residual from each clip. B's learned activation streams are softly \
+                 routed through A's response bank, while B retains phase, frame power, events, and \
+                 its exact 61-second timeline."
             }
             Self::MovingImpulseResponse => {
                 "Keeps every sample and event of clip A on its continuous timeline while a segment \
@@ -360,7 +360,7 @@ impl Algorithm {
         match self {
             Self::WindowedConvolution => 1,
             Self::SourceFilterVocoder => 2,
-            Self::PredictiveResonatorBank => 3,
+            Self::LatentConvolutionBank => 3,
             Self::MovingImpulseResponse => 4,
             Self::ChunkCrossfade => 5,
             Self::FullConvolution => 6,
@@ -404,8 +404,8 @@ pub struct AlgorithmParameters {
     pub vocoder_transfer: f32,
     pub vocoder_envelope_width_hz: f32,
     pub vocoder_transient_protection: f32,
-    pub resonator_transfer: f32,
-    pub resonator_ring: f32,
+    pub convbank_transfer: f32,
+    pub convbank_memory_ms: f32,
     pub moving_ir_seconds: f32,
     pub moving_ir_update_seconds: f32,
     pub moving_ir_taper: f32,
@@ -425,8 +425,8 @@ impl Default for AlgorithmParameters {
             vocoder_transfer: 1.0,
             vocoder_envelope_width_hz: 500.0,
             vocoder_transient_protection: 0.65,
-            resonator_transfer: 1.0,
-            resonator_ring: 0.75,
+            convbank_transfer: 1.0,
+            convbank_memory_ms: 170.0,
             moving_ir_seconds: 0.75,
             moving_ir_update_seconds: 0.50,
             moving_ir_taper: 0.50,
@@ -463,9 +463,9 @@ impl AlgorithmParameters {
                     1.0,
                 )?;
             }
-            Algorithm::PredictiveResonatorBank => {
-                validate_range("resonator transfer", self.resonator_transfer, 0.0, 1.0)?;
-                validate_range("resonator ring", self.resonator_ring, 0.0, 1.0)?;
+            Algorithm::LatentConvolutionBank => {
+                validate_range("latent-bank transfer", self.convbank_transfer, 0.0, 1.5)?;
+                validate_range("latent-bank memory", self.convbank_memory_ms, 40.0, 250.0)?;
             }
             Algorithm::MovingImpulseResponse => {
                 validate_range("IR length", self.moving_ir_seconds, 0.05, 30.0)?;
@@ -583,11 +583,11 @@ pub fn render_algorithm_cancellable(
         Algorithm::SourceFilterVocoder => {
             render_source_filter_vocoder(clip_a, clip_b, parameters, cancelled)?
         }
-        Algorithm::PredictiveResonatorBank => crate::convbank::render_predictive_resonator_bank(
+        Algorithm::LatentConvolutionBank => crate::latent_convbank::render_latent_convolution_bank(
             &clip_a.samples,
             &clip_b.samples,
-            parameters.resonator_transfer,
-            parameters.resonator_ring,
+            parameters.convbank_transfer,
+            parameters.convbank_memory_ms,
             cancelled,
         )?,
         Algorithm::MovingImpulseResponse => {
@@ -1942,17 +1942,17 @@ mod tests {
         assert!(parameters.validate(Algorithm::SourceFilterVocoder).is_err());
 
         parameters = AlgorithmParameters::default();
-        parameters.resonator_transfer = f32::NAN;
+        parameters.convbank_transfer = f32::NAN;
         assert!(
             parameters
-                .validate(Algorithm::PredictiveResonatorBank)
+                .validate(Algorithm::LatentConvolutionBank)
                 .is_err()
         );
         parameters = AlgorithmParameters::default();
-        parameters.resonator_ring = 1.01;
+        parameters.convbank_memory_ms = 251.0;
         assert!(
             parameters
-                .validate(Algorithm::PredictiveResonatorBank)
+                .validate(Algorithm::LatentConvolutionBank)
                 .is_err()
         );
 

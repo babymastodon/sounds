@@ -874,19 +874,19 @@ try {
     "source_filter_vocoder",
     "latest rapid selection wins",
   );
-  await page.getByRole("button", { name: "resonators", exact: true }).click();
+  await page.getByRole("button", { name: "latent bank", exact: true }).click();
   await waitForPath(
     page,
-    "/predictive_resonator_bank/resonator_ring=0.75,resonator_transfer=1.00",
+    "/latent_convolution_bank/convbank_memory_ms=170.00,convbank_transfer=1.00",
   );
   assert.equal(await page.locator("#methodTools .window-control").count(), 0);
   assert.equal(await page.locator("#methodTools .tool-control").count(), 2);
   await page.getByLabel("transfer exact value").fill("0.72");
-  await waitForPath(page, "resonator_transfer=0.72");
+  await waitForPath(page, "convbank_transfer=0.72");
   assert.equal(
     await page.evaluate(() => window.__CONV9_TEST_REQUESTS__.at(-1).algorithm),
-    "predictive_resonator_bank",
-    "resonator selection retains its catalog parameters and request identity",
+    "latent_convolution_bank",
+    "latent-bank selection retains its catalog parameters and request identity",
   );
   await page.getByRole("button", { name: "moving IR", exact: true }).click();
   await waitForPath(
@@ -1204,10 +1204,10 @@ async function testCatalog() {
         "Sets the frequency span used to smooth both short-time spectra before transfer.",
       vocoder_transient_protection:
         "Reduces envelope transfer during rapid spectral onsets from clip A.",
-      resonator_transfer:
-        "Moves clip B from its own response toward clip A's learned resonances while preserving B's innovation, events, and timeline.",
-      resonator_ring:
-        "Controls damping of clip A's learned stable resonances; higher values retain narrower modes and longer ringing.",
+      convbank_transfer:
+        "Moves clip B toward A's learned latent response bank while retaining B's phase, events, and timeline.",
+      convbank_memory_ms:
+        "Sets the temporal extent of the learned spectro-temporal response patterns.",
       moving_ir_seconds:
         "Sets the duration of each causal FIR centered on the matching point in clip B, with silence beyond its boundaries.",
       moving_ir_update_seconds:
@@ -1229,7 +1229,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 10,
+    schema_version: 11,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -1304,15 +1304,15 @@ async function testCatalog() {
         ],
       },
       {
-        id: "predictive_resonator_bank",
-        title: "Predictive resonator bank",
+        id: "latent_convolution_bank",
+        title: "Latent convolution bank",
         description:
-          "Learns stable resonances from A, recovers B's innovation signal, and drives A's acoustic body with B's events and timeline.",
+          "Learns reusable response patterns from A and drives them with B's softly routed latent activations.",
         rank: 3,
         windows: [],
         parameters: [
-          parameter("resonator_transfer", "transfer", 0, 1, 0.01, 1),
-          parameter("resonator_ring", "ring", 0, 1, 0.01, 0.75),
+          parameter("convbank_transfer", "transfer", 0, 1.5, 0.01, 1),
+          parameter("convbank_memory_ms", "memory", 40, 250, 10, 170, "ms"),
         ],
       },
       {

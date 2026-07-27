@@ -1,6 +1,6 @@
 mod audio;
-mod convbank;
 mod dsp;
+mod latent_convbank;
 mod manifest;
 mod moving_ir;
 mod render;

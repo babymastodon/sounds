@@ -153,7 +153,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 10,
+            schema_version: 11,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -508,33 +508,32 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               and restores the selected transfer as each onset settles.",
             },
         ],
-        Algorithm::PredictiveResonatorBank => vec![
+        Algorithm::LatentConvolutionBank => vec![
             ParameterCatalogEntry {
-                id: "resonator_transfer",
+                id: "convbank_transfer",
                 label: "transfer",
                 minimum: 0.0,
-                maximum: 1.0,
+                maximum: 1.5,
                 step: 0.01,
-                default: defaults.resonator_transfer,
+                default: defaults.convbank_transfer,
                 unit: "",
-                description: "Moves the stable synthesis model from clip B's own response toward \
-                              clip A's corresponding short-time resonances. 0 is an exact B identity \
-                              transform before shared output conditioning, while 1 gives A full \
-                              modeled spectral character and keeps B's innovation, events, and \
-                              complete timeline.",
+                description: "Blends from an exact clip-B identity at 0 toward A's learned latent \
+                              response bank at 1 while retaining B's phase, frame power, events, and \
+                              complete timeline. Values above 1 exaggerate A's transferred scene \
+                              character.",
             },
             ParameterCatalogEntry {
-                id: "resonator_ring",
-                label: "ring",
-                minimum: 0.0,
-                maximum: 1.0,
-                step: 0.01,
-                default: defaults.resonator_ring,
-                unit: "",
-                description: "Controls bandwidth expansion of the learned causal models. Low values \
-                              pull every stable pole inward for a dry, quickly damped body; high \
-                              values retain narrower modes and longer ringing while remaining \
-                              strictly stable. It is neutral when transfer is 0.",
+                id: "convbank_memory_ms",
+                label: "memory",
+                minimum: 40.0,
+                maximum: 250.0,
+                step: 10.0,
+                default: defaults.convbank_memory_ms,
+                unit: "ms",
+                description: "Sets the temporal extent of each learned spectro-temporal response. \
+                              Short memory favors impacts and rapidly changing textures; long memory \
+                              can capture decays, evolving attacks, and repeated acoustic patterns \
+                              but costs more to factorize.",
             },
         ],
         Algorithm::MovingImpulseResponse => vec![
@@ -735,7 +734,7 @@ mod tests {
             } else {
                 let expected_count = match algorithm {
                     Algorithm::SourceFilterVocoder => 3,
-                    Algorithm::PredictiveResonatorBank => 2,
+                    Algorithm::LatentConvolutionBank => 2,
                     Algorithm::MovingImpulseResponse => 3,
                     _ => panic!("unexpected non-windowed configurable algorithm"),
                 };
@@ -773,8 +772,8 @@ mod tests {
                 ][..],
             ),
             (
-                Algorithm::PredictiveResonatorBank,
-                &["resonator_transfer", "resonator_ring"][..],
+                Algorithm::LatentConvolutionBank,
+                &["convbank_transfer", "convbank_memory_ms"][..],
             ),
             (
                 Algorithm::MovingImpulseResponse,

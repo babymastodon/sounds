@@ -1,0 +1,722 @@
+{
+  "schema_version": 1,
+  "name": "sonora",
+  "metadata": {
+    "title": "Sonora",
+    "album": "Convolutions 10",
+    "artist": "babymastodon",
+    "album_artist": "babymastodon",
+    "composer": "babymastodon",
+    "genre": "Experimental",
+    "date": "2026",
+    "track": "8/14",
+    "disc": "1/1",
+    "comment": "Themes: acoustic instruments, voices, tuned percussion, and improvisation. Tuning: 31-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 48/60/36/48/48/60/32/48/48/48/60/40 pairs.",
+    "description": "Themes: acoustic instruments, voices, tuned percussion, and improvisation. Tuning: 31-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 48/60/36/48/48/60/32/48/48/48/60/40 pairs."
+  },
+  "samples": [
+    {
+      "id": "sonora_piano_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/342/342647_1038806-hq.mp3"
+    },
+    {
+      "id": "sonora_acoustic_guitar_s",
+      "role": "short",
+      "trim_start": 3.1,
+      "source": "https://cdn.freesound.org/previews/211/211963_3931578-hq.mp3"
+    },
+    {
+      "id": "sonora_electric_guitar_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/346/346820_5005496-hq.mp3"
+    },
+    {
+      "id": "sonora_violin_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/572/572394_12923279-hq.mp3"
+    },
+    {
+      "id": "sonora_cello_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/159/159116_2018306-hq.mp3"
+    },
+    {
+      "id": "sonora_flute_s",
+      "role": "short",
+      "trim_start": 4.0,
+      "source": "https://cdn.freesound.org/previews/324/324085_3874114-hq.mp3"
+    },
+    {
+      "id": "sonora_clarinet_s",
+      "role": "short",
+      "trim_start": 1.468,
+      "source": "https://cdn.freesound.org/previews/44/44363_62250-hq.mp3"
+    },
+    {
+      "id": "sonora_saxophone_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/682/682310_10938187-hq.mp3"
+    },
+    {
+      "id": "sonora_trumpet_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/450/450474_612689-hq.mp3"
+    },
+    {
+      "id": "sonora_trombone_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/491/491009_10350281-hq.mp3"
+    },
+    {
+      "id": "sonora_accordion_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/149/149091_2232619-hq.mp3"
+    },
+    {
+      "id": "sonora_harmonica_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/224/224002_82274-hq.mp3"
+    },
+    {
+      "id": "sonora_harp_s",
+      "role": "short",
+      "trim_start": 1.715,
+      "source": "https://cdn.freesound.org/previews/415/415386_2112203-hq.mp3"
+    },
+    {
+      "id": "sonora_ukulele_s",
+      "role": "short",
+      "trim_start": 1.07,
+      "source": "https://cdn.freesound.org/previews/383/383023_6336990-hq.mp3"
+    },
+    {
+      "id": "sonora_sitar_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/273/273666_5178374-hq.mp3"
+    },
+    {
+      "id": "sonora_kalimba_s",
+      "role": "short",
+      "trim_start": 1.807,
+      "source": "https://cdn.freesound.org/previews/728/728677_2140699-hq.mp3"
+    },
+    {
+      "id": "sonora_tabla_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/510/510839_10486071-hq.mp3"
+    },
+    {
+      "id": "sonora_taiko_s",
+      "role": "short",
+      "trim_start": 2.119,
+      "source": "https://cdn.freesound.org/previews/499/499537_10350281-hq.mp3"
+    },
+    {
+      "id": "sonora_handpan_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/615/615570_1063450-hq.mp3"
+    },
+    {
+      "id": "sonora_gamelan_s",
+      "role": "short",
+      "trim_start": 0.956,
+      "source": "https://cdn.freesound.org/previews/0/401_177-hq.mp3"
+    },
+    {
+      "id": "sonora_marimba_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/530/530434_9818404-hq.mp3"
+    },
+    {
+      "id": "sonora_xylophone_s",
+      "role": "short",
+      "trim_start": 0.654,
+      "source": "https://cdn.freesound.org/previews/501/501300_10865671-hq.mp3"
+    },
+    {
+      "id": "sonora_pipe_organ_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/574/574225_12932169-hq.mp3"
+    },
+    {
+      "id": "sonora_vocal_notes_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/679/679478_8466114-hq.mp3"
+    },
+    {
+      "id": "sonora_piano_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/362/362106_3783190-hq.mp3"
+    },
+    {
+      "id": "sonora_acoustic_guitar_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/404/404504_6031697-hq.mp3"
+    },
+    {
+      "id": "sonora_electric_guitar_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/657/657184_9195682-hq.mp3"
+    },
+    {
+      "id": "sonora_violin_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/476/476050_10144720-hq.mp3"
+    },
+    {
+      "id": "sonora_cello_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/645/645568_3200333-hq.mp3"
+    },
+    {
+      "id": "sonora_flute_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/159/159131_2018306-hq.mp3"
+    },
+    {
+      "id": "sonora_clarinet_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/387/387611_7027760-hq.mp3"
+    },
+    {
+      "id": "sonora_saxophone_l",
+      "role": "long",
+      "trim_start": 2.276,
+      "source": "https://cdn.freesound.org/previews/682/682309_10938187-hq.mp3"
+    },
+    {
+      "id": "sonora_trumpet_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/360/360542_1306869-hq.mp3"
+    },
+    {
+      "id": "sonora_trombone_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/729/729169_14598169-hq.mp3"
+    },
+    {
+      "id": "sonora_accordion_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/689/689547_13504080-hq.mp3"
+    },
+    {
+      "id": "sonora_harmonica_l",
+      "role": "long",
+      "trim_start": 7.936,
+      "source": "https://cdn.freesound.org/previews/565/565759_1262662-hq.mp3"
+    },
+    {
+      "id": "sonora_harp_l",
+      "role": "long",
+      "trim_start": 1.298,
+      "source": "https://cdn.freesound.org/previews/415/415442_2112203-hq.mp3"
+    },
+    {
+      "id": "sonora_ukulele_l",
+      "role": "long",
+      "trim_start": 0.871,
+      "source": "https://cdn.freesound.org/previews/389/389758_5111994-hq.mp3"
+    },
+    {
+      "id": "sonora_sitar_l",
+      "role": "long",
+      "trim_start": 6.841,
+      "source": "https://cdn.freesound.org/previews/339/339970_5302138-hq.mp3"
+    },
+    {
+      "id": "sonora_kalimba_l",
+      "role": "long",
+      "trim_start": 2.187,
+      "source": "https://cdn.freesound.org/previews/728/728666_2140699-hq.mp3"
+    },
+    {
+      "id": "sonora_tabla_l",
+      "role": "long",
+      "trim_start": 1.294,
+      "source": "https://cdn.freesound.org/previews/633/633150_10486071-hq.mp3"
+    },
+    {
+      "id": "sonora_taiko_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/621/621290_13749321-hq.mp3"
+    },
+    {
+      "id": "sonora_handpan_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/548/548026_2282212-hq.mp3"
+    },
+    {
+      "id": "sonora_gamelan_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/167/167246_177850-hq.mp3"
+    },
+    {
+      "id": "sonora_marimba_l",
+      "role": "long",
+      "trim_start": 7.932,
+      "source": "https://cdn.freesound.org/previews/608/608802_2282212-hq.mp3"
+    },
+    {
+      "id": "sonora_xylophone_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/161/161509_1015240-hq.mp3"
+    },
+    {
+      "id": "sonora_pipe_organ_l",
+      "role": "long",
+      "trim_start": 8.147,
+      "source": "https://cdn.freesound.org/previews/544/544386_2019171-hq.mp3"
+    },
+    {
+      "id": "sonora_vocal_notes_l",
+      "role": "long",
+      "trim_start": 1.0,
+      "source": "https://cdn.freesound.org/previews/679/679483_8466114-hq.mp3"
+    }
+  ],
+  "harmony": {
+    "register": {
+      "minimum_hz": 55.0,
+      "maximum_hz": 440.0
+    },
+    "allowed_inversions": [
+      0,
+      1,
+      2
+    ],
+    "tunings": [
+      {
+        "name": "primary",
+        "kind": "equal_division",
+        "base_frequency_hz": 110.0,
+        "period_ratio": 2.0,
+        "divisions": 31,
+        "detune_limit_fraction": 0.26
+      }
+    ],
+    "palettes": [
+      {
+        "name": "main",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          5,
+          8,
+          10,
+          13,
+          18,
+          23,
+          28
+        ],
+        "chords": [
+          {
+            "name": "main_anchor",
+            "degrees": [
+              0,
+              10,
+              18
+            ],
+            "weight": 5
+          },
+          {
+            "name": "main_response",
+            "degrees": [
+              0,
+              8,
+              18
+            ],
+            "weight": 3
+          },
+          {
+            "name": "main_open",
+            "degrees": [
+              0,
+              13,
+              18
+            ],
+            "weight": 2
+          },
+          {
+            "name": "main_cadence",
+            "degrees": [
+              0,
+              10,
+              23
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "neighbor",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          5,
+          8,
+          10,
+          13,
+          18,
+          23,
+          28
+        ],
+        "chords": [
+          {
+            "name": "neighbor_one",
+            "degrees": [
+              0,
+              9,
+              18
+            ],
+            "weight": 5
+          },
+          {
+            "name": "neighbor_two",
+            "degrees": [
+              0,
+              12,
+              21
+            ],
+            "weight": 3
+          },
+          {
+            "name": "neighbor_three",
+            "degrees": [
+              0,
+              8,
+              20
+            ],
+            "weight": 2
+          },
+          {
+            "name": "neighbor_return",
+            "degrees": [
+              0,
+              13,
+              23
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "contrast",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          5,
+          8,
+          10,
+          13,
+          18,
+          23,
+          28
+        ],
+        "chords": [
+          {
+            "name": "contrast_one",
+            "degrees": [
+              0,
+              3,
+              17
+            ],
+            "weight": 5
+          },
+          {
+            "name": "contrast_two",
+            "degrees": [
+              0,
+              15,
+              29
+            ],
+            "weight": 3
+          },
+          {
+            "name": "contrast_three",
+            "degrees": [
+              0,
+              5,
+              25
+            ],
+            "weight": 2
+          },
+          {
+            "name": "contrast_peak",
+            "degrees": [
+              0,
+              14,
+              27
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "transition",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          5,
+          8,
+          10,
+          13,
+          18,
+          23,
+          28
+        ],
+        "chords": [
+          {
+            "name": "transition_one",
+            "degrees": [
+              0,
+              10,
+              17
+            ],
+            "weight": 5
+          },
+          {
+            "name": "transition_two",
+            "degrees": [
+              0,
+              8,
+              17
+            ],
+            "weight": 3
+          },
+          {
+            "name": "transition_three",
+            "degrees": [
+              0,
+              13,
+              21
+            ],
+            "weight": 2
+          },
+          {
+            "name": "transition_home",
+            "degrees": [
+              0,
+              2,
+              18
+            ],
+            "weight": 3
+          }
+        ]
+      }
+    ],
+    "scenes": [
+      {
+        "name": "a",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 72
+          },
+          {
+            "palette": "neighbor",
+            "weight": 18
+          },
+          {
+            "palette": "contrast",
+            "weight": 4
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_anchor",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "a_prime",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 58
+          },
+          {
+            "palette": "neighbor",
+            "weight": 28
+          },
+          {
+            "palette": "contrast",
+            "weight": 8
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_open",
+          "main_response",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "b",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 35
+          },
+          {
+            "palette": "neighbor",
+            "weight": 47
+          },
+          {
+            "palette": "contrast",
+            "weight": 10
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "neighbor_one",
+          "neighbor_two",
+          "neighbor_three",
+          "neighbor_return"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "c",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 20
+          },
+          {
+            "palette": "neighbor",
+            "weight": 22
+          },
+          {
+            "palette": "contrast",
+            "weight": 48
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_one",
+          "contrast_two",
+          "contrast_three",
+          "contrast_peak"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "d",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 10
+          },
+          {
+            "palette": "neighbor",
+            "weight": 15
+          },
+          {
+            "palette": "contrast",
+            "weight": 65
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_peak",
+          "contrast_two",
+          "transition_one",
+          "contrast_three"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "coda",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 82
+          },
+          {
+            "palette": "neighbor",
+            "weight": 8
+          },
+          {
+            "palette": "contrast",
+            "weight": 2
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_cadence",
+          "transition_home"
+        ],
+        "motif_every_pairs": 8
+      }
+    ],
+    "progression": [
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "b", "pair_count": 36 },
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "c", "pair_count": 48 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "d", "pair_count": 32 },
+      { "scene": "b", "pair_count": 48 },
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "c", "pair_count": 48 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "coda", "pair_count": 40 }
+    ]
+  }
+}

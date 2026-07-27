@@ -1,0 +1,718 @@
+{
+  "schema_version": 1,
+  "name": "menagerie",
+  "metadata": {
+    "title": "Menagerie",
+    "album": "Convolutions 10",
+    "artist": "babymastodon",
+    "album_artist": "babymastodon",
+    "composer": "babymastodon",
+    "genre": "Experimental",
+    "date": "2026",
+    "track": "4/14",
+    "disc": "1/1",
+    "comment": "Themes: birds, insects, farm animals, wildlife, and underwater voices. Tuning: 17-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 60/48/36/60/32/48/48/48/60/48/48/40 pairs.",
+    "description": "Themes: birds, insects, farm animals, wildlife, and underwater voices. Tuning: 17-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 60/48/36/60/32/48/48/48/60/48/48/40 pairs."
+  },
+  "samples": [
+    {
+      "id": "menagerie_songbirds_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/336/336666_1575560-hq.mp3"
+    },
+    {
+      "id": "menagerie_owls_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/638/638700_1661766-hq.mp3"
+    },
+    {
+      "id": "menagerie_frogs_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/692/692921_3195919-hq.mp3"
+    },
+    {
+      "id": "menagerie_crickets_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/567/567944_97550-hq.mp3"
+    },
+    {
+      "id": "menagerie_cicadas_s",
+      "role": "short",
+      "trim_start": 4.229,
+      "source": "https://cdn.freesound.org/previews/493/493058_2058051-hq.mp3"
+    },
+    {
+      "id": "menagerie_beehive_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/467/467224_2573247-hq.mp3"
+    },
+    {
+      "id": "menagerie_sheep_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/538/538439_11519060-hq.mp3"
+    },
+    {
+      "id": "menagerie_cattle_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/415/415056_5433844-hq.mp3"
+    },
+    {
+      "id": "menagerie_horses_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/121/121129_2140699-hq.mp3"
+    },
+    {
+      "id": "menagerie_dogs_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/433/433864_138-hq.mp3"
+    },
+    {
+      "id": "menagerie_cats_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/262/262955_128837-hq.mp3"
+    },
+    {
+      "id": "menagerie_chickens_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/51/51766_612689-hq.mp3"
+    },
+    {
+      "id": "menagerie_ducks_s",
+      "role": "short",
+      "trim_start": 4.383,
+      "source": "https://cdn.freesound.org/previews/689/689803_1121623-hq.mp3"
+    },
+    {
+      "id": "menagerie_geese_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/470/470035_9564355-hq.mp3"
+    },
+    {
+      "id": "menagerie_seagulls_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/462/462462_2752236-hq.mp3"
+    },
+    {
+      "id": "menagerie_crows_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/348/348057_2364707-hq.mp3"
+    },
+    {
+      "id": "menagerie_monkeys_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/490/490315_1441734-hq.mp3"
+    },
+    {
+      "id": "menagerie_elephants_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/479/479813_2524442-hq.mp3"
+    },
+    {
+      "id": "menagerie_lions_s",
+      "role": "short",
+      "trim_start": 1.969,
+      "source": "https://cdn.freesound.org/previews/69/69571_706955-hq.mp3"
+    },
+    {
+      "id": "menagerie_wolves_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/651/651193_801011-hq.mp3"
+    },
+    {
+      "id": "menagerie_whales_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/82/82325_1299633-hq.mp3"
+    },
+    {
+      "id": "menagerie_dolphins_s",
+      "role": "short",
+      "trim_start": 4.283,
+      "source": "https://cdn.freesound.org/previews/437/437947_2524442-hq.mp3"
+    },
+    {
+      "id": "menagerie_pigs_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/467/467570_8031303-hq.mp3"
+    },
+    {
+      "id": "menagerie_goats_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/272/272458_3658882-hq.mp3"
+    },
+    {
+      "id": "menagerie_songbirds_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/336/336667_1575560-hq.mp3"
+    },
+    {
+      "id": "menagerie_owls_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/549/549275_12323168-hq.mp3"
+    },
+    {
+      "id": "menagerie_frogs_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/684/684900_11751758-hq.mp3"
+    },
+    {
+      "id": "menagerie_crickets_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/645/645706_13222620-hq.mp3"
+    },
+    {
+      "id": "menagerie_cicadas_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/493/493059_2058051-hq.mp3"
+    },
+    {
+      "id": "menagerie_beehive_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/353/353198_2120176-hq.mp3"
+    },
+    {
+      "id": "menagerie_sheep_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/541/541212_542096-hq.mp3"
+    },
+    {
+      "id": "menagerie_cattle_l",
+      "role": "long",
+      "trim_start": 6.686,
+      "source": "https://cdn.freesound.org/previews/645/645862_5902878-hq.mp3"
+    },
+    {
+      "id": "menagerie_horses_l",
+      "role": "long",
+      "trim_start": 7.921,
+      "source": "https://cdn.freesound.org/previews/266/266366_1276125-hq.mp3"
+    },
+    {
+      "id": "menagerie_dogs_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/237/237798_2971294-hq.mp3"
+    },
+    {
+      "id": "menagerie_cats_l",
+      "role": "long",
+      "trim_start": 2.578,
+      "source": "https://cdn.freesound.org/previews/130/130968_2330675-hq.mp3"
+    },
+    {
+      "id": "menagerie_chickens_l",
+      "role": "long",
+      "trim_start": 2.349,
+      "source": "https://cdn.freesound.org/previews/346/346961_2367065-hq.mp3"
+    },
+    {
+      "id": "menagerie_ducks_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/616/616827_97550-hq.mp3"
+    },
+    {
+      "id": "menagerie_geese_l",
+      "role": "long",
+      "trim_start": 2.88,
+      "source": "https://cdn.freesound.org/previews/651/651256_14160594-hq.mp3"
+    },
+    {
+      "id": "menagerie_seagulls_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/457/457613_627541-hq.mp3"
+    },
+    {
+      "id": "menagerie_crows_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/348/348058_2364707-hq.mp3"
+    },
+    {
+      "id": "menagerie_monkeys_l",
+      "role": "long",
+      "trim_start": 1.855,
+      "source": "https://cdn.freesound.org/previews/256/256873_2134280-hq.mp3"
+    },
+    {
+      "id": "menagerie_elephants_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/437/437977_2524442-hq.mp3"
+    },
+    {
+      "id": "menagerie_lions_l",
+      "role": "long",
+      "trim_start": 2.06,
+      "source": "https://cdn.freesound.org/previews/405/405211_1661766-hq.mp3"
+    },
+    {
+      "id": "menagerie_wolves_l",
+      "role": "long",
+      "trim_start": 1.1,
+      "source": "https://cdn.freesound.org/previews/158/158780_229952-hq.mp3"
+    },
+    {
+      "id": "menagerie_whales_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/504/504772_10868231-hq.mp3"
+    },
+    {
+      "id": "menagerie_dolphins_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/385/385796_4438201-hq.mp3"
+    },
+    {
+      "id": "menagerie_pigs_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/233/233269_4056007-hq.mp3"
+    },
+    {
+      "id": "menagerie_goats_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/192/192693_2254206-hq.mp3"
+    }
+  ],
+  "harmony": {
+    "register": {
+      "minimum_hz": 55.0,
+      "maximum_hz": 440.0
+    },
+    "allowed_inversions": [
+      0,
+      1,
+      2
+    ],
+    "tunings": [
+      {
+        "name": "primary",
+        "kind": "equal_division",
+        "base_frequency_hz": 110.0,
+        "period_ratio": 2.0,
+        "divisions": 17,
+        "detune_limit_fraction": 0.3
+      }
+    ],
+    "palettes": [
+      {
+        "name": "main",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          5,
+          7,
+          10,
+          12,
+          15
+        ],
+        "chords": [
+          {
+            "name": "main_anchor",
+            "degrees": [
+              0,
+              5,
+              10
+            ],
+            "weight": 5
+          },
+          {
+            "name": "main_response",
+            "degrees": [
+              0,
+              6,
+              10
+            ],
+            "weight": 3
+          },
+          {
+            "name": "main_open",
+            "degrees": [
+              0,
+              4,
+              11
+            ],
+            "weight": 2
+          },
+          {
+            "name": "main_cadence",
+            "degrees": [
+              0,
+              5,
+              11
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "neighbor",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          5,
+          7,
+          10,
+          12,
+          15
+        ],
+        "chords": [
+          {
+            "name": "neighbor_one",
+            "degrees": [
+              0,
+              3,
+              9
+            ],
+            "weight": 5
+          },
+          {
+            "name": "neighbor_two",
+            "degrees": [
+              0,
+              7,
+              12
+            ],
+            "weight": 3
+          },
+          {
+            "name": "neighbor_three",
+            "degrees": [
+              0,
+              4,
+              10
+            ],
+            "weight": 2
+          },
+          {
+            "name": "neighbor_return",
+            "degrees": [
+              0,
+              6,
+              12
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "contrast",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          5,
+          7,
+          10,
+          12,
+          15
+        ],
+        "chords": [
+          {
+            "name": "contrast_one",
+            "degrees": [
+              0,
+              1,
+              10
+            ],
+            "weight": 5
+          },
+          {
+            "name": "contrast_two",
+            "degrees": [
+              0,
+              8,
+              16
+            ],
+            "weight": 3
+          },
+          {
+            "name": "contrast_three",
+            "degrees": [
+              0,
+              2,
+              14
+            ],
+            "weight": 2
+          },
+          {
+            "name": "contrast_peak",
+            "degrees": [
+              0,
+              7,
+              15
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "transition",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          5,
+          7,
+          10,
+          12,
+          15
+        ],
+        "chords": [
+          {
+            "name": "transition_one",
+            "degrees": [
+              0,
+              5,
+              9
+            ],
+            "weight": 5
+          },
+          {
+            "name": "transition_two",
+            "degrees": [
+              0,
+              6,
+              11
+            ],
+            "weight": 3
+          },
+          {
+            "name": "transition_three",
+            "degrees": [
+              0,
+              4,
+              9
+            ],
+            "weight": 2
+          },
+          {
+            "name": "transition_home",
+            "degrees": [
+              0,
+              2,
+              10
+            ],
+            "weight": 3
+          }
+        ]
+      }
+    ],
+    "scenes": [
+      {
+        "name": "a",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 72
+          },
+          {
+            "palette": "neighbor",
+            "weight": 18
+          },
+          {
+            "palette": "contrast",
+            "weight": 4
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_anchor",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "a_prime",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 58
+          },
+          {
+            "palette": "neighbor",
+            "weight": 28
+          },
+          {
+            "palette": "contrast",
+            "weight": 8
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_open",
+          "main_response",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "b",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 35
+          },
+          {
+            "palette": "neighbor",
+            "weight": 47
+          },
+          {
+            "palette": "contrast",
+            "weight": 10
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "neighbor_one",
+          "neighbor_two",
+          "neighbor_three",
+          "neighbor_return"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "c",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 20
+          },
+          {
+            "palette": "neighbor",
+            "weight": 22
+          },
+          {
+            "palette": "contrast",
+            "weight": 48
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_one",
+          "contrast_two",
+          "contrast_three",
+          "contrast_peak"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "d",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 10
+          },
+          {
+            "palette": "neighbor",
+            "weight": 15
+          },
+          {
+            "palette": "contrast",
+            "weight": 65
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_peak",
+          "contrast_two",
+          "transition_one",
+          "contrast_three"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "coda",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 82
+          },
+          {
+            "palette": "neighbor",
+            "weight": 8
+          },
+          {
+            "palette": "contrast",
+            "weight": 2
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_cadence",
+          "transition_home"
+        ],
+        "motif_every_pairs": 8
+      }
+    ],
+    "progression": [
+      { "scene": "a", "pair_count": 60 },
+      { "scene": "a_prime", "pair_count": 48 },
+      { "scene": "b", "pair_count": 36 },
+      { "scene": "a", "pair_count": 60 },
+      { "scene": "c", "pair_count": 32 },
+      { "scene": "a_prime", "pair_count": 48 },
+      { "scene": "d", "pair_count": 48 },
+      { "scene": "b", "pair_count": 48 },
+      { "scene": "a", "pair_count": 60 },
+      { "scene": "c", "pair_count": 48 },
+      { "scene": "a_prime", "pair_count": 48 },
+      { "scene": "coda", "pair_count": 40 }
+    ]
+  }
+}

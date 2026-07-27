@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the list-driven batch front end."""
+"""Tests for the config-driven batch front end."""
 
 from __future__ import annotations
 
@@ -7,15 +7,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from batch import (
+    SongDefinition,
+    SongRun,
     PROJECT_DIR,
     default_metadata,
+    encode_one,
+    encoder_available,
     load_catalog,
     parse_list,
+    parse_song_config,
     validate_embedded_cover,
+    validate_embedded_metadata,
 )
 
 
@@ -68,15 +75,70 @@ class ParseListTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "long input"):
                 parse_list(list_path)
 
+
+class ParseSongConfigTests(unittest.TestCase):
+    def test_checked_in_configs_are_complete_album_definitions(self) -> None:
+        paths = sorted((PROJECT_DIR / "configs").glob("*.json"))
+        songs = [parse_song_config(path) for path in paths]
+        catalog = load_catalog(PROJECT_DIR / "SONGS.tsv")
+
+        self.assertEqual(len(songs), 14)
+        self.assertEqual(len({song.name for song in songs}), 14)
+        self.assertTrue(all(len(song.entries) == 48 for song in songs))
+        self.assertTrue(
+            all(
+                sum(entry.role == "short" for entry in song.entries) == 24
+                and sum(entry.role == "long" for entry in song.entries) == 24
+                for song in songs
+            )
+        )
+        self.assertEqual(
+            {song.metadata["album"] for song in songs}, {"Convolutions 10"}
+        )
+        self.assertEqual(
+            {song.metadata["artist"] for song in songs}, {"babymastodon"}
+        )
+        for song in songs:
+            with self.subTest(song=song.name):
+                self.assertEqual(song.metadata, catalog[song.name])
+                self.assertEqual(
+                    song.entries,
+                    tuple(parse_list(PROJECT_DIR / "lists" / f"{song.name}.txt")),
+                )
+                payload = json.loads(song.config_path.read_text(encoding="utf-8"))
+                scenes = {
+                    scene["name"]: scene
+                    for scene in payload["harmony"]["scenes"]
+                }
+                progression = payload["harmony"]["progression"]
+                pair_counts = [step["pair_count"] for step in progression]
+                self.assertEqual(sum(pair_counts), 24 * 24)
+                self.assertGreaterEqual(len(set(pair_counts)), 3)
+                self.assertTrue(all(24 <= count <= 72 for count in pair_counts))
+                self.assertTrue(
+                    all(
+                        step["pair_count"]
+                        % scenes[step["scene"]]["motif_every_pairs"]
+                        == 0
+                        for step in progression
+                    )
+                )
+                self.assertIn(
+                    "/".join(str(count) for count in pair_counts),
+                    song.metadata["description"],
+                )
+
+
+class MetadataTests(unittest.TestCase):
     def test_catalog_preserves_complete_track_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog_path = Path(temporary) / "songs.tsv"
             catalog_path.write_text(
                 "name\ttitle\talbum\tartist\talbum_artist\tcomposer\tgenre\tdate"
-                "\ttrack\tdisc\tcomment\n"
+                "\ttrack\tdisc\tcomment\tdescription\n"
                 "drift\tDrift\tConvolutions 10\tbabymastodon\tbabymastodon"
                 "\tbabymastodon\tExperimental\t2026\t3/14\t1/1"
-                "\tCalm environmental flow.\n",
+                "\tCalm environmental flow.\tCalm environmental flow.\n",
                 encoding="utf-8",
             )
 
@@ -146,6 +208,72 @@ class ParseListTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing embedded cover"):
                 validate_embedded_cover(plain_path)
             validate_embedded_cover(covered_path)
+
+    def test_parallel_queue_encoder_preserves_metadata_and_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            master = root / "work" / "concat" / "test.part.rf64.wav"
+            master.parent.mkdir(parents=True)
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=48000:cl=stereo",
+                    "-t",
+                    "0.1",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(master),
+                ],
+                check=True,
+            )
+            metadata = {
+                **default_metadata("test"),
+                "comment": "Themes: rain. Tuning: 15-EDO. Form: A-B-A.",
+                "description": "Themes: rain. Tuning: 15-EDO. Form: A-B-A.",
+            }
+            config_path = root / "test.json"
+            config_path.write_text("{}\n", encoding="utf-8")
+            song = SongDefinition(config_path, "test", (), metadata)
+            run = SongRun(
+                song,
+                0.0,
+                root / "work",
+                root / "manifest.tsv",
+                1,
+                1,
+                0.0,
+                0.0,
+                0.0,
+                {},
+                {},
+            )
+            aac_encoder = (
+                "libfdk_aac" if encoder_available("libfdk_aac") else "aac"
+            )
+            opus_encoder = "libopus" if encoder_available("libopus") else "opus"
+            output_dir = root / "outputs"
+            for kind in ("flac", "aac", "opus"):
+                encode_one(
+                    run,
+                    kind,
+                    output_dir,
+                    aac_encoder,
+                    opus_encoder,
+                    192,
+                    128,
+                )
+            for path in (
+                output_dir / "flac" / "test.flac",
+                output_dir / "m4a" / "test.m4a",
+                output_dir / "opus" / "test.opus",
+            ):
+                validate_embedded_metadata(path, metadata)
+            validate_embedded_cover(output_dir / "m4a" / "test.m4a")
 
 
 if __name__ == "__main__":

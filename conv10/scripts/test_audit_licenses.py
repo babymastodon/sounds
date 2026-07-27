@@ -12,7 +12,7 @@ from audit_licenses import classify_license, page_title
 
 
 class LicenseAuditTests(unittest.TestCase):
-    def test_accepts_plain_attribution_for_commercial_use(self) -> None:
+    def test_rejects_plain_attribution_despite_commercial_use(self) -> None:
         page = (
             '<h1><a>Test sound</a></h1>'
             '<a title="Go to the full license text" '
@@ -28,7 +28,7 @@ class LicenseAuditTests(unittest.TestCase):
         self.assertEqual(url, "https://creativecommons.org/licenses/by/4.0/")
         self.assertTrue(commercial)
         self.assertTrue(attribution)
-        self.assertIn("accepted", decision)
+        self.assertIn("reject", decision)
         self.assertEqual(page_title(page, "fallback"), "Test sound")
 
     def test_rejects_noncommercial_and_share_alike(self) -> None:

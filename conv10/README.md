@@ -1,9 +1,10 @@
 # Convolutions 10
 
-`conv10` turns lists of raw recordings into long-form convolution pieces. Each
-48-input list has 24 twelve-second inputs and 24 thirty-second inputs, producing
-a complete 24×24 matrix of 576 stereo pair renders. The pairs are sequenced with
-ten-second crossfades into a 4:09:45.988 program.
+`conv10` turns config-defined sets of raw recordings into long-form convolution
+pieces. Each song config has 24 twelve-second inputs and 24 thirty-second
+inputs, producing a complete 24×24 matrix of 576 stereo pair renders. The pairs
+follow the config's scene progression and are joined with ten-second crossfades
+into a 4:09:45.988 program.
 
 The album contains 14 pieces:
 
@@ -28,13 +29,23 @@ Field Atlas and Melody Works are the renamed and regenerated original programs.
 The other 12 pieces draw from 384 distinct online snippets spanning 192 topics.
 The eight focused pieces each use a separate 48-source palette. The four hybrid
 pieces each combine alternating topics from two palettes, creating semantic and
-acoustic contrasts without introducing another source. In total, the 12 lists
+acoustic contrasts without introducing another source. In total, the 12 pieces
 contain 576 uses: 192 sources appear in one focused and one hybrid piece, and
 192 appear once.
 
-`SONGS.tsv` is the ordered album catalog and metadata record.
-`SONG_SOURCES.tsv` is the 384-source inventory. Every piece has its own explicit
-input definition in `lists/`.
+Every piece has one authoritative definition in `configs/`. Each JSON file
+contains all 48 ordered samples, complete output metadata, frequency boundaries,
+one or more tuning systems, weighted chord palettes, scene behavior, and the
+full 576-pair progression. Concrete roots and inversions are generated
+deterministically from the ordered sample filenames, so the configuration sets
+the musical boundaries while preserving a reproducible realization. See
+[`configs/README.md`](configs/README.md) for the album plan and field reference.
+Scene spans deliberately vary from 24 to 72 pairs, always end on complete motif
+cycles, and still total the exhaustive 576-pair matrix.
+
+`SONGS.tsv` remains the ordered curation catalog and `SONG_SOURCES.tsv` is the
+384-source inventory. Files in `lists/` are retained as curation intermediates;
+the batch renderer reads only the JSON song configs.
 
 ## Run
 
@@ -50,19 +61,27 @@ CONV_JOBS=8 DOWNLOAD_JOBS=8 ./scripts/render_all.sh
 Render selected pieces:
 
 ```bash
-./scripts/render_all.sh lists/drift.txt lists/tideforge.txt
+./scripts/render_all.sh configs/drift.json configs/tideforge.json
 ```
 
-Force synthesis and final encoding to be regenerated:
+Force synthesis to be regenerated:
 
 ```bash
 ./scripts/batch.py \
   --jobs 8 \
   --prepare-jobs 8 \
   --force-render \
-  --force-output \
-  lists/drift.txt
+  configs/drift.json
 ```
+
+For an album run, all matrices are rendered first, then all RF64 PCM masters
+are assembled. Only after every master exists does one global queue launch
+whole-file FFmpeg encoders. Preparation, rendering, RF64 assembly, encoding,
+and finalization all use at least eight workers by default. This fills the
+machine with independent work
+because the selected FLAC, AAC, and Opus encoders do not internally parallelize
+one audio stream. `render_all.sh` clamps its per-phase environment overrides to
+that eight-worker floor.
 
 The final audio is grouped by format for easy copying:
 
@@ -86,12 +105,15 @@ is the third delivery format. The checked-in `cover.jpg` is also suitable for
 copying beside the album files.
 All 42 files identify the album as `Convolutions 10` and the artist, album
 artist, and composer as `babymastodon`. Track title, number, disc, year, genre,
-and a short piece description are embedded as well.
+and an extended description of the sample themes, tuning, chord vocabulary,
+main motif, form, and pair-count spans are embedded as well. M4A exposes this
+as `DESCRIPTION`; FLAC and Opus carry the equivalent Vorbis `COMMENT`.
 
-Audio, downloaded media, scratch matrices, and Rust build artifacts are ignored
-by Git. Successful runs retain compact reports, timelines, recipes, and hash
-files while cleaning raw, prepared, and matrix WAVs unless `--keep-work` is
-supplied.
+Audio, downloaded media, scratch matrices, assembled RF64 masters, and Rust
+build artifacts are ignored by Git. Successful runs retain compact reports,
+timelines, recipes, and hash files while cleaning large scratch audio unless
+`--keep-work` is supplied. If a later stage fails, its assembled master remains
+available for diagnosis or a resumed encoding run.
 
 ## Source curation
 
@@ -108,35 +130,58 @@ python3 scripts/curate_songs.py check
 Discovery verifies source pages and prevents overlap with the existing
 repository inventory. Validation captures each configured source prefix as
 lossless audio, strictly decodes the selected window, checks usable duration,
-and records content hashes. `write` produces the 12 new lists, album catalog,
-and source inventory; `seed` reuses the validated cache for focused and hybrid
-renders.
+and records content hashes. `write` produces the 12 curation lists, album
+catalog, and source inventory, then synchronizes their sample and metadata
+fields into the existing JSON files without changing the reviewed harmony
+plans. `seed` reuses the validated cache for focused and hybrid renders.
 
-## Input-list format
+## Song-config format
 
-Explicit lists are tab-separated:
+The complete schema is documented in
+[`configs/README.md`](configs/README.md). A shortened structural example is:
 
-```text
-id	role	trim_start	source
-short_one	short	0	/path/to/short.wav
-long_one	long	auto	https://example.test/long.flac
+```json
+{
+  "schema_version": 1,
+  "name": "drift",
+  "metadata": { "title": "Drift", "album": "Convolutions 10" },
+  "samples": [
+    {
+      "id": "drift_gentle_ocean_s",
+      "role": "short",
+      "trim_start": 0,
+      "source": "https://example.test/ocean.flac"
+    }
+  ],
+  "harmony": {
+    "register": { "minimum_hz": 55, "maximum_hz": 440 },
+    "allowed_inversions": [0, 1, 2],
+    "tunings": [],
+    "palettes": [],
+    "scenes": [],
+    "progression": []
+  }
+}
 ```
 
-A plain text file may instead contain one local path or HTTP(S) URL per
-non-comment line. Its first ceiling-half becomes the short side and its
-remainder becomes the long side; eventful trims are selected automatically.
-Sources shorter than their target but still within the supported manifest range
-are pitch-preserving time-stretched.
+Sources may be local paths or HTTP(S) URLs. An `auto` trim asks the preparation
+stage to select an eventful window. Sources shorter than their target but still
+within the supported manifest range are pitch-preserving time-stretched.
 
 Useful checks:
 
 ```bash
-./scripts/batch.py --validate-only lists/*.txt
-cargo test --all-targets
-python3 -m unittest scripts/test_batch.py scripts/test_curate_songs.py
+./scripts/batch.py --validate-only configs/*.json
+cargo test --all-targets --offline
+python3 -m unittest \
+  scripts/test_audit_licenses.py \
+  scripts/test_batch.py \
+  scripts/test_curate_songs.py
 python3 scripts/verify_album.py
 ```
 
 The batch runner validates every pair, decodes every compressed output end to
-end, checks embedded metadata, and writes SHA-256 files. See `RUN_REPORT.md` for
-the completed album results and `PERFORMANCE.md` for the performance inventory.
+end, checks embedded metadata and M4A cover art, and writes SHA-256 files.
+`RUN_REPORT.md` records the completed v17 delivery. See `PROGRESS.md` for
+current status and `PERFORMANCE.md` for the performance inventory and
+historical renderer baseline.

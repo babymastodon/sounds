@@ -453,6 +453,22 @@ def sync_list(list_path: Path, manifest_path: Path) -> None:
         row["trim_start"] = override.get("trim_start", source["trim_start"])
         row["source"] = override.get("source", source["download_url"])
     write_tsv(list_path, list(rows[0]), rows)
+    config_path = ROOT / "conv10" / "configs" / f"{list_path.stem}.json"
+    if config_path.is_file():
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        configured = payload.get("samples")
+        if not isinstance(configured, list) or [row["id"] for row in rows] != [
+            sample.get("id") for sample in configured
+        ]:
+            raise RuntimeError(f"{config_path}: samples do not match {list_path}")
+        by_id = {row["id"]: row for row in rows}
+        for sample in configured:
+            source = by_id[sample["id"]]
+            sample["trim_start"] = float(source["trim_start"])
+            sample["source"] = source["source"]
+        temporary = config_path.with_suffix(f"{config_path.suffix}.part")
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(config_path)
 
 
 def write_inventory(mapping_path: Path, audit_path: Path, output: Path) -> None:

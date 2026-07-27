@@ -1,0 +1,718 @@
+{
+  "schema_version": 1,
+  "name": "melodyworks",
+  "metadata": {
+    "title": "Melody Works",
+    "album": "Convolutions 10",
+    "artist": "babymastodon",
+    "album_artist": "babymastodon",
+    "composer": "babymastodon",
+    "genre": "Experimental",
+    "date": "2026",
+    "track": "2/14",
+    "disc": "1/1",
+    "comment": "Themes: instrumental gestures convolved with vehicles, tools, alarms, crowds, weather, and physical processes. Tuning: 19-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 48/60/36/48/32/60/48/48/48/32/60/56 pairs.",
+    "description": "Themes: instrumental gestures convolved with vehicles, tools, alarms, crowds, weather, and physical processes. Tuning: 19-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-A-prime-B-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 48/60/36/48/32/60/48/48/48/32/60/56 pairs."
+  },
+  "samples": [
+    {
+      "id": "gamelan_court",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/423/423647_7554526-hq.mp3"
+    },
+    {
+      "id": "montreal_bagpipe_parade",
+      "role": "short",
+      "trim_start": 238.0,
+      "source": "https://cdn.freesound.org/previews/453/453868_612689-hq.mp3"
+    },
+    {
+      "id": "taiko_drummers",
+      "role": "short",
+      "trim_start": 0.0,
+      "source": "https://cdn.freesound.org/previews/629/629930_612689-hq.mp3"
+    },
+    {
+      "id": "tabla_percussion",
+      "role": "short",
+      "trim_start": 0.0,
+      "source": "https://cdn.freesound.org/previews/719/719950_7413715-hq.mp3"
+    },
+    {
+      "id": "cello_improvisation",
+      "role": "short",
+      "trim_start": 12.2,
+      "source": "https://cdn.freesound.org/previews/46/46711_395166-hq.mp3"
+    },
+    {
+      "id": "toy_piano_breakdown",
+      "role": "short",
+      "trim_start": 10.2,
+      "source": "https://cdn.freesound.org/previews/200/200415_8936-hq.mp3"
+    },
+    {
+      "id": "doepfer_random_melody",
+      "role": "short",
+      "trim_start": 163.8,
+      "source": "https://cdn.freesound.org/previews/362/362764_1391542-hq.mp3"
+    },
+    {
+      "id": "astana_brass_band",
+      "role": "short",
+      "trim_start": 35.8,
+      "source": "https://cdn.freesound.org/previews/350/350355_2364707-hq.mp3"
+    },
+    {
+      "id": "chopin_string_quartet",
+      "role": "short",
+      "trim_start": 566.7,
+      "source": "https://upload.wikimedia.org/wikipedia/commons/a/a4/Chopin_-_Piano_Concerto_no._1%2C_Op._11_%28string_quartet%29-2.ogg"
+    },
+    {
+      "id": "handpan_strikes",
+      "role": "short",
+      "trim_start": 1.0,
+      "source": "https://cdn.freesound.org/previews/568/568142_4819210-hq.mp3"
+    },
+    {
+      "id": "madrid_street_accordion",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/452/452410_612689-hq.mp3"
+    },
+    {
+      "id": "blues_harmonica",
+      "role": "short",
+      "trim_start": 10.7,
+      "source": "https://cdn.freesound.org/previews/403/403104_7814793-hq.mp3"
+    },
+    {
+      "id": "electric_mbira",
+      "role": "short",
+      "trim_start": 312.3,
+      "source": "https://cdn.freesound.org/previews/485/485855_5114707-hq.mp3"
+    },
+    {
+      "id": "didgeridoo_shaker_drum",
+      "role": "short",
+      "trim_start": 1.0,
+      "source": "https://cdn.freesound.org/previews/338/338320_4977896-hq.mp3"
+    },
+    {
+      "id": "opera_rehearsal",
+      "role": "short",
+      "trim_start": 156.6,
+      "source": "https://cdn.freesound.org/previews/190/190951_98337-hq.mp3"
+    },
+    {
+      "id": "hamburg_church_bells",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/547/547982_11519060-hq.mp3"
+    },
+    {
+      "id": "seoul_sanchon_drum",
+      "role": "short",
+      "trim_start": 1.0,
+      "source": "https://cdn.freesound.org/previews/315/315885_5356267-hq.mp3"
+    },
+    {
+      "id": "marching_band",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/629/629843_612689-hq.mp3"
+    },
+    {
+      "id": "big_band_warmup",
+      "role": "short",
+      "trim_start": 142.8,
+      "source": "https://cdn.freesound.org/previews/399/399039_2291385-hq.mp3"
+    },
+    {
+      "id": "spanish_guitar_improvisation",
+      "role": "short",
+      "trim_start": 10.7,
+      "source": "https://cdn.freesound.org/previews/404/404952_3480533-hq.mp3"
+    },
+    {
+      "id": "christe_choir",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/273/273804_4875045-hq.mp3"
+    },
+    {
+      "id": "prospect_drum_circle",
+      "role": "short",
+      "trim_start": 123.9,
+      "source": "https://cdn.freesound.org/previews/548/548158_2267785-hq.mp3"
+    },
+    {
+      "id": "techno_loco",
+      "role": "short",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/398/398640_7237125-hq.mp3"
+    },
+    {
+      "id": "gifu_pipe_organ",
+      "role": "short",
+      "trim_start": 173.5,
+      "source": "https://cdn.freesound.org/previews/735/735541_50975-hq.mp3"
+    },
+    {
+      "id": "thunder_mountain",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/136/136596_2115643-hq.mp3"
+    },
+    {
+      "id": "inside_car_wash",
+      "role": "long",
+      "trim_start": 0.0,
+      "source": "https://cdn.freesound.org/previews/521/521226_9958472-hq.mp3"
+    },
+    {
+      "id": "peru_new_year_fireworks",
+      "role": "long",
+      "trim_start": 181.2,
+      "source": "https://cdn.freesound.org/previews/140/140350_1661766-hq.mp3"
+    },
+    {
+      "id": "efteling_steam_train",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/125/125211_1848966-hq.mp3"
+    },
+    {
+      "id": "helicopter_takeoff",
+      "role": "long",
+      "trim_start": 123.3,
+      "source": "https://cdn.freesound.org/previews/172/172649_2262806-hq.mp3"
+    },
+    {
+      "id": "scuba_bubbles",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/634/634225_13988658-hq.mp3"
+    },
+    {
+      "id": "building_demolition",
+      "role": "long",
+      "trim_start": 317.4,
+      "source": "https://cdn.freesound.org/previews/495/495269_2247456-hq.mp3"
+    },
+    {
+      "id": "finnish_blacksmith",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/137/137836_977564-hq.mp3"
+    },
+    {
+      "id": "cattle_auction",
+      "role": "long",
+      "trim_start": 108.5,
+      "source": "https://cdn.freesound.org/previews/717/717434_97550-hq.mp3"
+    },
+    {
+      "id": "ferry_alarm",
+      "role": "long",
+      "trim_start": 1.0,
+      "source": "https://cdn.freesound.org/previews/440/440628_1481531-hq.mp3"
+    },
+    {
+      "id": "flooded_mine",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/394/394596_1854719-hq.mp3"
+    },
+    {
+      "id": "cappuccino_process",
+      "role": "long",
+      "trim_start": 93.1,
+      "source": "https://cdn.freesound.org/previews/624/624512_9083-hq.mp3"
+    },
+    {
+      "id": "tennis_match",
+      "role": "long",
+      "trim_start": 266.7,
+      "source": "https://cdn.freesound.org/previews/114/114052_190760-hq.mp3"
+    },
+    {
+      "id": "chainsaw_cycle",
+      "role": "long",
+      "trim_start": 79.8,
+      "source": "https://cdn.freesound.org/previews/512/512791_5804919-hq.mp3"
+    },
+    {
+      "id": "near_foghorn",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/140/140898_1810340-hq.mp3"
+    },
+    {
+      "id": "barcelona_gate_pa",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/688/688778_14220990-hq.mp3"
+    },
+    {
+      "id": "delhi_subway_cycle",
+      "role": "long",
+      "trim_start": 363.5,
+      "source": "https://cdn.freesound.org/previews/637/637860_612689-hq.mp3"
+    },
+    {
+      "id": "hockey_goal",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/542/542621_4175983-hq.mp3"
+    },
+    {
+      "id": "ambulance_siren",
+      "role": "long",
+      "trim_start": 149.5,
+      "source": "https://cdn.freesound.org/previews/546/546946_2267785-hq.mp3"
+    },
+    {
+      "id": "woodshop_process",
+      "role": "long",
+      "trim_start": 125.4,
+      "source": "https://cdn.freesound.org/previews/251/251645_2470637-hq.mp3"
+    },
+    {
+      "id": "tractor_turning_hay",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/673/673805_14577615-hq.mp3"
+    },
+    {
+      "id": "hail_thunder",
+      "role": "long",
+      "trim_start": 51.2,
+      "source": "https://cdn.freesound.org/previews/342/342239_3631953-hq.mp3"
+    },
+    {
+      "id": "marielle_protest",
+      "role": "long",
+      "trim_start": 121.3,
+      "source": "https://cdn.freesound.org/previews/421/421973_1661766-hq.mp3"
+    },
+    {
+      "id": "hair_salon_tools",
+      "role": "long",
+      "trim_start": 49.6,
+      "source": "https://cdn.freesound.org/previews/706/706146_1661766-hq.mp3"
+    }
+  ],
+  "harmony": {
+    "register": {
+      "minimum_hz": 55.0,
+      "maximum_hz": 440.0
+    },
+    "allowed_inversions": [
+      0,
+      1,
+      2
+    ],
+    "tunings": [
+      {
+        "name": "primary",
+        "kind": "equal_division",
+        "base_frequency_hz": 110.0,
+        "period_ratio": 2.0,
+        "divisions": 19,
+        "detune_limit_fraction": 0.28
+      }
+    ],
+    "palettes": [
+      {
+        "name": "main",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          6,
+          8,
+          11,
+          14,
+          17
+        ],
+        "chords": [
+          {
+            "name": "main_anchor",
+            "degrees": [
+              0,
+              6,
+              11
+            ],
+            "weight": 5
+          },
+          {
+            "name": "main_response",
+            "degrees": [
+              0,
+              7,
+              11
+            ],
+            "weight": 3
+          },
+          {
+            "name": "main_open",
+            "degrees": [
+              0,
+              8,
+              13
+            ],
+            "weight": 2
+          },
+          {
+            "name": "main_cadence",
+            "degrees": [
+              0,
+              6,
+              12
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "neighbor",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          6,
+          8,
+          11,
+          14,
+          17
+        ],
+        "chords": [
+          {
+            "name": "neighbor_one",
+            "degrees": [
+              0,
+              5,
+              11
+            ],
+            "weight": 5
+          },
+          {
+            "name": "neighbor_two",
+            "degrees": [
+              0,
+              8,
+              12
+            ],
+            "weight": 3
+          },
+          {
+            "name": "neighbor_three",
+            "degrees": [
+              0,
+              6,
+              13
+            ],
+            "weight": 2
+          },
+          {
+            "name": "neighbor_return",
+            "degrees": [
+              0,
+              4,
+              11
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "contrast",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          6,
+          8,
+          11,
+          14,
+          17
+        ],
+        "chords": [
+          {
+            "name": "contrast_one",
+            "degrees": [
+              0,
+              2,
+              10
+            ],
+            "weight": 5
+          },
+          {
+            "name": "contrast_two",
+            "degrees": [
+              0,
+              9,
+              15
+            ],
+            "weight": 3
+          },
+          {
+            "name": "contrast_three",
+            "degrees": [
+              0,
+              3,
+              14
+            ],
+            "weight": 2
+          },
+          {
+            "name": "contrast_peak",
+            "degrees": [
+              0,
+              8,
+              18
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "transition",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          3,
+          6,
+          8,
+          11,
+          14,
+          17
+        ],
+        "chords": [
+          {
+            "name": "transition_one",
+            "degrees": [
+              0,
+              6,
+              10
+            ],
+            "weight": 5
+          },
+          {
+            "name": "transition_two",
+            "degrees": [
+              0,
+              7,
+              12
+            ],
+            "weight": 3
+          },
+          {
+            "name": "transition_three",
+            "degrees": [
+              0,
+              5,
+              13
+            ],
+            "weight": 2
+          },
+          {
+            "name": "transition_home",
+            "degrees": [
+              0,
+              1,
+              11
+            ],
+            "weight": 3
+          }
+        ]
+      }
+    ],
+    "scenes": [
+      {
+        "name": "a",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 72
+          },
+          {
+            "palette": "neighbor",
+            "weight": 18
+          },
+          {
+            "palette": "contrast",
+            "weight": 4
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_anchor",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "a_prime",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 58
+          },
+          {
+            "palette": "neighbor",
+            "weight": 28
+          },
+          {
+            "palette": "contrast",
+            "weight": 8
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_open",
+          "main_response",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "b",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 35
+          },
+          {
+            "palette": "neighbor",
+            "weight": 47
+          },
+          {
+            "palette": "contrast",
+            "weight": 10
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "neighbor_one",
+          "neighbor_two",
+          "neighbor_three",
+          "neighbor_return"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "c",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 20
+          },
+          {
+            "palette": "neighbor",
+            "weight": 22
+          },
+          {
+            "palette": "contrast",
+            "weight": 48
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_one",
+          "contrast_two",
+          "contrast_three",
+          "contrast_peak"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "d",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 10
+          },
+          {
+            "palette": "neighbor",
+            "weight": 15
+          },
+          {
+            "palette": "contrast",
+            "weight": 65
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_peak",
+          "contrast_two",
+          "transition_one",
+          "contrast_three"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "coda",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 82
+          },
+          {
+            "palette": "neighbor",
+            "weight": 8
+          },
+          {
+            "palette": "contrast",
+            "weight": 2
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_cadence",
+          "transition_home"
+        ],
+        "motif_every_pairs": 8
+      }
+    ],
+    "progression": [
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "b", "pair_count": 36 },
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "c", "pair_count": 32 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "d", "pair_count": 48 },
+      { "scene": "b", "pair_count": 48 },
+      { "scene": "a", "pair_count": 48 },
+      { "scene": "c", "pair_count": 32 },
+      { "scene": "a_prime", "pair_count": 60 },
+      { "scene": "coda", "pair_count": 56 }
+    ]
+  }
+}

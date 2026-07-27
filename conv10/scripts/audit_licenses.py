@@ -73,7 +73,7 @@ def classify_license(page: str, source_page: str) -> tuple[str, str, bool, bool,
     if "/publicdomain/zero/" in slug or "/publicdomain/mark/" in slug:
         return license_name, license_url, True, False, "accepted: public-domain tool"
     if re.search(r"/licenses/by/[0-9]", slug):
-        return license_name, license_url, True, True, "accepted: commercial use with attribution"
+        return license_name, license_url, True, True, "reject: attribution required"
     if "/licenses/by-nc" in slug:
         return license_name, license_url, False, True, "reject: noncommercial restriction"
     if "/licenses/by-nd" in slug:
@@ -143,7 +143,11 @@ def audit(manifest: Path, output: Path) -> None:
         writer.writeheader()
         writer.writerows(audited)
     temporary.replace(output)
-    rejected = [row["id"] for row in audited if row["commercial_use"] != "yes"]
+    rejected = [
+        row["id"]
+        for row in audited
+        if row["commercial_use"] != "yes" or row["attribution_required"] != "no"
+    ]
     print(f"wrote {output}: {len(audited) - len(rejected)} accepted, {len(rejected)} rejected")
     if rejected:
         print("replace:", ", ".join(rejected))

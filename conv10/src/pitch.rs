@@ -4,9 +4,6 @@ use crate::audio::SAMPLE_RATE;
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-const CHORD_COUNT: usize = 13;
-const BASE_FREQUENCY_HZ: f32 = 110.0;
-const CHORD_INTERVALS: [usize; 3] = [0, 4, 8];
 const NOTE_PATTERN: [usize; 8] = [0, 1, 2, 1, 0, 2, 0, 1];
 pub const MINIMUM_NOTE_DB_BELOW_LOCAL: f32 = -1.5;
 pub const MAXIMUM_NOTE_DB_BELOW_LOCAL: f32 = 4.25;
@@ -14,7 +11,7 @@ const MINIMUM_REFERENCE_NOTE_SECONDS: f32 = 0.4;
 pub const MINIMUM_LONG_NOTE_SECONDS: f32 = 3.0;
 pub const MAXIMUM_LONG_NOTE_SECONDS: f32 = 7.0;
 pub const TARGET_CONVOLVED_TONE_DB_RELATIVE: f32 = -1.5;
-pub const ALGORITHM_VERSION: &str = "sparse-hashed-13edo-gradual-drones-v15";
+pub const ALGORITHM_VERSION: &str = "config-harmony-gradual-drones-v17";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitchApproach {
@@ -37,9 +34,9 @@ impl PitchApproach {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Chord {
-    pub index: usize,
-    pub steps: [usize; 3],
+    pub steps: [i32; 3],
     pub frequencies_hz: [f32; 3],
+    pub detune_limit_cents: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -166,28 +163,8 @@ pub fn fingerprint_bytes(bytes: &[u8]) -> u64 {
     hash
 }
 
-pub fn chord_index(short_fingerprint: u64, long_fingerprint: u64) -> usize {
-    let mut hash = FNV_OFFSET_BASIS;
-    // Keep the legacy domain tag so each prepared pair retains its comparable root index.
-    hash_bytes(&mut hash, b"conv8-bohlen-pierce-pair-v1\0");
-    hash_bytes(&mut hash, &short_fingerprint.to_le_bytes());
-    hash_bytes(&mut hash, &long_fingerprint.to_le_bytes());
-    hash as usize % CHORD_COUNT
-}
-
 pub fn fingerprint_hex(fingerprint: u64) -> String {
     format!("{fingerprint:016x}")
-}
-
-pub fn chord(index: usize) -> Chord {
-    let index = index % CHORD_COUNT;
-    let steps = CHORD_INTERVALS.map(|interval| (index + interval) % CHORD_COUNT);
-    let frequencies_hz = steps.map(step_frequency_hz);
-    Chord {
-        index,
-        steps,
-        frequencies_hz,
-    }
 }
 
 pub fn gesture_profile(short_name: &str, long_name: &str) -> GestureProfile {
@@ -318,6 +295,17 @@ pub fn instrument_profile(profile: GestureProfile) -> InstrumentProfile {
     result
 }
 
+pub fn instrument_profile_with_detune_limit(
+    profile: GestureProfile,
+    detune_limit_cents: f32,
+) -> InstrumentProfile {
+    let mut result = instrument_profile(profile);
+    let limit = detune_limit_cents.max(0.0);
+    result.detune_spread_cents = result.detune_spread_cents.min(limit);
+    result.drift_cents = result.drift_cents.min(limit * 0.35);
+    result
+}
+
 pub fn preprocess(
     input: &[f32],
     chord: Chord,
@@ -401,7 +389,8 @@ fn additive_synth_voice(
 ) -> PreprocessedClip {
     let mut tone_stem = vec![0.0; input.len()];
     let scheduled_note_count = scheduled_note_count(profile, approach);
-    let instrument_profile = instrument_profile(profile);
+    let instrument_profile =
+        instrument_profile_with_detune_limit(profile, chord.detune_limit_cents);
     for scheduled in schedule_notes(input.len(), profile, approach) {
         let gesture = profile.notes[scheduled.pitch_index];
         let end = scheduled.onset + scheduled.frames;
@@ -948,10 +937,6 @@ fn smootherstep(edge_0: f32, edge_1: f32, value: f32) -> f32 {
     position * position * position * (position * (position * 6.0 - 15.0) + 10.0)
 }
 
-fn step_frequency_hz(step: usize) -> f32 {
-    BASE_FREQUENCY_HZ * 2.0_f32.powf(step as f32 / CHORD_COUNT as f32)
-}
-
 fn correlation(left: &[f32], right: &[f32]) -> f32 {
     let (dot, left_energy, right_energy) = left.iter().zip(right).fold(
         (0.0_f64, 0.0_f64, 0.0_f64),
@@ -1027,34 +1012,19 @@ mod tests {
     }
 
     #[test]
-    fn thirteen_edo_catalog_has_thirteen_detuned_chords() {
-        let chords = (0..CHORD_COUNT).map(chord).collect::<Vec<_>>();
-        assert_eq!(chords.len(), 13);
-        assert_eq!(chords[0].steps, [0, 4, 8]);
-        assert_eq!(chords[12].steps, [12, 3, 7]);
-        assert!(chords.iter().all(|chord| {
-            chord
-                .frequencies_hz
-                .iter()
-                .all(|&frequency| (110.0..220.0).contains(&frequency))
-        }));
-    }
-
-    #[test]
-    fn pair_hash_is_stable_and_ordered() {
-        let short = fingerprint_bytes(b"short input file bytes");
-        let long = fingerprint_bytes(b"long input file bytes");
-        let selected = chord_index(short, long);
-        assert!(selected < CHORD_COUNT);
-        assert_eq!(selected, chord_index(short, long));
-        assert_ne!(selected, chord_index(long, short));
-    }
-
-    #[test]
     fn additive_preprocessor_is_sparse_and_preserves_length() {
         let input = test_signal();
         let profile = gesture_profile("short-name", "long-name");
-        let output = preprocess(&input, chord(7), profile, PitchApproach::LongAdditiveSynth);
+        let output = preprocess(
+            &input,
+            Chord {
+                steps: [0, 6, 11],
+                frequencies_hz: [110.0, 136.9, 164.4],
+                detune_limit_cents: 18.0,
+            },
+            profile,
+            PitchApproach::LongAdditiveSynth,
+        );
         assert_eq!(output.tone_stem.len(), input.len());
         assert!(output.tone_stem.iter().all(|sample| sample.is_finite()));
         assert!(output.tone_stem.iter().any(|sample| sample.abs() > 1.0e-5));

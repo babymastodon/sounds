@@ -16,17 +16,22 @@ use crate::convolution::{CUT_FADE_MILLISECONDS, TRIM_FRACTION_OF_SHORTER};
 use crate::convolution::{
     PairJob, ToneCalibration, convolve_stereo_with_tone, group_jobs, make_jobs, prepare_group,
 };
+use crate::harmony::{
+    HarmonyAssignment, HarmonySchedule, LoadedSongConfig, build_schedule, configured_chord_count,
+    load_song_config, tuning_summary, validate_manifest_matches_config,
+};
 use crate::manifest::{SourceEntry, is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{
     ALGORITHM_VERSION, GestureProfile, PitchApproach, PreprocessedClip,
-    TARGET_CONVOLVED_TONE_DB_RELATIVE, chord, chord_index, fingerprint_bytes, fingerprint_hex,
-    gesture_profile, maximum_note_db_below_local, maximum_note_seconds,
+    TARGET_CONVOLVED_TONE_DB_RELATIVE, fingerprint_bytes, fingerprint_hex, gesture_profile,
+    instrument_profile_with_detune_limit, maximum_note_db_below_local, maximum_note_seconds,
     minimum_note_db_below_local, minimum_note_seconds, note_db_below_local, note_duration_seconds,
     preprocess, scheduled_note_count,
 };
 
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
+    pub song_config: PathBuf,
     pub manifest: PathBuf,
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
@@ -37,6 +42,7 @@ pub struct RenderOptions {
 
 #[derive(Clone, Debug)]
 pub struct VerifyOptions {
+    pub song_config: PathBuf,
     pub manifest: PathBuf,
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
@@ -47,12 +53,19 @@ pub struct VerifyOptions {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PairMetrics {
     pair: String,
+    sequence_index: usize,
     approach: String,
     left: String,
     right: String,
     short_fingerprint: String,
     long_fingerprint: String,
-    chord_index: usize,
+    scene: String,
+    palette: String,
+    tuning: String,
+    chord_name: String,
+    root_degree: i32,
+    inversion: usize,
+    harmony_selection_hash: String,
     chord_steps: String,
     chord_frequencies_hz: String,
     pitch_algorithm_version: String,
@@ -97,9 +110,10 @@ struct VerificationReport {
     status: &'static str,
     pitch_approach: &'static str,
     pitch_description: &'static str,
-    pitch_scale: &'static str,
+    pitch_scale: String,
     chord_count: usize,
-    chord_hash: &'static str,
+    chord_hash: String,
+    song_config_fingerprint: String,
     pitch_algorithm_version: &'static str,
     processed_role: &'static str,
     gesture_hash: &'static str,
@@ -151,7 +165,9 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     if options.jobs == 0 {
         bail!("--jobs must be at least 1");
     }
+    let song_config = load_song_config(&options.song_config)?;
     let sources = load_manifest(&options.manifest)?;
+    validate_manifest_matches_config(&song_config.config, &sources)?;
     let thread_approach = options.approach;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.jobs)
@@ -161,10 +177,16 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     fs::create_dir_all(options.output_dir.join("wav"))?;
     let (short_indices, long_indices) = duration_indices(&sources);
     let all_jobs = make_jobs(&clips, &short_indices, &long_indices);
+    let harmony = build_schedule(&song_config, &clips, &all_jobs)?;
     let expected_pairs = all_jobs.len();
     let version_path = options.output_dir.join("pitch_algorithm.txt");
     let recipe_path = options.output_dir.join("render_recipe.txt");
-    let expected_recipe = render_recipe(&sources, &fingerprints, options.approach);
+    let expected_recipe = render_recipe(
+        &sources,
+        &fingerprints,
+        options.approach,
+        &song_config.fingerprint,
+    );
     let cache_matches = !options.force
         && fs::read_to_string(&version_path)
             .is_ok_and(|version| version.trim() == ALGORITHM_VERSION)
@@ -205,14 +227,12 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                 .jobs
                 .par_iter()
                 .map(|job| {
-                    let selected_chord_index =
-                        chord_index(fingerprints[job.left], fingerprints[job.right]);
-                    let selected_chord = chord(selected_chord_index);
+                    let assignment = harmony.assignment(job)?;
                     let profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
                     let preprocessing_input = &clips[job.right].samples;
                     let preprocessing = preprocess(
                         preprocessing_input,
-                        selected_chord,
+                        assignment.chord,
                         profile,
                         options.approach,
                     );
@@ -236,6 +256,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
                         &clips,
                         &fingerprints,
                         job,
+                        assignment,
                         PitchRenderMetadata {
                             approach: options.approach,
                             preprocessing: &preprocessing,
@@ -249,7 +270,7 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
         all_metrics.extend(group_metrics);
     }
 
-    all_metrics.sort_by(|a, b| a.pair.cmp(&b.pair));
+    all_metrics.sort_by_key(|metric| metric.sequence_index);
     write_metrics(&options.output_dir, &all_metrics)?;
     write_matrix(&options.output_dir, &clips, &short_indices, &long_indices)?;
     fs::write(&recipe_path, expected_recipe)?;
@@ -258,9 +279,14 @@ pub fn render_matrix(options: RenderOptions) -> Result<()> {
     Ok(())
 }
 
-fn render_recipe(sources: &[SourceEntry], fingerprints: &[u64], approach: PitchApproach) -> String {
+fn render_recipe(
+    sources: &[SourceEntry],
+    fingerprints: &[u64],
+    approach: PitchApproach,
+    song_config_fingerprint: &str,
+) -> String {
     let mut recipe = format!(
-        "algorithm={ALGORITHM_VERSION}\napproach={}\ntrim_fraction={TRIM_FRACTION_OF_SHORTER}\ncut_fade_ms={CUT_FADE_MILLISECONDS}\ntone_target_db={TARGET_CONVOLVED_TONE_DB_RELATIVE}\n",
+        "algorithm={ALGORITHM_VERSION}\napproach={}\nsong_config={song_config_fingerprint}\ntrim_fraction={TRIM_FRACTION_OF_SHORTER}\ncut_fade_ms={CUT_FADE_MILLISECONDS}\ntone_target_db={TARGET_CONVOLVED_TONE_DB_RELATIVE}\n",
         approach.slug()
     );
     for (source, fingerprint) in sources.iter().zip(fingerprints) {
@@ -345,20 +371,28 @@ pub fn verify_matrix(options: VerifyOptions) -> Result<()> {
     if options.jobs == 0 {
         bail!("--jobs must be at least 1");
     }
+    let song_config = load_song_config(&options.song_config)?;
     let sources = load_manifest(&options.manifest)?;
+    validate_manifest_matches_config(&song_config.config, &sources)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.jobs)
         .thread_name(|index| format!("verify-{index}"))
         .build()?;
     let (clips, fingerprints) = pool.install(|| load_clips(&sources, &options.input_dir))?;
-    verify_loaded(
-        &sources,
-        &clips,
-        &options.output_dir,
-        &pool,
-        options.approach,
-        &fingerprints,
-    )
+    let (short_indices, long_indices) = duration_indices(&sources);
+    let jobs = make_jobs(&clips, &short_indices, &long_indices);
+    let harmony = build_schedule(&song_config, &clips, &jobs)?;
+    verify_loaded(VerificationInputs {
+        sources: &sources,
+        clips: &clips,
+        output_dir: &options.output_dir,
+        pool: &pool,
+        approach: options.approach,
+        fingerprints: &fingerprints,
+        song_config: &song_config,
+        harmony: &harmony,
+        jobs: &jobs,
+    })
 }
 
 fn load_clips(sources: &[SourceEntry], input_dir: &Path) -> Result<(Vec<AudioClip>, Vec<u64>)> {
@@ -378,16 +412,31 @@ fn load_clips(sources: &[SourceEntry], input_dir: &Path) -> Result<(Vec<AudioCli
     Ok((clips, fingerprints))
 }
 
-fn verify_loaded(
-    sources: &[SourceEntry],
-    clips: &[AudioClip],
-    output_dir: &Path,
-    pool: &rayon::ThreadPool,
+struct VerificationInputs<'a> {
+    sources: &'a [SourceEntry],
+    clips: &'a [AudioClip],
+    output_dir: &'a Path,
+    pool: &'a rayon::ThreadPool,
     approach: PitchApproach,
-    fingerprints: &[u64],
-) -> Result<()> {
+    fingerprints: &'a [u64],
+    song_config: &'a LoadedSongConfig,
+    harmony: &'a HarmonySchedule,
+    jobs: &'a [PairJob],
+}
+
+fn verify_loaded(inputs: VerificationInputs<'_>) -> Result<()> {
+    let VerificationInputs {
+        sources,
+        clips,
+        output_dir,
+        pool,
+        approach,
+        fingerprints,
+        song_config,
+        harmony,
+        jobs,
+    } = inputs;
     let (short_indices, long_indices) = duration_indices(sources);
-    let jobs = make_jobs(clips, &short_indices, &long_indices);
     let version_path = output_dir.join("pitch_algorithm.txt");
     let version = fs::read_to_string(&version_path)
         .with_context(|| format!("read pitch algorithm marker {}", version_path.display()))?;
@@ -416,7 +465,8 @@ fn verify_loaded(
     if actual_wavs != jobs.len() {
         bail!("found {actual_wavs} WAVs, expected exactly {}", jobs.len());
     }
-    let pitch_audit = verify_metric_assignments(output_dir, clips, fingerprints, &jobs, approach)?;
+    let pitch_audit =
+        verify_metric_assignments(output_dir, clips, fingerprints, jobs, approach, harmony)?;
 
     let stereo_difference = metrics
         .iter()
@@ -441,9 +491,11 @@ fn verify_loaded(
         status: "pass",
         pitch_approach: approach.slug(),
         pitch_description: approach.description(),
-        pitch_scale: "13-EDO; 2:1 octave; chord steps [root, root+4, root+8]",
-        chord_count: 13,
-        chord_hash: "FNV-1a-64 over prepared WAV bytes, then domain-separated ordered pair modulo 13",
+        pitch_scale: tuning_summary(&song_config.config.harmony),
+        chord_count: configured_chord_count(&song_config.config.harmony),
+        chord_hash: "scene-bounded FNV-1a-64 over song, scene, and ordered sample filenames"
+            .to_owned(),
+        song_config_fingerprint: song_config.fingerprint.clone(),
         pitch_algorithm_version: ALGORITHM_VERSION,
         processed_role: approach.processed_role(),
         gesture_hash: "domain-separated FNV-1a-64 over ordered short and long input names",
@@ -551,6 +603,7 @@ fn pair_metrics(
     clips: &[AudioClip],
     fingerprints: &[u64],
     job: &PairJob,
+    assignment: &HarmonyAssignment,
     pitch: PitchRenderMetadata<'_>,
     audio: StereoMetrics,
 ) -> PairMetrics {
@@ -560,17 +613,28 @@ fn pair_metrics(
         tone_calibration,
     } = pitch;
     let path = pair_path(output_dir, clips, job);
-    let chord = chord(chord_index(fingerprints[job.left], fingerprints[job.right]));
     PairMetrics {
         pair: format!("{:02}-{:02}", job.left + 1, job.right + 1),
+        sequence_index: assignment.sequence_index,
         approach: approach.slug().to_owned(),
         left: clips[job.left].id.clone(),
         right: clips[job.right].id.clone(),
         short_fingerprint: fingerprint_hex(fingerprints[job.left]),
         long_fingerprint: fingerprint_hex(fingerprints[job.right]),
-        chord_index: chord.index,
-        chord_steps: chord.steps.map(|step| step.to_string()).join(";"),
-        chord_frequencies_hz: chord
+        scene: assignment.scene.clone(),
+        palette: assignment.palette.clone(),
+        tuning: assignment.tuning.clone(),
+        chord_name: assignment.chord_name.clone(),
+        root_degree: assignment.root_degree,
+        inversion: assignment.inversion,
+        harmony_selection_hash: assignment.selection_hash.clone(),
+        chord_steps: assignment
+            .chord
+            .steps
+            .map(|step| step.to_string())
+            .join(";"),
+        chord_frequencies_hz: assignment
+            .chord
             .frequencies_hz
             .map(|frequency| format!("{frequency:.6}"))
             .join(";"),
@@ -657,6 +721,7 @@ fn verify_metric_assignments(
     fingerprints: &[u64],
     jobs: &[PairJob],
     approach: PitchApproach,
+    harmony: &HarmonySchedule,
 ) -> Result<PitchMetadataAudit> {
     let path = output_dir.join("metrics.csv");
     let mut reader = csv::Reader::from_path(&path)?;
@@ -681,15 +746,37 @@ fn verify_metric_assignments(
         let row = rows
             .get(&pair)
             .with_context(|| format!("missing pitch metadata for pair {pair}"))?;
-        let expected_chord = chord_index(fingerprints[job.left], fingerprints[job.right]);
+        let assignment = harmony.assignment(job)?;
         let expected_profile = gesture_profile(&clips[job.left].id, &clips[job.right].id);
-        let expected_instrument = crate::pitch::instrument_profile(expected_profile);
+        let expected_instrument = instrument_profile_with_detune_limit(
+            expected_profile,
+            assignment.chord.detune_limit_cents,
+        );
         if row.approach != approach.slug()
+            || row.sequence_index != assignment.sequence_index
             || row.left != clips[job.left].id
             || row.right != clips[job.right].id
             || row.short_fingerprint != fingerprint_hex(fingerprints[job.left])
             || row.long_fingerprint != fingerprint_hex(fingerprints[job.right])
-            || row.chord_index != expected_chord
+            || row.scene != assignment.scene
+            || row.palette != assignment.palette
+            || row.tuning != assignment.tuning
+            || row.chord_name != assignment.chord_name
+            || row.root_degree != assignment.root_degree
+            || row.inversion != assignment.inversion
+            || row.harmony_selection_hash != assignment.selection_hash
+            || row.chord_steps
+                != assignment
+                    .chord
+                    .steps
+                    .map(|step| step.to_string())
+                    .join(";")
+            || row.chord_frequencies_hz
+                != assignment
+                    .chord
+                    .frequencies_hz
+                    .map(|frequency| format!("{frequency:.6}"))
+                    .join(";")
             || row.pitch_algorithm_version != ALGORITHM_VERSION
             || row.processed_role != approach.processed_role()
             || row.gesture_fingerprint != format!("{:016x}", expected_profile.fingerprint)
@@ -869,14 +956,21 @@ mod tests {
     fn pair_metrics_is_a_flat_csv_record() {
         let metrics = PairMetrics {
             pair: "01-02".into(),
+            sequence_index: 0,
             approach: "long_additive_synth".into(),
             left: "left".into(),
             right: "right".into(),
             short_fingerprint: "0000000000000001".into(),
             long_fingerprint: "0000000000000002".into(),
-            chord_index: 7,
-            chord_steps: "7;11;2".into(),
-            chord_frequencies_hz: "159.766514;197.747214;122.378462".into(),
+            scene: "a".into(),
+            palette: "main".into(),
+            tuning: "primary".into(),
+            chord_name: "main_anchor".into(),
+            root_degree: 7,
+            inversion: 1,
+            harmony_selection_hash: "0000000000000004".into(),
+            chord_steps: "7;11;15".into(),
+            chord_frequencies_hz: "159.766514;197.747214;245.000000".into(),
             pitch_algorithm_version: ALGORITHM_VERSION.into(),
             processed_role: "long".into(),
             gesture_fingerprint: "0000000000000003".into(),
@@ -918,7 +1012,7 @@ mod tests {
         let encoded = String::from_utf8(writer.into_inner().unwrap()).unwrap();
 
         assert!(encoded.starts_with(
-            "pair,approach,left,right,short_fingerprint,long_fingerprint,chord_index,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,instrument_parameters,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,unscaled_convolved_tone_rms_db_relative,tone_gain_db,target_convolved_tone_rms_db_relative,scaled_convolved_tone_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
+            "pair,sequence_index,approach,left,right,short_fingerprint,long_fingerprint,scene,palette,tuning,chord_name,root_degree,inversion,harmony_selection_hash,chord_steps,chord_frequencies_hz,pitch_algorithm_version,processed_role,gesture_fingerprint,note_levels_db_below_local,note_durations_seconds,note_envelopes,instrument,instrument_parameters,scheduled_note_count,preprocess_dry_correlation,preprocess_difference_rms_db_relative,unscaled_convolved_tone_rms_db_relative,tone_gain_db,target_convolved_tone_rms_db_relative,scaled_convolved_tone_rms_db_relative,path,channels,trim_frames,trim_seconds,frames,duration_seconds"
         ));
         assert_eq!(encoded.lines().count(), 2);
     }

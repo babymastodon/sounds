@@ -26,7 +26,15 @@ pub struct ConcatOptions {
     pub aac_bitrate_kbps: u32,
     pub opus_bitrate_kbps: u32,
     pub metadata: AudioMetadata,
+    pub stage: ConcatStage,
     pub force: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConcatStage {
+    All,
+    AssembleOnly,
+    FinalizeOnly,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -41,11 +49,13 @@ pub struct AudioMetadata {
     pub track: String,
     pub disc: String,
     pub comment: String,
+    pub description: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct MetricsRow {
     pair: String,
+    sequence_index: usize,
     left: String,
     right: String,
     path: String,
@@ -138,7 +148,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         .map(|source| source.id.as_str())
         .collect::<HashSet<_>>();
     let mut rows = read_metrics(&options.metrics)?;
-    rows.sort_by(|left, right| left.pair.cmp(&right.pair));
+    rows.sort_by_key(|row| row.sequence_index);
     validate_bipartite_rows(&rows, &short_ids, &long_ids)?;
     let unique_paths = rows
         .iter()
@@ -211,11 +221,34 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ConcatRecipe>(&bytes).ok())
         .is_some_and(|recipe| recipe == expected_recipe);
+    if options.stage == ConcatStage::AssembleOnly {
+        if options.force || !rf64_path.is_file() {
+            remove_if_present(&rf64_path)?;
+            assemble_sequence(
+                input_root,
+                &rows,
+                &transitions,
+                requested_frames,
+                output_frames,
+                &rf64_path,
+            )?;
+        } else {
+            eprintln!("reusing assembled RF64 master {}", rf64_path.display());
+        }
+        eprintln!(
+            "assembly passed: {} inputs, {:.2} hours, {}",
+            rows.len(),
+            output_seconds / 3600.0,
+            rf64_path.display()
+        );
+        return Ok(());
+    }
+
     let rebuild_all = options.force || !recipe_matches;
     let needs_encoding =
         rebuild_all || !flac_path.is_file() || !aac_path.is_file() || !opus_path.is_file();
 
-    if needs_encoding {
+    if options.stage == ConcatStage::All && needs_encoding {
         remove_if_present(&rf64_path)?;
         assemble_sequence(
             input_root,
@@ -240,10 +273,17 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
             rebuild_all,
         )?;
         remove_if_present(&rf64_path)?;
-    } else {
+    } else if options.stage == ConcatStage::All {
         eprintln!("reusing recipe-matched FLAC, AAC/M4A, and Opus encodings");
     }
 
+    if options.stage == ConcatStage::FinalizeOnly {
+        for path in [&flac_path, &aac_path, &opus_path] {
+            if !path.is_file() {
+                bail!("encoded output not found: {}", path.display());
+            }
+        }
+    }
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
     validate_attached_cover(&aac_path)?;
@@ -277,6 +317,9 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         serde_json::to_vec_pretty(&report)?,
     )?;
     fs::write(&recipe_path, serde_json::to_vec_pretty(&expected_recipe)?)?;
+    if options.stage == ConcatStage::FinalizeOnly {
+        remove_if_present(&rf64_path)?;
+    }
     eprintln!(
         "concatenation passed: {} inputs, {} full {:.3}s fades, {} shortened fades, {:.2} hours",
         report.input_files,
@@ -318,6 +361,7 @@ fn validate_metadata(metadata: &AudioMetadata) -> Result<()> {
         ("track", metadata.track.as_str()),
         ("disc", metadata.disc.as_str()),
         ("comment", metadata.comment.as_str()),
+        ("description", metadata.description.as_str()),
     ] {
         if value.trim().is_empty() || value.chars().any(char::is_control) {
             bail!("audio metadata field {field} must be non-empty and single-line");
@@ -363,6 +407,15 @@ fn validate_bipartite_rows(
         .collect::<HashSet<_>>();
     if pairs.len() != expected_pairs {
         bail!("metrics do not contain every short-to-long pair exactly once");
+    }
+    let sequence_indices = rows
+        .iter()
+        .map(|row| row.sequence_index)
+        .collect::<HashSet<_>>();
+    if sequence_indices.len() != expected_pairs
+        || !(0..expected_pairs).all(|index| sequence_indices.contains(&index))
+    {
+        bail!("metrics sequence indices must contain every value from 0 exactly once");
     }
     Ok(())
 }
@@ -524,7 +577,7 @@ fn encode_outputs(
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(rf64_path)
             .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"]);
-        append_metadata(&mut command, metadata);
+        append_metadata(&mut command, metadata, false);
         let child = command
             .arg(&temporary_flac)
             .stdin(Stdio::null())
@@ -557,7 +610,7 @@ fn encode_outputs(
                 "-metadata:s:v:0",
                 "comment=Cover (front)",
             ]);
-        append_metadata(&mut command, metadata);
+        append_metadata(&mut command, metadata, true);
         let child = command
             .arg(&temporary_aac)
             .stdin(Stdio::null())
@@ -661,7 +714,7 @@ fn spawn_opus(
             "-compression_level",
             "10",
         ]);
-    append_metadata(&mut command, metadata);
+    append_metadata(&mut command, metadata, false);
     command
         .arg(output)
         .stdin(Stdio::null())
@@ -671,8 +724,8 @@ fn spawn_opus(
         .with_context(|| format!("start {bitrate_kbps}k Opus encoder {encoder}"))
 }
 
-fn append_metadata(command: &mut Command, metadata: &AudioMetadata) {
-    for (key, value) in [
+fn append_metadata(command: &mut Command, metadata: &AudioMetadata, include_description: bool) {
+    let fields = [
         ("title", metadata.title.as_str()),
         ("album", metadata.album.as_str()),
         ("artist", metadata.artist.as_str()),
@@ -683,17 +736,19 @@ fn append_metadata(command: &mut Command, metadata: &AudioMetadata) {
         ("track", metadata.track.as_str()),
         ("disc", metadata.disc.as_str()),
         ("comment", metadata.comment.as_str()),
-    ] {
+    ];
+    for (key, value) in fields {
         command.arg("-metadata").arg(format!("{key}={value}"));
+    }
+    if include_description {
+        command
+            .arg("-metadata")
+            .arg(format!("description={}", metadata.description));
     }
 }
 
 fn preferred_opus_encoder() -> Result<String> {
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-h", "encoder=libopus"])
-        .output()
-        .context("inspect ffmpeg Opus encoders")?;
-    Ok(if output.status.success() {
+    Ok(if encoder_is_available("libopus")? {
         "libopus".to_owned()
     } else {
         "opus".to_owned()
@@ -701,15 +756,25 @@ fn preferred_opus_encoder() -> Result<String> {
 }
 
 fn preferred_aac_encoder() -> Result<String> {
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-h", "encoder=libfdk_aac"])
-        .output()
-        .context("inspect ffmpeg AAC encoders")?;
-    Ok(if output.status.success() {
+    Ok(if encoder_is_available("libfdk_aac")? {
         "libfdk_aac".to_owned()
     } else {
         "aac".to_owned()
     })
+}
+
+fn encoder_is_available(name: &str) -> Result<bool> {
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .context("inspect ffmpeg encoders")?;
+    if !output.status.success() {
+        bail!("ffmpeg encoder listing failed with {}", output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .any(|encoder| encoder == name))
 }
 
 fn read_pcm16_stereo(path: &Path, expected_frames: usize) -> Result<StereoAudio> {
@@ -953,9 +1018,16 @@ fn validate_attached_cover(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn row(pair: &str, left: &str, right: &str, frames: usize) -> MetricsRow {
+    fn row(
+        sequence_index: usize,
+        pair: &str,
+        left: &str,
+        right: &str,
+        frames: usize,
+    ) -> MetricsRow {
         MetricsRow {
             pair: pair.into(),
+            sequence_index,
             left: left.into(),
             right: right.into(),
             path: format!("wav/{pair}.wav"),
@@ -966,9 +1038,9 @@ mod tests {
     #[test]
     fn layout_uses_full_fades_after_the_master_is_long_enough() {
         let rows = vec![
-            row("01-02", "short", "long_1", 2),
-            row("01-04", "short", "long_2", 3),
-            row("01-06", "short", "long_3", 20),
+            row(0, "01-02", "short", "long_1", 2),
+            row(1, "01-04", "short", "long_2", 3),
+            row(2, "01-06", "short", "long_3", 20),
         ];
         let (transitions, starts, frames) = sequence_layout(&rows, 5).unwrap();
 
@@ -982,10 +1054,10 @@ mod tests {
         let short_ids = HashSet::from(["short_1", "short_2"]);
         let long_ids = HashSet::from(["long_1", "long_2"]);
         let valid = vec![
-            row("01-02", "short_1", "long_1", 10),
-            row("01-04", "short_1", "long_2", 10),
-            row("03-02", "short_2", "long_1", 10),
-            row("03-04", "short_2", "long_2", 10),
+            row(0, "01-02", "short_1", "long_1", 10),
+            row(1, "01-04", "short_1", "long_2", 10),
+            row(2, "03-02", "short_2", "long_1", 10),
+            row(3, "03-04", "short_2", "long_2", 10),
         ];
         assert!(validate_bipartite_rows(&valid, &short_ids, &long_ids).is_ok());
 
@@ -1034,6 +1106,8 @@ mod tests {
             track: "3/14".into(),
             disc: "1/1".into(),
             comment: "Calm environmental flow.".into(),
+            description:
+                "Themes: calm environmental flow. Tuning: 14-tone ratio scale. Form: A-B-A.".into(),
         };
         assert!(validate_metadata(&valid).is_ok());
 

@@ -1,0 +1,718 @@
+{
+  "schema_version": 1,
+  "name": "tempest",
+  "metadata": {
+    "title": "Tempest",
+    "album": "Convolutions 10",
+    "artist": "babymastodon",
+    "album_artist": "babymastodon",
+    "composer": "babymastodon",
+    "genre": "Experimental",
+    "date": "2026",
+    "track": "10/14",
+    "disc": "1/1",
+    "comment": "Themes: storms, fire, ice, impacts, explosions, and extreme natural force. Tuning: 7-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-B-D-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 36/48/64/36/64/48/64/48/36/64/36/32 pairs.",
+    "description": "Themes: storms, fire, ice, impacts, explosions, and extreme natural force. Tuning: 7-EDO octave scale. Harmony: 16 chord shapes in main, neighbor, contrast, and transition palettes, with filename-seeded roots, voicings, and inversions. Main motif: anchor-response-anchor-cadence. Form: A-B-D-A-C-A-prime-D-B-A-C-A-prime-coda; scene spans 36/48/64/36/64/48/64/48/36/64/36/32 pairs."
+  },
+  "samples": [
+    {
+      "id": "tempest_thunderstorm_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/255/255152_1661348-hq.mp3"
+    },
+    {
+      "id": "tempest_hail_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/431/431787_817038-hq.mp3"
+    },
+    {
+      "id": "tempest_gale_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/518/518091_4838691-hq.mp3"
+    },
+    {
+      "id": "tempest_blizzard_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/331/331527_2417207-hq.mp3"
+    },
+    {
+      "id": "tempest_hurricane_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/616/616804_97550-hq.mp3"
+    },
+    {
+      "id": "tempest_ocean_storm_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/574/574548_97550-hq.mp3"
+    },
+    {
+      "id": "tempest_crashing_waves_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/592/592425_8383609-hq.mp3"
+    },
+    {
+      "id": "tempest_avalanche_s",
+      "role": "short",
+      "trim_start": 0.349,
+      "source": "https://cdn.freesound.org/previews/162/162669_623488-hq.mp3"
+    },
+    {
+      "id": "tempest_rockfall_s",
+      "role": "short",
+      "trim_start": 4.483,
+      "source": "https://cdn.freesound.org/previews/500/500638_339183-hq.mp3"
+    },
+    {
+      "id": "tempest_earthquake_s",
+      "role": "short",
+      "trim_start": 3.453,
+      "source": "https://cdn.freesound.org/previews/524/524307_6714882-hq.mp3"
+    },
+    {
+      "id": "tempest_volcano_s",
+      "role": "short",
+      "trim_start": 3.848,
+      "source": "https://cdn.freesound.org/previews/675/675739_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_burning_brush_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/755/755367_1185437-hq.mp3"
+    },
+    {
+      "id": "tempest_bonfire_s",
+      "role": "short",
+      "trim_start": 1.304,
+      "source": "https://cdn.freesound.org/previews/234/234542_4238641-hq.mp3"
+    },
+    {
+      "id": "tempest_explosions_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/320/320788_1134415-hq.mp3"
+    },
+    {
+      "id": "tempest_fireworks_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/367/367485_2254206-hq.mp3"
+    },
+    {
+      "id": "tempest_cannon_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/415/415293_8184822-hq.mp3"
+    },
+    {
+      "id": "tempest_demolition_blast_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/438/438528_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_glass_breaking_s",
+      "role": "short",
+      "trim_start": 0.732,
+      "source": "https://cdn.freesound.org/previews/115/115922_1282583-hq.mp3"
+    },
+    {
+      "id": "tempest_tree_falling_s",
+      "role": "short",
+      "trim_start": 1.973,
+      "source": "https://cdn.freesound.org/previews/550/550918_6667441-hq.mp3"
+    },
+    {
+      "id": "tempest_ice_cracking_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/452/452229_612689-hq.mp3"
+    },
+    {
+      "id": "tempest_flood_s",
+      "role": "short",
+      "trim_start": 1.371,
+      "source": "https://cdn.freesound.org/previews/530/530168_4574070-hq.mp3"
+    },
+    {
+      "id": "tempest_tornado_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/646/646874_1504845-hq.mp3"
+    },
+    {
+      "id": "tempest_geyser_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/441/441152_7522579-hq.mp3"
+    },
+    {
+      "id": "tempest_storm_siren_s",
+      "role": "short",
+      "trim_start": 5.0,
+      "source": "https://cdn.freesound.org/previews/76/76944_995351-hq.mp3"
+    },
+    {
+      "id": "tempest_thunderstorm_l",
+      "role": "long",
+      "trim_start": 0.654,
+      "source": "https://cdn.freesound.org/previews/276/276926_4084222-hq.mp3"
+    },
+    {
+      "id": "tempest_hail_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/393/393864_1745571-hq.mp3"
+    },
+    {
+      "id": "tempest_gale_l",
+      "role": "long",
+      "trim_start": 9.69,
+      "source": "https://cdn.freesound.org/previews/181/181935_3296721-hq.mp3"
+    },
+    {
+      "id": "tempest_blizzard_l",
+      "role": "long",
+      "trim_start": 5.084,
+      "source": "https://cdn.freesound.org/previews/675/675701_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_hurricane_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/438/438873_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_ocean_storm_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/426/426076_3380363-hq.mp3"
+    },
+    {
+      "id": "tempest_crashing_waves_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/376/376800_6128004-hq.mp3"
+    },
+    {
+      "id": "tempest_avalanche_l",
+      "role": "long",
+      "trim_start": 6.631,
+      "source": "https://cdn.freesound.org/previews/438/438683_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_rockfall_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/610/610088_10475987-hq.mp3"
+    },
+    {
+      "id": "tempest_earthquake_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/353/353262_6098565-hq.mp3"
+    },
+    {
+      "id": "tempest_volcano_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/415/415608_2409224-hq.mp3"
+    },
+    {
+      "id": "tempest_burning_brush_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/535/535096_181196-hq.mp3"
+    },
+    {
+      "id": "tempest_bonfire_l",
+      "role": "long",
+      "trim_start": 1.936,
+      "source": "https://cdn.freesound.org/previews/364/364992_4351264-hq.mp3"
+    },
+    {
+      "id": "tempest_explosions_l",
+      "role": "long",
+      "trim_start": 4.548,
+      "source": "https://cdn.freesound.org/previews/262/262436_989468-hq.mp3"
+    },
+    {
+      "id": "tempest_fireworks_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/505/505264_10791958-hq.mp3"
+    },
+    {
+      "id": "tempest_cannon_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/553/553240_11107968-hq.mp3"
+    },
+    {
+      "id": "tempest_demolition_blast_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/270/270300_1934171-hq.mp3"
+    },
+    {
+      "id": "tempest_glass_breaking_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/482/482033_8415786-hq.mp3"
+    },
+    {
+      "id": "tempest_tree_falling_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/438/438343_2524442-hq.mp3"
+    },
+    {
+      "id": "tempest_ice_cracking_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/452/452242_612689-hq.mp3"
+    },
+    {
+      "id": "tempest_flood_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/721/721098_2061858-hq.mp3"
+    },
+    {
+      "id": "tempest_tornado_l",
+      "role": "long",
+      "trim_start": 5.19,
+      "source": "https://cdn.freesound.org/previews/557/557188_1535323-hq.mp3"
+    },
+    {
+      "id": "tempest_geyser_l",
+      "role": "long",
+      "trim_start": 10.0,
+      "source": "https://cdn.freesound.org/previews/415/415609_2409224-hq.mp3"
+    },
+    {
+      "id": "tempest_storm_siren_l",
+      "role": "long",
+      "trim_start": 8.667,
+      "source": "https://cdn.freesound.org/previews/72/72831_995351-hq.mp3"
+    }
+  ],
+  "harmony": {
+    "register": {
+      "minimum_hz": 55.0,
+      "maximum_hz": 440.0
+    },
+    "allowed_inversions": [
+      0,
+      1,
+      2
+    ],
+    "tunings": [
+      {
+        "name": "primary",
+        "kind": "equal_division",
+        "base_frequency_hz": 110.0,
+        "period_ratio": 2.0,
+        "divisions": 7,
+        "detune_limit_fraction": 0.48
+      }
+    ],
+    "palettes": [
+      {
+        "name": "main",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "chords": [
+          {
+            "name": "main_anchor",
+            "degrees": [
+              0,
+              2,
+              4
+            ],
+            "weight": 5
+          },
+          {
+            "name": "main_response",
+            "degrees": [
+              0,
+              3,
+              5
+            ],
+            "weight": 3
+          },
+          {
+            "name": "main_open",
+            "degrees": [
+              0,
+              1,
+              4
+            ],
+            "weight": 2
+          },
+          {
+            "name": "main_cadence",
+            "degrees": [
+              0,
+              2,
+              5
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "neighbor",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "chords": [
+          {
+            "name": "neighbor_one",
+            "degrees": [
+              0,
+              3,
+              6
+            ],
+            "weight": 5
+          },
+          {
+            "name": "neighbor_two",
+            "degrees": [
+              0,
+              1,
+              5
+            ],
+            "weight": 3
+          },
+          {
+            "name": "neighbor_three",
+            "degrees": [
+              0,
+              2,
+              6
+            ],
+            "weight": 2
+          },
+          {
+            "name": "neighbor_return",
+            "degrees": [
+              0,
+              4,
+              7
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "contrast",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "chords": [
+          {
+            "name": "contrast_one",
+            "degrees": [
+              0,
+              1,
+              6
+            ],
+            "weight": 5
+          },
+          {
+            "name": "contrast_two",
+            "degrees": [
+              0,
+              5,
+              7
+            ],
+            "weight": 3
+          },
+          {
+            "name": "contrast_three",
+            "degrees": [
+              0,
+              2,
+              8
+            ],
+            "weight": 2
+          },
+          {
+            "name": "contrast_peak",
+            "degrees": [
+              0,
+              6,
+              9
+            ],
+            "weight": 3
+          }
+        ]
+      },
+      {
+        "name": "transition",
+        "tuning": "primary",
+        "root_pool": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "chords": [
+          {
+            "name": "transition_one",
+            "degrees": [
+              0,
+              2,
+              3
+            ],
+            "weight": 5
+          },
+          {
+            "name": "transition_two",
+            "degrees": [
+              0,
+              3,
+              4
+            ],
+            "weight": 3
+          },
+          {
+            "name": "transition_three",
+            "degrees": [
+              0,
+              1,
+              5
+            ],
+            "weight": 2
+          },
+          {
+            "name": "transition_home",
+            "degrees": [
+              0,
+              2,
+              7
+            ],
+            "weight": 3
+          }
+        ]
+      }
+    ],
+    "scenes": [
+      {
+        "name": "a",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 72
+          },
+          {
+            "palette": "neighbor",
+            "weight": 18
+          },
+          {
+            "palette": "contrast",
+            "weight": 4
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_anchor",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "a_prime",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 58
+          },
+          {
+            "palette": "neighbor",
+            "weight": 28
+          },
+          {
+            "palette": "contrast",
+            "weight": 8
+          },
+          {
+            "palette": "transition",
+            "weight": 6
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_open",
+          "main_response",
+          "main_cadence"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "b",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 35
+          },
+          {
+            "palette": "neighbor",
+            "weight": 47
+          },
+          {
+            "palette": "contrast",
+            "weight": 10
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "neighbor_one",
+          "neighbor_two",
+          "neighbor_three",
+          "neighbor_return"
+        ],
+        "motif_every_pairs": 12
+      },
+      {
+        "name": "c",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 20
+          },
+          {
+            "palette": "neighbor",
+            "weight": 22
+          },
+          {
+            "palette": "contrast",
+            "weight": 48
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_one",
+          "contrast_two",
+          "contrast_three",
+          "contrast_peak"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "d",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 10
+          },
+          {
+            "palette": "neighbor",
+            "weight": 15
+          },
+          {
+            "palette": "contrast",
+            "weight": 65
+          },
+          {
+            "palette": "transition",
+            "weight": 10
+          }
+        ],
+        "motif": [
+          "contrast_peak",
+          "contrast_two",
+          "transition_one",
+          "contrast_three"
+        ],
+        "motif_every_pairs": 16
+      },
+      {
+        "name": "coda",
+        "palette_weights": [
+          {
+            "palette": "main",
+            "weight": 82
+          },
+          {
+            "palette": "neighbor",
+            "weight": 8
+          },
+          {
+            "palette": "contrast",
+            "weight": 2
+          },
+          {
+            "palette": "transition",
+            "weight": 8
+          }
+        ],
+        "motif": [
+          "main_anchor",
+          "main_response",
+          "main_cadence",
+          "transition_home"
+        ],
+        "motif_every_pairs": 8
+      }
+    ],
+    "progression": [
+      { "scene": "a", "pair_count": 36 },
+      { "scene": "b", "pair_count": 48 },
+      { "scene": "d", "pair_count": 64 },
+      { "scene": "a", "pair_count": 36 },
+      { "scene": "c", "pair_count": 64 },
+      { "scene": "a_prime", "pair_count": 48 },
+      { "scene": "d", "pair_count": 64 },
+      { "scene": "b", "pair_count": 48 },
+      { "scene": "a", "pair_count": 36 },
+      { "scene": "c", "pair_count": 64 },
+      { "scene": "a_prime", "pair_count": 36 },
+      { "scene": "coda", "pair_count": 32 }
+    ]
+  }
+}

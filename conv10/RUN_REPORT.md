@@ -1,65 +1,59 @@
 # Convolutions 10 completed run
 
-Completed: 2026-07-26
+Completed: 2026-07-27
 
 ## Results
 
-All 14 album tracks completed the same verified pipeline:
+All 14 config-driven v17 pieces completed the verified album pipeline:
 
-- 48 prepared inputs: 24 short and 24 long
-- 576 unique stereo convolution pairs
-- 575 full ten-second transitions
-- 719,327,424 stereo frames at 48 kHz
+- 48 prepared inputs per piece: 24 short and 24 long
+- 576 unique stereo convolution pairs per piece
+- 575 full ten-second transitions per piece
+- 719,327,424 stereo frames at 48 kHz per master
 - 14,985.988 seconds (`4:09:45.988`) per master
-- FLAC, AAC/M4A, and Opus output
+- FLAC, AAC/M4A, and Opus delivery masters
 
 The album therefore contains 8,064 verified pair renders and 58.279 hours of
-unique program duration. Across every matrix, measured RMS was
-−21.746..−20.100 dBFS, maximum peak was 0.890, and stereo-difference RMS was
-−23.192..−15.440 dBFS. No pair clipped, contained non-finite samples, or failed
-the stereo checks.
+unique program duration. Every config uses one or more non-12 tuning systems,
+16 or 20 named chord shapes, filename-seeded roots/voicings/inversions, and at
+least three different scene lengths. Each progression totals exactly 576 pairs
+and every scene boundary falls on a complete motif cycle.
 
-| Track | Prepare | Render | Avg render CPU | Verify | Assemble/encode/check | Total |
-|---|---:|---:|---:|---:|---:|---:|
-| Field Atlas | 8.83 s | 28.02 s | 6.58 cores | 6.10 s | 178.95 s | 222.54 s |
-| Melody Works | 3.49 s | 34.02 s | 6.38 cores | 11.48 s | 188.64 s | 238.27 s |
-| Drift | 3.15 s | 32.02 s | 7.46 cores | 7.95 s | 169.45 s | 213.37 s |
-| Menagerie | 3.17 s | 33.02 s | 7.34 cores | 7.31 s | 176.44 s | 220.67 s |
-| Passage | 3.19 s | 34.03 s | 7.01 cores | 7.92 s | 181.77 s | 227.57 s |
-| Foundry | 3.40 s | 37.03 s | 6.72 cores | 8.02 s | 180.61 s | 229.87 s |
-| Commons | 3.33 s | 35.05 s | 6.96 cores | 7.75 s | 175.87 s | 222.70 s |
-| Sonora | 3.09 s | 33.03 s | 7.35 cores | 7.30 s | 183.53 s | 227.58 s |
-| Signals | 3.17 s | 33.02 s | 7.46 cores | 7.69 s | 174.28 s | 218.86 s |
-| Tempest | 3.08 s | 33.02 s | 7.43 cores | 7.39 s | 172.27 s | 216.46 s |
-| Wildwire | 3.12 s | 33.02 s | 7.48 cores | 7.36 s | 176.30 s | 220.56 s |
-| Tideforge | 3.45 s | 35.04 s | 6.95 cores | 8.08 s | 179.08 s | 226.51 s |
-| Stormfolk | 3.46 s | 35.03 s | 7.01 cores | 8.79 s | 190.52 s | 238.53 s |
-| Railchime | 3.65 s | 37.07 s | 6.61 cores | 10.27 s | 195.91 s | 247.58 s |
+The final resumable pass used 64 preparation workers, eight render workers,
+eight RF64 assembly workers, eight global FFmpeg jobs, and eight finalization
+workers. It resumed from validated prepared inputs and v17 matrices, rebuilt
+all 14 RF64 masters, encoded all 42 delivery files, decoded every file end to
+end, checked the metadata and embedded artwork, and rewrote the hashes. The
+pass completed in 1,435.466 seconds (`23:55.466`). The global eight-job encode
+queue completed all 42 whole-file FFmpeg jobs in 822.546 seconds.
 
-Mean render time was 33.74 seconds and mean render CPU was 7.05 of 8 cores.
-The complete sequential album build took 3,171.08 seconds (`52:51.08`),
-including source preparation, matrix verification, encoding, compressed
-end-to-end decoding, metadata checks, and hashing.
+Per-song timing files are retained as `outputs/batch/<name>.run.json`. Their
+one-second render measurements describe cache validation on this resumed pass,
+not the original matrix-generation utilization, and must not be interpreted as
+a synthesis scaling benchmark.
 
 ## Final delivery
 
 | Directory | Files | Total bytes | Smallest | Largest |
 |---|---:|---:|---:|---:|
-| `outputs/batch/flac/` | 14 | 15,374,102,742 | 860,574,100 | 1,349,444,711 |
-| `outputs/batch/m4a/` | 14 | 5,074,723,778 | 362,480,077 | 362,480,476 |
-| `outputs/batch/opus/` | 14 | 3,275,968,347 | 221,641,466 | 265,369,826 |
+| `outputs/batch/flac/` | 14 | 15,822,800,198 | 888,940,439 | 1,384,221,577 |
+| `outputs/batch/m4a/` | 14 | 5,080,957,991 | 362,925,399 | 362,925,719 |
+| `outputs/batch/opus/` | 14 | 3,299,610,675 | 222,139,426 | 267,589,817 |
 
 The independent album audit confirmed exactly 14 files in each format
-directory, the expected codec, two channels, 48 kHz sample rate, matching
-duration, complete embedded metadata, and every recorded SHA-256 digest.
-Obsolete root-level `conv8.*` and `conv10.*` generated outputs were removed.
+directory, the expected codecs, two channels, 48 kHz sample rate, matching
+duration, complete embedded metadata, embedded JPEG art in every M4A, and every
+recorded SHA-256 digest. Each Rust finalizer also independently decoded its
+three compressed masters end to end before removing the RF64 scratch file.
 
 All 42 masters identify the album as `Convolutions 10`; artist, album artist,
 and composer are `babymastodon`. Titles, track numbers `1/14` through `14/14`,
-disc, year, genre, and per-track descriptions also passed embedded-tag
-verification.
+disc, year, genre, and per-track descriptions passed embedded-tag verification.
+The descriptions record the sample themes, tuning systems, chord vocabulary,
+motif, form, and exact scene pair spans without adding source-administration
+text to the listener-facing tags.
 
-## Source/list audit
+## Source and config audit
 
 The 12 new tracks use 384 distinct source pages and 384 distinct media URLs,
 divided into eight 48-source palettes. There are 192 short and 192 long source
@@ -67,5 +61,11 @@ windows. The four hybrid tracks reuse 192 sources once, for 576 total list uses;
 the other 192 sources appear once. Every source and page record has a content
 hash in `SONG_SOURCES.tsv`.
 
-Generated audio remains untracked. Git contains the album catalog, lists,
-inventories, curation/build code, tests, and reports only.
+The checked inventories contain 384 accepted records for the new source pool,
+48 accepted records for Field Atlas, and 48 accepted records for Melody Works,
+with no attribution-required or restricted records. The two original lists and
+the 12 new configs therefore need no listener-facing attribution.
+
+Generated and downloaded audio remains untracked. Git contains the album
+catalog, configs, lists, inventories, curation/build code, tests, artwork, and
+reports only.

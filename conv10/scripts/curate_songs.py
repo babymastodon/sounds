@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Curate, validate, inventory, and seed the twelve conv10 song lists."""
+"""Curate, validate, inventory, and seed the twelve new conv10 songs."""
 
 from __future__ import annotations
 
@@ -548,6 +548,23 @@ def write_tsv(path: Path, rows: list[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
+def update_render_config(
+    song: str,
+    metadata: dict[str, str],
+    samples: list[dict[str, Any]] | None = None,
+) -> None:
+    path = PROJECT_DIR / "configs" / f"{song}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("name") != song or "harmony" not in payload:
+        raise RuntimeError(f"{path}: not a valid {song} render config")
+    payload["metadata"] = metadata
+    if samples is not None:
+        payload["samples"] = samples
+    temporary = path.with_suffix(f"{path.suffix}.part")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def load_state(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -905,22 +922,31 @@ def render_songs() -> list[str]:
 
 def catalog_rows() -> list[dict[str, str]]:
     total = len(TRACKS)
-    return [
-        {
-            "name": name,
-            "title": title,
-            "album": ALBUM,
-            "artist": ARTIST,
-            "album_artist": ARTIST,
-            "composer": ARTIST,
-            "genre": "Experimental",
-            "date": "2026",
-            "track": f"{index}/{total}",
-            "disc": "1/1",
-            "comment": comment,
-        }
-        for index, (name, (title, comment)) in enumerate(TRACKS.items(), start=1)
-    ]
+    rows = []
+    for index, (name, (title, _theme)) in enumerate(TRACKS.items(), start=1):
+        config_path = PROJECT_DIR / "configs" / f"{name}.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        description = config.get("metadata", {}).get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise RuntimeError(f"{config_path}: metadata.description is required")
+        rows.append(
+            {
+                "name": name,
+                "title": title,
+                "album": ALBUM,
+                "artist": ARTIST,
+                "album_artist": ARTIST,
+                "composer": ARTIST,
+                "genre": "Experimental",
+                "date": "2026",
+                "track": f"{index}/{total}",
+                "disc": "1/1",
+                # Keep Vorbis COMMENT and MP4 DESCRIPTION equivalent across containers.
+                "comment": description,
+                "description": description,
+            }
+        )
+    return rows
 
 
 def write_configs(state_path: Path) -> None:
@@ -932,6 +958,10 @@ def write_configs(state_path: Path) -> None:
             raise RuntimeError(f"validate media first: {row['key']}")
 
     uses: dict[str, list[str]] = defaultdict(list)
+    metadata_by_song = {
+        row["name"]: {field: value for field, value in row.items() if field != "name"}
+        for row in catalog_rows()
+    }
     lists_dir = PROJECT_DIR / "lists"
     lists_dir.mkdir(parents=True, exist_ok=True)
     for song in all_songs():
@@ -944,6 +974,19 @@ def write_configs(state_path: Path) -> None:
                     "id": row["id"],
                     "role": row["role"],
                     "trim_start": f"{float(row['trim_start']):g}",
+                    "source": row["download_url"],
+                }
+                for row in rows
+            ],
+        )
+        update_render_config(
+            song,
+            metadata_by_song[song],
+            [
+                {
+                    "id": row["id"],
+                    "role": row["role"],
+                    "trim_start": float(row["trim_start"]),
                     "source": row["download_url"],
                 }
                 for row in rows
@@ -980,7 +1023,10 @@ def write_configs(state_path: Path) -> None:
             }
         )
     write_tsv(PROJECT_DIR / "SONG_SOURCES.tsv", inventory)
-    write_tsv(PROJECT_DIR / "SONGS.tsv", catalog_rows())
+    catalog = catalog_rows()
+    write_tsv(PROJECT_DIR / "SONGS.tsv", catalog)
+    for song in ("fieldatlas", "melodyworks"):
+        update_render_config(song, metadata_by_song[song])
     use_count = sum(len(value) for value in uses.values())
     reused = sum(len(value) == 2 for value in uses.values())
     if use_count != 576 or reused != 192:

@@ -1,6 +1,8 @@
 # Performance inventory
 
-Measured on an 8-core Intel Core Ultra 7 268V with the release build.
+Measured on an 8-core Intel Core Ultra 7 268V with the release build. Matrix
+scaling measurements below are the historical v15 baseline; the final delivery
+measurements describe the config-driven v17 run completed on 2026-07-27.
 
 ## Outcome
 
@@ -15,6 +17,14 @@ the old build to 190/576 in the optimized build, a 36 percent throughput gain.
 This addresses the single-thread hot loop as well as parallel scheduling. An
 earlier 8-worker benchmark peaked near 1.46 GiB RSS.
 
+The final v17 delivery pass resumed from validated prepared inputs and cached
+v17 matrices. With 64 preparation workers and eight workers in every remaining
+phase, it rebuilt 14 RF64 masters, ran 42 independent FFmpeg jobs, finalized and
+fully decoded 42 compressed files, and completed in 1,435.466 seconds. The
+global eight-job encode queue itself took 822.546 seconds. Because this was a
+resumed pass, its one-second render counters measure cache validation rather
+than matrix synthesis and are intentionally excluded from the render table.
+
 ## Implemented
 
 - Hoisted modal, FM, and saw invariants out of per-sample loops.
@@ -27,13 +37,23 @@ earlier 8-worker benchmark peaked near 1.46 GiB RSS.
   parallel stage.
 - Removed duplicate verification from rendering.
 - Added an input-fingerprint and algorithm recipe checked before pair synthesis.
-- Parallelized input preparation, pair rendering, verification, the three
-  encoders, compressed decode checks, and output hashing.
+- Parallelized input preparation, pair rendering, verification, compressed
+  decode checks, and output hashing.
+- Split assembly, encoding, and finalization into resumable stages. Album runs
+  now assemble all RF64 masters first, then feed all 42 whole-file encodes to
+  one CPU-sized global FFmpeg queue rather than encoding three files for one
+  song while the other 13 wait.
+- Enforced a floor of eight workers for preparation, rendering, RF64 assembly,
+  global encoding, and finalization; larger values remain configurable per
+  phase.
 - Pipelined preparation behind completed downloads and cached automatic trims.
 - Captured only the lossless source prefix needed for explicit trims instead of
   downloading arbitrarily long recordings in full.
 - Changed source validation from full-file decoding to strict decoding of the
   exact selected window.
+- Revalidate a cached raw file before reuse, reject truncated downloads, and
+  atomically publish a newly downloaded file only after its selected window
+  decodes successfully.
 - Recorded render samples once per second plus per-stage wall and aggregate CPU
   time.
 
@@ -47,6 +67,8 @@ earlier 8-worker benchmark peaked near 1.46 GiB RSS.
 | Slowest matrix: Railchime | 37.07 s | 6.61 |
 | 14 verification passes, mean | 8.10 s | recorded per run |
 | 14 assemble/encode/decode-check stages, mean | 180.26 s | codec-limited |
+| v17 global queue, 42 encodes at jobs 8 | 822.55 s | eight processes |
+| v17 resumed delivery, all phases | 1,435.47 s | 64 prepare, otherwise 8 |
 
 Pair cost depends on the selected instrument and gesture, explaining the
 track-to-track difference and short queue-drain tail. The renderer is no longer
@@ -58,9 +80,9 @@ behaving like a single-core workload.
    crossfades it, and writes a temporary RF64 file. The RF64 is scratch-only and
    removed after encoding, but this is now the dominant wall-time stage.
 2. This FFmpeg build reports no internal threading for the selected FLAC, AAC,
-   or Opus encoders. Three encoders run concurrently, then usage drops as the
-   slowest single-threaded encoder remains. Benchmark lower Opus complexity
-   before attempting segmented encoding.
+   or Opus encoders. Whole-file parallelism is implemented across the album and
+   the jobs-8 queue has now been measured. Compare jobs 4/6/8 before changing
+   Opus complexity.
 3. Pair tasks are indivisible and vary by instrument. Estimated-heavy-first
    scheduling, `rayon::join` inside large pairs, or both could reduce the final
    queue-drain tail.
@@ -74,11 +96,14 @@ behaving like a single-core workload.
 6. The source-pool seeder reuses downloaded media across focused and hybrid
    lists, but a shared content-addressed prepared cache could also eliminate
    their repeated preparation.
-7. List processing remains sequential. Add `--list-jobs` with a global CPU and
-   memory budget for multiple small lists.
-8. The batch runner rejects same-basename collisions within one invocation, but
-   independent invocations can still target the same stem. A stable list digest
-   would close that remaining naming gap.
+7. Matrix rendering remains sequential by song because each render already
+   fills the Rayon pool. RF64 assembly uses a bounded album-wide worker count,
+   encoding uses a global CPU-sized queue, and final decode validation has a
+   separate bounded worker count.
+8. The batch runner rejects same-name collisions within one invocation, but
+   independent invocations can still target the same output stem. Config
+   fingerprints already invalidate matrix reuse; an output lock would close the
+   remaining concurrent-writer gap.
 9. Streaming PCM into a single multi-output FFmpeg process could remove the
    temporary RF64 and three rereads. Segmented AAC/Opus encoding needs careful
    boundary testing because encoder delay can introduce gaps.

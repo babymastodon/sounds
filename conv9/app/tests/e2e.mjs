@@ -881,8 +881,8 @@ try {
   if (process.env.CONV9_TEST_MOVING_IR_SCREENSHOT) {
     await page.screenshot({ path: process.env.CONV9_TEST_MOVING_IR_SCREENSHOT });
   }
-  await page.getByLabel("IR length exact value").fill("1.20");
-  await waitForPath(page, "moving_ir_seconds=1.20");
+  await page.getByLabel("IR length exact value").fill("30");
+  await waitForPath(page, "moving_ir_seconds=30.00");
 
   await page.getByRole("button", { name: "Pause" }).click();
   await page.locator("body").press("Space");
@@ -1186,7 +1186,7 @@ async function testCatalog() {
       resonator_ring:
         "Controls damping of clip A's learned stable resonances; higher values retain narrower modes and longer ringing.",
       moving_ir_seconds:
-        "Sets the duration of each causal FIR captured around the matching point in clip B and controls the retained tail.",
+        "Sets the duration of each causal FIR centered on the matching point in clip B, with silence beyond its boundaries.",
       moving_ir_update_seconds:
         "Sets the spacing between clip-B impulse-response snapshots while filters remain interpolated for each processing block.",
       moving_ir_taper:
@@ -1273,7 +1273,7 @@ async function testCatalog() {
         rank: 4,
         windows: [],
         parameters: [
-          parameter("moving_ir_seconds", "IR length", 0.05, 2, 0.01, 0.75, "s"),
+          parameter("moving_ir_seconds", "IR length", 0.05, 30, 0.01, 0.75, "s"),
           parameter("moving_ir_update_seconds", "IR update", 0.25, 3, 0.05, 0.5, "s"),
           parameter("moving_ir_taper", "IR taper", 0.05, 1, 0.01, 0.5),
         ],

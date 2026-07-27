@@ -13,7 +13,9 @@ const FFT_FRAMES: usize = PARTITION_FRAMES * 2;
 const FFT_BINS: usize = FFT_FRAMES / 2 + 1;
 const PARALLEL_BATCH_BLOCKS: usize = 128;
 const PARALLEL_BATCH_SNAPSHOTS: usize = 8;
+const OUTPUT_TILE_FRAMES: usize = 32_768;
 const WORKSPACE_LIMIT_BYTES: usize = 384 * 1024 * 1024;
+const LONG_IR_THRESHOLD_FRAMES: usize = 2 * SAMPLE_RATE as usize;
 
 #[derive(Clone, Copy)]
 struct FilterBlend {
@@ -29,8 +31,7 @@ pub(crate) fn render_moving_impulse_response(
     parameters: AlgorithmParameters,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<f32>> {
-    let ir_frames =
-        seconds_to_frames(parameters.moving_ir_seconds, SAMPLE_RATE).min(clip_b.samples.len());
+    let ir_frames = seconds_to_frames(parameters.moving_ir_seconds, SAMPLE_RATE);
     let update_frames = seconds_to_frames(parameters.moving_ir_update_seconds, SAMPLE_RATE);
     render_moving_ir_samples(
         &clip_a.samples,
@@ -65,6 +66,19 @@ fn render_moving_ir_samples(
         .saturating_add(PARTITION_FRAMES / 2)
         .min(source.len() - 1);
     let snapshot_count = last_center.div_ceil(update_frames) + 2;
+
+    if ir_frames > LONG_IR_THRESHOLD_FRAMES {
+        return render_grouped_long_ir_samples(
+            source,
+            impulse_source,
+            ir_frames,
+            update_frames,
+            taper,
+            input_blocks,
+            snapshot_count,
+            cancelled,
+        );
+    }
     validate_workspace(input_blocks, ir_partitions, output_blocks, snapshot_count)?;
 
     let mut planner = RealFftPlanner::<f32>::new();
@@ -172,9 +186,7 @@ fn transform_filter_snapshots(
                 || ForwardWorkspace::new(Arc::clone(&forward)),
                 |workspace, (local_index, destination)| -> Result<()> {
                     let snapshot = batch_start + local_index;
-                    let anchor = snapshot
-                        .saturating_mul(update_frames)
-                        .min(source_frames - 1);
+                    let anchor = snapshot_anchor(snapshot, update_frames, source_frames);
                     let ir = prepare_ir_snapshot(
                         impulse_source,
                         source_frames,
@@ -213,14 +225,27 @@ fn prepare_ir_snapshot(
     } else {
         0.0
     };
-    let center = (normalized_position * (impulse_source.len() - 1) as f64).round() as usize;
-    let start = center
-        .saturating_sub(ir_frames / 2)
-        .min(impulse_source.len().saturating_sub(ir_frames));
-    let mut ir = impulse_source[start..start + ir_frames].to_vec();
-    let mean = ir.iter().map(|&sample| f64::from(sample)).sum::<f64>() / ir.len() as f64;
+    let center = (normalized_position * (impulse_source.len() - 1) as f64).round() as isize;
+    let source_start = center - (ir_frames / 2) as isize;
+    let first_valid = source_start.max(0);
+    let last_valid = (source_start + ir_frames as isize).min(impulse_source.len() as isize);
+    let valid_frames = last_valid.saturating_sub(first_valid) as usize;
+    let mean = if valid_frames == 0 {
+        0.0
+    } else {
+        impulse_source[first_valid as usize..last_valid as usize]
+            .iter()
+            .map(|&sample| f64::from(sample))
+            .sum::<f64>()
+            / valid_frames as f64
+    };
+    let mut ir = vec![0.0_f32; ir_frames];
     for (index, sample) in ir.iter_mut().enumerate() {
-        *sample = (*sample - mean as f32) * tukey_weight(index, ir_frames, taper);
+        let source_index = source_start + index as isize;
+        if source_index >= 0 && source_index < impulse_source.len() as isize {
+            *sample = (impulse_source[source_index as usize] - mean as f32)
+                * tukey_weight(index, ir_frames, taper);
+        }
     }
     let energy = ir
         .iter()
@@ -235,6 +260,12 @@ fn prepare_ir_snapshot(
         }
     }
     ir
+}
+
+fn snapshot_anchor(snapshot: usize, update_frames: usize, source_frames: usize) -> usize {
+    snapshot
+        .saturating_mul(update_frames)
+        .min(source_frames - 1)
 }
 
 fn adjacent_filter_coherence(
@@ -299,6 +330,289 @@ fn filter_blends(
             }
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_grouped_long_ir_samples(
+    source: &[f32],
+    impulse_source: &[f32],
+    ir_frames: usize,
+    update_frames: usize,
+    taper: f32,
+    input_blocks: usize,
+    snapshot_count: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>> {
+    let coherence = adjacent_time_domain_coherence(
+        impulse_source,
+        source.len(),
+        ir_frames,
+        update_frames,
+        taper,
+        snapshot_count,
+        cancelled,
+    )?;
+    let blends = filter_blends(
+        input_blocks,
+        source.len(),
+        update_frames,
+        snapshot_count,
+        &coherence,
+    );
+    let ranges = snapshot_block_ranges(&blends, snapshot_count);
+    let maximum_source_frames = ranges
+        .iter()
+        .flatten()
+        .map(|&(first, end)| {
+            ((end * PARTITION_FRAMES).min(source.len())) - first * PARTITION_FRAMES
+        })
+        .max()
+        .unwrap_or(1);
+    let maximum_local_frames = maximum_source_frames + ir_frames - 1;
+    let fft_frames = maximum_local_frames.next_power_of_two();
+    let worker_count =
+        long_ir_worker_count(snapshot_count, fft_frames, maximum_local_frames, ir_frames);
+    let mut planner = RealFftPlanner::<f32>::new();
+    let forward = planner.plan_fft_forward(fft_frames);
+    let inverse = planner.plan_fft_inverse(fft_frames);
+    let mut workers = (0..worker_count)
+        .map(|_| LongIrWorkspace::new(Arc::clone(&forward), Arc::clone(&inverse)))
+        .collect::<Vec<_>>();
+    let mut output = vec![0.0_f32; source.len() + ir_frames - 1];
+
+    for batch_start in (0..snapshot_count).step_by(worker_count) {
+        if cancelled() {
+            bail!("render cancelled");
+        }
+        let rendered = workers
+            .par_iter_mut()
+            .enumerate()
+            .map(
+                |(worker_index, workspace)| -> Result<Option<LongSnapshotOutput>> {
+                    let snapshot = batch_start + worker_index;
+                    let Some(&(first_block, end_block)) =
+                        ranges.get(snapshot).and_then(Option::as_ref)
+                    else {
+                        return Ok(None);
+                    };
+                    let filter = prepare_ir_snapshot(
+                        impulse_source,
+                        source.len(),
+                        snapshot_anchor(snapshot, update_frames, source.len()),
+                        ir_frames,
+                        taper,
+                    );
+                    let source_start = first_block * PARTITION_FRAMES;
+                    let source_end = (end_block * PARTITION_FRAMES).min(source.len());
+                    workspace.source_time.fill(0.0);
+                    for (block, &blend) in
+                        blends.iter().enumerate().take(end_block).skip(first_block)
+                    {
+                        let gain = snapshot_gain(blend, snapshot);
+                        let global_start = block * PARTITION_FRAMES;
+                        let global_end = (global_start + PARTITION_FRAMES).min(source_end);
+                        let local_start = global_start - source_start;
+                        for (target, &sample) in workspace.source_time
+                            [local_start..local_start + global_end - global_start]
+                            .iter_mut()
+                            .zip(&source[global_start..global_end])
+                        {
+                            *target = sample * gain;
+                        }
+                    }
+                    workspace.filter_time.fill(0.0);
+                    workspace.filter_time[..filter.len()].copy_from_slice(&filter);
+                    workspace
+                        .forward
+                        .process(&mut workspace.source_time, &mut workspace.source_spectrum)?;
+                    workspace
+                        .forward
+                        .process(&mut workspace.filter_time, &mut workspace.filter_spectrum)?;
+                    for (source_bin, &filter_bin) in workspace
+                        .source_spectrum
+                        .iter_mut()
+                        .zip(&workspace.filter_spectrum)
+                    {
+                        *source_bin *= filter_bin;
+                    }
+                    workspace
+                        .inverse
+                        .process(&mut workspace.source_spectrum, &mut workspace.output_time)?;
+                    let local_frames = source_end - source_start + ir_frames - 1;
+                    let normalization = 1.0 / fft_frames as f32;
+                    let samples = workspace.output_time[..local_frames]
+                        .iter()
+                        .map(|&sample| sample * normalization)
+                        .collect();
+                    Ok(Some(LongSnapshotOutput {
+                        start_frame: source_start,
+                        samples,
+                    }))
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
+        merge_long_snapshot_batch(&mut output, &rendered);
+    }
+    if cancelled() {
+        bail!("render cancelled");
+    }
+    Ok(output)
+}
+
+fn adjacent_time_domain_coherence(
+    impulse_source: &[f32],
+    source_frames: usize,
+    ir_frames: usize,
+    update_frames: usize,
+    taper: f32,
+    snapshot_count: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>> {
+    let mut coherence = Vec::with_capacity(snapshot_count - 1);
+    let batch_snapshots = rayon::current_num_threads().min(PARALLEL_BATCH_SNAPSHOTS);
+    let mut previous: Option<Vec<f32>> = None;
+    for batch_start in (0..snapshot_count).step_by(batch_snapshots) {
+        if cancelled() {
+            bail!("render cancelled");
+        }
+        let batch_end = (batch_start + batch_snapshots).min(snapshot_count);
+        let mut filters = (batch_start..batch_end)
+            .into_par_iter()
+            .map(|snapshot| {
+                prepare_ir_snapshot(
+                    impulse_source,
+                    source_frames,
+                    snapshot_anchor(snapshot, update_frames, source_frames),
+                    ir_frames,
+                    taper,
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(previous_filter) = previous.as_ref() {
+            coherence.push(time_domain_coherence(previous_filter, &filters[0]));
+        }
+        coherence.extend(
+            filters
+                .par_windows(2)
+                .map(|pair| time_domain_coherence(&pair[0], &pair[1]))
+                .collect::<Vec<_>>(),
+        );
+        previous = filters.pop();
+    }
+    Ok(coherence)
+}
+
+fn time_domain_coherence(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(&left, &right)| f64::from(left) * f64::from(right))
+        .sum::<f64>()
+        .clamp(0.0, 1.0) as f32
+}
+
+fn merge_long_snapshot_batch(output: &mut [f32], rendered: &[Option<LongSnapshotOutput>]) {
+    output
+        .par_chunks_mut(OUTPUT_TILE_FRAMES)
+        .enumerate()
+        .for_each(|(tile_index, tile)| {
+            let tile_start = tile_index * OUTPUT_TILE_FRAMES;
+            let tile_end = tile_start + tile.len();
+            for local in rendered.iter().flatten() {
+                let local_end = local.start_frame + local.samples.len();
+                let overlap_start = tile_start.max(local.start_frame);
+                let overlap_end = tile_end.min(local_end);
+                if overlap_start >= overlap_end {
+                    continue;
+                }
+                let tile_offset = overlap_start - tile_start;
+                let local_offset = overlap_start - local.start_frame;
+                for (target, &sample) in tile
+                    [tile_offset..tile_offset + overlap_end - overlap_start]
+                    .iter_mut()
+                    .zip(&local.samples[local_offset..local_offset + overlap_end - overlap_start])
+                {
+                    *target += sample;
+                }
+            }
+        });
+}
+
+fn snapshot_block_ranges(
+    blends: &[FilterBlend],
+    snapshot_count: usize,
+) -> Vec<Option<(usize, usize)>> {
+    let mut ranges = vec![None; snapshot_count];
+    for (block, &blend) in blends.iter().enumerate() {
+        for (snapshot, gain) in [
+            (blend.lower, blend.lower_gain),
+            (blend.upper, blend.upper_gain),
+        ] {
+            if gain.abs() <= 1.0e-8 {
+                continue;
+            }
+            let range = ranges[snapshot].get_or_insert((block, block + 1));
+            range.0 = range.0.min(block);
+            range.1 = range.1.max(block + 1);
+        }
+    }
+    ranges
+}
+
+fn snapshot_gain(blend: FilterBlend, snapshot: usize) -> f32 {
+    let mut gain = 0.0;
+    if blend.lower == snapshot {
+        gain += blend.lower_gain;
+    }
+    if blend.upper == snapshot {
+        gain += blend.upper_gain;
+    }
+    gain
+}
+
+fn long_ir_worker_count(
+    snapshot_count: usize,
+    fft_frames: usize,
+    maximum_local_frames: usize,
+    ir_frames: usize,
+) -> usize {
+    let bytes_per_worker = fft_frames
+        .saturating_mul(20)
+        .saturating_add(maximum_local_frames.saturating_mul(4))
+        .saturating_add(ir_frames.saturating_mul(4));
+    let memory_workers = (WORKSPACE_LIMIT_BYTES / bytes_per_worker.max(1)).max(1);
+    rayon::current_num_threads()
+        .min(snapshot_count)
+        .min(memory_workers)
+        .max(1)
+}
+
+struct LongSnapshotOutput {
+    start_frame: usize,
+    samples: Vec<f32>,
+}
+
+struct LongIrWorkspace {
+    forward: Arc<dyn RealToComplex<f32>>,
+    inverse: Arc<dyn ComplexToReal<f32>>,
+    source_time: Vec<f32>,
+    filter_time: Vec<f32>,
+    output_time: Vec<f32>,
+    source_spectrum: Vec<Complex32>,
+    filter_spectrum: Vec<Complex32>,
+}
+
+impl LongIrWorkspace {
+    fn new(forward: Arc<dyn RealToComplex<f32>>, inverse: Arc<dyn ComplexToReal<f32>>) -> Self {
+        Self {
+            source_time: forward.make_input_vec(),
+            filter_time: forward.make_input_vec(),
+            output_time: inverse.make_output_vec(),
+            source_spectrum: forward.make_output_vec(),
+            filter_spectrum: forward.make_output_vec(),
+            forward,
+            inverse,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -576,12 +890,127 @@ mod tests {
     }
 
     #[test]
+    fn impulse_windows_use_silence_instead_of_sliding_at_b_edges() {
+        let impulse_source = deterministic_signal(101);
+        let leading = prepare_ir_snapshot(&impulse_source, 101, 0, 40, 0.5);
+        assert!(
+            leading[..20].iter().all(|&sample| sample == 0.0),
+            "the half-window before B begins must be silence"
+        );
+        assert!(leading[20..].iter().any(|sample| sample.abs() > 1.0e-5));
+
+        let trailing = prepare_ir_snapshot(&impulse_source, 101, 100, 40, 0.5);
+        assert!(
+            trailing[21..].iter().all(|&sample| sample == 0.0),
+            "the half-window after B ends must be silence"
+        );
+        assert!(trailing[..21].iter().any(|sample| sample.abs() > 1.0e-5));
+    }
+
+    #[test]
+    fn grouped_long_ir_matches_partitioned_time_varying_convolution() {
+        let source = deterministic_signal(PARTITION_FRAMES * 8 - 137);
+        let impulse_source = deterministic_signal(PARTITION_FRAMES * 11 + 83);
+        let ir_frames = PARTITION_FRAMES * 5 - 71;
+        let update_frames = PARTITION_FRAMES * 2;
+        let partitioned = render_moving_ir_samples(
+            &source,
+            &impulse_source,
+            ir_frames,
+            update_frames,
+            0.5,
+            &|| false,
+        )
+        .unwrap();
+        let input_blocks = source.len().div_ceil(PARTITION_FRAMES);
+        let last_center = (input_blocks - 1)
+            .saturating_mul(PARTITION_FRAMES)
+            .saturating_add(PARTITION_FRAMES / 2)
+            .min(source.len() - 1);
+        let snapshot_count = last_center.div_ceil(update_frames) + 2;
+        let grouped = render_grouped_long_ir_samples(
+            &source,
+            &impulse_source,
+            ir_frames,
+            update_frames,
+            0.5,
+            input_blocks,
+            snapshot_count,
+            &|| false,
+        )
+        .unwrap();
+        assert_close(&grouped, &partitioned, 8.0e-5);
+    }
+
+    #[test]
+    fn thirty_second_ir_is_finite_and_retains_its_exact_duration() {
+        let source = deterministic_signal(PARTITION_FRAMES * 3);
+        let impulse_source = deterministic_signal(PARTITION_FRAMES * 7);
+        let ir_frames = 30 * SAMPLE_RATE as usize;
+        let output = render_moving_ir_samples(
+            &source,
+            &impulse_source,
+            ir_frames,
+            source.len() * 2,
+            0.5,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(output.len(), source.len() + ir_frames - 1);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > 1.0e-6));
+    }
+
+    #[test]
     fn moving_filter_is_deterministic_across_thread_counts() {
         let source = deterministic_signal(48_000);
         let impulse_source = deterministic_signal(53_000);
         let render = || {
             render_moving_ir_samples(&source, &impulse_source, 12_000, 8_000, 0.5, &|| false)
                 .unwrap()
+        };
+        let serial = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(render);
+        let parallel = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(render);
+        assert_eq!(
+            serial
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            parallel
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn grouped_long_ir_is_deterministic_across_thread_counts() {
+        let source = deterministic_signal(PARTITION_FRAMES * 12);
+        let impulse_source = deterministic_signal(PARTITION_FRAMES * 14);
+        let render = || {
+            let input_blocks = source.len().div_ceil(PARTITION_FRAMES);
+            let update_frames = PARTITION_FRAMES * 3;
+            let last_center = (input_blocks - 1) * PARTITION_FRAMES + PARTITION_FRAMES / 2;
+            let snapshot_count = last_center.div_ceil(update_frames) + 2;
+            render_grouped_long_ir_samples(
+                &source,
+                &impulse_source,
+                PARTITION_FRAMES * 6,
+                update_frames,
+                0.5,
+                input_blocks,
+                snapshot_count,
+                &|| false,
+            )
+            .unwrap()
         };
         let serial = ThreadPoolBuilder::new()
             .num_threads(1)
@@ -696,6 +1125,49 @@ mod tests {
             serial / parallel,
             seconds as f64 / serial,
             seconds as f64 / parallel,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual release-mode 30-second moving-IR throughput characterization"]
+    fn benchmark_thirty_second_ir_single_and_all_core_render() {
+        let seconds = 61;
+        let source = deterministic_signal(SAMPLE_RATE as usize * seconds);
+        let impulse_source = deterministic_signal(SAMPLE_RATE as usize * seconds);
+        let render = || {
+            black_box(
+                render_moving_ir_samples(
+                    black_box(&source),
+                    black_box(&impulse_source),
+                    30 * SAMPLE_RATE as usize,
+                    SAMPLE_RATE as usize / 2,
+                    0.5,
+                    &|| false,
+                )
+                .unwrap(),
+            )
+        };
+        let one = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let started = Instant::now();
+        one.install(render);
+        let serial = started.elapsed().as_secs_f64();
+
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        let all = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        all.install(render);
+        let parallel = started.elapsed().as_secs_f64();
+        eprintln!(
+            "moving_ir_30s source_seconds={seconds} threads={threads} serial_ms={:.1} \
+             parallel_ms={:.1} speedup={:.2}x",
+            serial * 1_000.0,
+            parallel * 1_000.0,
+            serial / parallel,
         );
     }
 

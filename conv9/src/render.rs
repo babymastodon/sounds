@@ -540,13 +540,13 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                 id: "moving_ir_seconds",
                 label: "IR length",
                 minimum: 0.05,
-                maximum: 2.0,
+                maximum: 30.0,
                 step: 0.01,
                 default: defaults.moving_ir_seconds,
                 unit: "s",
-                description: "Sets the duration of each causal FIR captured around the matching \
-                              point in clip B. Short values add tight color; long values retain more \
-                              of B and produce a deeper reverb tail, which also lengthens the output.",
+                description: "Sets the duration of each causal FIR centered on the matching point \
+                              in clip B. Short values add tight color; values up to 30 seconds \
+                              produce deep tails. Any part beyond B's boundaries is true silence.",
             },
             ParameterCatalogEntry {
                 id: "moving_ir_update_seconds",
@@ -803,5 +803,11 @@ mod tests {
                 );
             }
         }
+        let moving_ir_length = parameter_catalog(Algorithm::MovingImpulseResponse)
+            .into_iter()
+            .find(|parameter| parameter.id == "moving_ir_seconds")
+            .unwrap();
+        assert_eq!(moving_ir_length.maximum, 30.0);
+        assert!(moving_ir_length.description.contains("true silence"));
     }
 }

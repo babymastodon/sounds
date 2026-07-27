@@ -468,7 +468,7 @@ impl AlgorithmParameters {
                 validate_range("resonator ring", self.resonator_ring, 0.0, 1.0)?;
             }
             Algorithm::MovingImpulseResponse => {
-                validate_range("IR length", self.moving_ir_seconds, 0.05, 2.0)?;
+                validate_range("IR length", self.moving_ir_seconds, 0.05, 30.0)?;
                 validate_range("IR update", self.moving_ir_update_seconds, 0.25, 3.0)?;
                 validate_range("IR taper", self.moving_ir_taper, 0.05, 1.0)?;
             }
@@ -1921,6 +1921,20 @@ mod tests {
         assert!(
             parameters
                 .validate(Algorithm::PredictiveResonatorBank)
+                .is_err()
+        );
+
+        parameters = AlgorithmParameters::default();
+        parameters.moving_ir_seconds = 30.0;
+        assert!(
+            parameters
+                .validate(Algorithm::MovingImpulseResponse)
+                .is_ok()
+        );
+        parameters.moving_ir_seconds = 30.01;
+        assert!(
+            parameters
+                .validate(Algorithm::MovingImpulseResponse)
                 .is_err()
         );
     }

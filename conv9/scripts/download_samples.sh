@@ -7,6 +7,20 @@ manifest=${1:-"$project_dir/sources.tsv"}
 download_jobs=${DOWNLOAD_JOBS:-4}
 raw_dir="$project_dir/samples/raw"
 prepared_dir="$project_dir/samples/prepared"
+
+if ! awk -F '\t' '
+    NR == 1 { next }
+    $8 != "CC0 1.0" ||
+        $9 != "https://creativecommons.org/publicdomain/zero/1.0/" {
+        printf "%s: only CC0 1.0 sources are allowed (found %s)\\n", $1, $8 > "/dev/stderr"
+        invalid = 1
+    }
+    END { exit invalid }
+' "$manifest"; then
+    echo "refusing to download a manifest containing non-CC0 sources" >&2
+    exit 1
+fi
+
 mkdir -p "$raw_dir" "$prepared_dir"
 
 # Migrate prepared files made before per-source recipes were introduced. A completed

@@ -2,7 +2,7 @@
 
 `conv9` compares two independently selected 61-second clips without retaining rendered audio. Every UI selection invokes the Rust DSP, conditions the result, encodes a mono 48 kHz PCM16 WAV in memory, and transfers it directly to the Tauri webview. Changing a clip, method, window, or method parameter starts a new render; stale work is cancelled between FFT blocks. There is no output directory or render cache.
 
-The 96 license-tracked sources each represent a distinct sound kind. The original broad field-recording set is joined by 48 deliberately foreground-focused additions: 24 music or instrument recordings with clear notes, attacks, and phrases, and 24 non-musical recordings built around identifiable voices, impacts, vehicles, tools, alarms, or physical processes. The additions avoid drones and generic atmosphere beds, and favor recordings whose content changes substantially during the selected minute. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
+The 96 CC0 1.0 sources each represent a distinct sound kind. Both the downloader and manifest loader reject every other license. The original broad field-recording set is joined by 48 deliberately foreground-focused additions: 24 music or instrument recordings with clear notes, attacks, and phrases, and 24 non-musical recordings built around identifiable voices, impacts, vehicles, tools, alarms, or physical processes. The additions avoid drones and generic atmosphere beds, and favor recordings whose content changes substantially during the selected minute. `sources.tsv` is their canonical provenance manifest. Prepare them once with:
 
 ```bash
 cd conv9
@@ -44,6 +44,8 @@ Every output is DC-removed, high-passed at 18 Hz, gently saturated toward the sh
 ```bash
 ./conv9/app/run.sh
 ```
+
+The launcher checks all 96 prepared WAVs before compiling or opening Tauri. If the library is incomplete, it reports the number and first missing file together with the preparation command instead of panicking from the setup hook.
 
 The desktop app uses native window decorations, disables minimize/maximize, loops audio automatically, preserves playback position across renders, and provides independent volume and octave-logarithmic 0.5×–2× listening-speed controls with 1× centered. An adjacent pitch toggle inserts a tested 2,048-sample real-time phase vocoder; ordinary varispeed remains the default. Waveform drawing is cached, and the 16,384-point, up-to-2,880-column log-frequency spectrogram is computed by cancelable workers and rescaled without another FFT on resize. See [`app/README.md`](app/README.md) for prerequisites and tests and [`PERFORMANCE.md`](PERFORMANCE.md) for measured timings and throughput ceilings.
 

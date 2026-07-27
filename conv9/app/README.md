@@ -16,7 +16,7 @@ sudo dnf install webkit2gtk4.1-devel \
 sudo dnf group install "c-development"
 ```
 
-Prepare the source material once, then launch from the repository root:
+All 96 sources must be CC0 1.0. Prepare the source material once, then launch from the repository root:
 
 ```bash
 cd conv9
@@ -25,7 +25,7 @@ cd ..
 ./conv9/app/run.sh
 ```
 
-The launcher uses installed system libraries when available. In this development environment it can also use an extracted sysroot at `/tmp/conv9-tauri-devel`, or one selected with `CONV9_TAURI_SYSROOT`. Override input locations with `CONV9_MANIFEST` and `CONV9_INPUT_DIR`.
+The launcher verifies that every manifest entry has a prepared WAV before compiling or opening Tauri and prints the exact preparation command when the library is incomplete. The app also reports startup errors without a Rust panic. The launcher uses installed system libraries when available. In this development environment it can also use an extracted sysroot at `/tmp/conv9-tauri-devel`, or one selected with `CONV9_TAURI_SYSROOT`. Override input locations with `CONV9_MANIFEST` and `CONV9_INPUT_DIR`.
 
 ## Tests
 

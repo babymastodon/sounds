@@ -116,11 +116,27 @@ pub struct OnDemandRenderer {
 impl OnDemandRenderer {
     pub fn load(manifest: &Path, input_dir: &Path) -> Result<Self> {
         let sources = load_manifest(manifest)?;
-        for source in &sources {
-            let path = input_dir.join(format!("{}.wav", source.id));
-            if !path.is_file() {
-                bail!("missing prepared input {}", path.display());
-            }
+        let missing = sources
+            .iter()
+            .map(|source| input_dir.join(format!("{}.wav", source.id)))
+            .filter(|path| !path.is_file())
+            .collect::<Vec<_>>();
+        if let Some(first) = missing.first() {
+            let preparation_script = input_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(|project| project.join("scripts/download_samples.sh"));
+            let preparation_hint = preparation_script
+                .as_deref()
+                .map(|script| format!(" Run {} to prepare them.", script.display()))
+                .unwrap_or_default();
+            bail!(
+                "{} of {} prepared inputs are missing; first missing: {}.{}",
+                missing.len(),
+                sources.len(),
+                first.display(),
+                preparation_hint
+            );
         }
         let indices = sources
             .iter()

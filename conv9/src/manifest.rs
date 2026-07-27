@@ -85,14 +85,10 @@ fn validate_entry(entry: &SourceEntry) -> Result<()> {
             bail!("{} is missing {name}", entry.id);
         }
     }
-    let expected_license_url = match entry.license.as_str() {
-        "CC0 1.0" => "https://creativecommons.org/publicdomain/zero/1.0/",
-        "CC BY 3.0" => "https://creativecommons.org/licenses/by/3.0/",
-        "CC BY 4.0" => "https://creativecommons.org/licenses/by/4.0/",
-        "CC BY-SA 3.0" => "https://creativecommons.org/licenses/by-sa/3.0/",
-        "CC BY-SA 4.0" => "https://creativecommons.org/licenses/by-sa/4.0/",
-        other => bail!("{} uses unsupported license {other}", entry.id),
-    };
+    if entry.license != "CC0 1.0" {
+        bail!("{} must use CC0 1.0, found {}", entry.id, entry.license);
+    }
+    let expected_license_url = "https://creativecommons.org/publicdomain/zero/1.0/";
     if entry.license_url != expected_license_url {
         bail!("{} has a mismatched license URL", entry.id);
     }
@@ -118,6 +114,10 @@ mod tests {
         let entries = load_manifest(&path).unwrap();
         assert_eq!(entries.len(), SOURCE_COUNT);
         assert!(entries.iter().all(|source| source.seconds > 60.0));
+        assert!(entries.iter().all(|source| {
+            source.license == "CC0 1.0"
+                && source.license_url == "https://creativecommons.org/publicdomain/zero/1.0/"
+        }));
         assert_eq!(
             entries
                 .iter()

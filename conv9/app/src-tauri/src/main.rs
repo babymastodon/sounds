@@ -158,13 +158,19 @@ async fn source_preview(
 }
 
 fn main() {
+    if let Err(error) = run() {
+        eprintln!("Convolution Playground could not start:\n{error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (manifest, input_dir) = locate_data().map_err(std::io::Error::other)?;
+    let renderer = Arc::new(OnDemandRenderer::load(&manifest, &input_dir)?);
     tauri::Builder::default()
-        .setup(|app| {
-            let (manifest, input_dir) = locate_data().map_err(std::io::Error::other)?;
-            let renderer =
-                OnDemandRenderer::load(&manifest, &input_dir).map_err(std::io::Error::other)?;
+        .setup(move |app| {
             app.manage(AppState {
-                renderer: Arc::new(renderer),
+                renderer: Arc::clone(&renderer),
                 render_lock: Arc::new(Mutex::new(())),
                 render_coordinator: Arc::new(Mutex::new(RenderCoordinator::default())),
             });
@@ -176,8 +182,8 @@ fn main() {
             supersede_render,
             source_preview
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the convolution playground");
+        .run(tauri::generate_context!())?;
+    Ok(())
 }
 
 fn encode_envelope(header: &RenderHeader, wav: Vec<u8>) -> Result<Vec<u8>, String> {

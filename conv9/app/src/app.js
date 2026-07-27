@@ -72,7 +72,7 @@ const state = {
 const LOADING_FONT_CSS_PIXELS = 16;
 const COMMON_PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const DEFAULT_SOURCE_A = "gamelan_court";
-const DEFAULT_SOURCE_B = "chainsaw_cycle";
+const DEFAULT_SOURCE_B = "political_speech";
 
 async function boot() {
   try {

@@ -100,9 +100,9 @@ conv10/
         └── ...
 ```
 
-FLAC is lossless, M4A contains AAC audio and embedded JPEG cover art, and Opus
-is the third delivery format. The checked-in `cover.jpg` is also suitable for
-copying beside the album files.
+FLAC is lossless, M4A contains AAC audio, and Opus is the third delivery
+format. Every delivery file embeds the checked-in JPEG cover art; `cover.jpg`
+is also suitable for copying beside the album files.
 All 42 files identify the album as `Convolutions 10` and the artist, album
 artist, and composer as `babymastodon`. Track title, number, disc, year, genre,
 and an extended description of the sample themes, tuning, chord vocabulary,
@@ -180,8 +180,16 @@ python3 -m unittest \
 python3 scripts/verify_album.py
 ```
 
+Add or repair exact embedded cover art in an existing delivery without
+re-encoding its audio:
+
+```bash
+python3 scripts/embed_cover_art.py
+```
+
 The batch runner validates every pair, decodes every compressed output end to
-end, checks embedded metadata and M4A cover art, and writes SHA-256 files.
+end, checks embedded metadata and exact cover art in all three formats, and
+writes SHA-256 files.
 `RUN_REPORT.md` records the completed v17 delivery. See `PROGRESS.md` for
 current status and `PERFORMANCE.md` for the performance inventory and
 historical renderer baseline.

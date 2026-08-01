@@ -112,8 +112,7 @@ def main() -> None:
         for directory, (extension, codec) in FORMATS.items():
             path = output_dir / directory / f"{name}.{extension}"
             validate_embedded_metadata(path, metadata)
-            if directory == "m4a":
-                validate_embedded_cover(path)
+            validate_embedded_cover(path)
             payload = probe(path)
             stream = payload["streams"][0]
             duration = float(payload["format"]["duration"])
@@ -126,7 +125,9 @@ def main() -> None:
             if abs(duration - EXPECTED_DURATION_SECONDS) > 0.1:
                 raise ValueError(f"{path}: unexpected duration {duration:.6f}s")
         verify_hashes(output_dir, name)
-        print(f"verified {name}: FLAC, AAC/M4A, Opus, metadata, hashes")
+        print(
+            f"verified {name}: FLAC, AAC/M4A, Opus, metadata, cover art, hashes"
+        )
 
     print(f"verified album: {len(catalog)} tracks, {len(catalog) * 3} audio files")
 

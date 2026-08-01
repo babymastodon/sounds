@@ -1,6 +1,6 @@
 # Convolutions 10 progress
 
-Last updated: 2026-07-27
+Last updated: 2026-08-01
 
 - [x] Keep implementation, lists, inventories, tests, and reports inside
   `conv10`.
@@ -64,3 +64,6 @@ Last updated: 2026-07-27
   RF64 assembly, whole-file encoding, and finalization.
 - [x] When `/run/media/babymastodon/FBFA-9088` is mounted, refresh its `conv`
   directory, `cover.jpg`, and `conv` playlist from the verified masters.
+- [x] Embed the exact checked-in JPEG cover in FLAC, M4A, and Opus; require
+  byte-identical cover validation in the batch finalizer and independent album
+  verifier.

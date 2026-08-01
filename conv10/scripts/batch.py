@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import csv
 import dataclasses
@@ -983,6 +984,59 @@ def metadata_arguments(
     return arguments
 
 
+def cover_picture_metadata(path: Path) -> str:
+    """Return a base64 FLAC PICTURE block suitable for an Opus comment."""
+    image = path.read_bytes()
+    probe = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,width,height",
+                "-of",
+                "json",
+                str(path),
+            ],
+            text=True,
+        )
+    )
+    streams = probe.get("streams", [])
+    if not streams or streams[0].get("codec_name") != "mjpeg":
+        raise ValueError(f"{path}: cover art must be JPEG")
+    width = int(streams[0]["width"])
+    height = int(streams[0]["height"])
+    mime = b"image/jpeg"
+    description = b"Album cover"
+    fields = (
+        (3).to_bytes(4, "big"),  # Front cover.
+        len(mime).to_bytes(4, "big"),
+        mime,
+        len(description).to_bytes(4, "big"),
+        description,
+        width.to_bytes(4, "big"),
+        height.to_bytes(4, "big"),
+        (24).to_bytes(4, "big"),
+        (0).to_bytes(4, "big"),
+        len(image).to_bytes(4, "big"),
+        image,
+    )
+    return base64.b64encode(b"".join(fields)).decode("ascii")
+
+
+def ffmetadata_escape(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("=", "\\=")
+        .replace(";", "\\;")
+        .replace("#", "\\#")
+        .replace("\n", "\\\n")
+    )
+
+
 def encode_one(
     run: SongRun,
     kind: str,
@@ -1004,6 +1058,7 @@ def encode_one(
         f".{target.stem}.part.{os.getpid()}.{threading.get_ident()}{target.suffix}"
     )
     temporary.unlink(missing_ok=True)
+    metadata_sidecar: Path | None = None
     master = run.job_dir / "concat" / f"{run.song.name}.part.rf64.wav"
     if not master.is_file():
         raise FileNotFoundError(f"assembled RF64 master not found: {master}")
@@ -1022,12 +1077,24 @@ def encode_one(
     if kind == "flac":
         command.extend(
             [
+                "-i",
+                str(PROJECT_DIR / "cover.jpg"),
                 "-map",
                 "0:a:0",
+                "-map",
+                "1:v:0",
                 "-c:a",
                 "flac",
                 "-compression_level",
                 "3",
+                "-c:v",
+                "copy",
+                "-disposition:v:0",
+                "attached_pic",
+                "-metadata:s:v:0",
+                "title=Album cover",
+                "-metadata:s:v:0",
+                "comment=Cover (front)",
                 *metadata_arguments(run.song.metadata, include_description=False),
             ]
         )
@@ -1056,10 +1123,23 @@ def encode_one(
             ]
         )
     else:
+        metadata_sidecar = temporary.with_suffix(".picture.ffmetadata")
+        metadata_sidecar.write_text(
+            ";FFMETADATA1\nMETADATA_BLOCK_PICTURE="
+            + ffmetadata_escape(cover_picture_metadata(PROJECT_DIR / "cover.jpg"))
+            + "\n",
+            encoding="utf-8",
+        )
         command.extend(
             [
+                "-f",
+                "ffmetadata",
+                "-i",
+                str(metadata_sidecar),
                 "-map",
                 "0:a:0",
+                "-map_metadata",
+                "1",
                 "-c:a",
                 opus_encoder,
                 "-b:a",
@@ -1083,6 +1163,9 @@ def encode_one(
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    finally:
+        if metadata_sidecar is not None:
+            metadata_sidecar.unlink(missing_ok=True)
     elapsed = time.monotonic() - started
     print(
         f"encoded {run.song.name}.{extension} in {elapsed:.1f}s",
@@ -1157,7 +1240,8 @@ def finalize_song(
     opus_path = output_dir / "opus" / f"{output_name}.opus"
     for path in (flac_path, aac_path, opus_path):
         validate_embedded_metadata(path, run.song.metadata)
-    validate_embedded_cover(aac_path)
+    for path in (flac_path, aac_path, opus_path):
+        validate_embedded_cover(path)
     hash_started = time.monotonic()
     output_paths = [flac_path, aac_path, opus_path]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(output_paths)) as executor:
@@ -1226,6 +1310,8 @@ def validate_embedded_metadata(path: Path, expected: dict[str, str]) -> None:
                 "ffprobe",
                 "-v",
                 "error",
+                "-select_streams",
+                "a:0",
                 "-show_entries",
                 "format_tags:stream_tags",
                 "-of",
@@ -1257,7 +1343,9 @@ def validate_embedded_metadata(path: Path, expected: dict[str, str]) -> None:
         raise ValueError(f"{path}: metadata mismatch: {'; '.join(mismatches)}")
 
 
-def validate_embedded_cover(path: Path) -> None:
+def validate_embedded_cover(
+    path: Path, expected_cover: Path = PROJECT_DIR / "cover.jpg"
+) -> None:
     payload = json.loads(
         subprocess.check_output(
             [
@@ -1282,6 +1370,24 @@ def validate_embedded_cover(path: Path) -> None:
     attached = stream.get("disposition", {}).get("attached_pic") == 1
     if stream.get("codec_name") != "mjpeg" or not attached:
         raise ValueError(f"{path}: invalid embedded JPEG cover art")
+    embedded = subprocess.check_output(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-f",
+            "image2pipe",
+            "-",
+        ]
+    )
+    if embedded != expected_cover.read_bytes():
+        raise ValueError(f"{path}: embedded cover does not match {expected_cover}")
 
 
 def positive_integer(value: str) -> int:

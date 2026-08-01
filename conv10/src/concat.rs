@@ -13,6 +13,7 @@ use crate::manifest::{is_long_duration, is_short_duration, load_manifest};
 use crate::pitch::{ALGORITHM_VERSION, fingerprint_bytes, fingerprint_hex};
 
 const RF64_HEADER_BYTES: u64 = 80;
+const DELIVERY_VERSION: &str = "conv10-delivery-v18-embedded-cover-all-formats";
 
 #[derive(Clone, Debug)]
 pub struct ConcatOptions {
@@ -104,6 +105,7 @@ struct ConcatReport {
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct ConcatRecipe {
     algorithm_version: String,
+    delivery_version: String,
     manifest_fingerprint: String,
     metrics_fingerprint: String,
     cover_art_fingerprint: String,
@@ -208,6 +210,7 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         .join(format!("{}.recipe.json", options.output_name));
     let expected_recipe = ConcatRecipe {
         algorithm_version: ALGORITHM_VERSION.to_owned(),
+        delivery_version: DELIVERY_VERSION.to_owned(),
         manifest_fingerprint: fingerprint_file(&options.manifest)?,
         metrics_fingerprint: fingerprint_file(&options.metrics)?,
         cover_art_fingerprint: fingerprint_file(&options.cover_art)?,
@@ -285,9 +288,11 @@ pub fn concatenate_master(options: ConcatOptions) -> Result<()> {
         }
     }
     let flac = probe_encoding(&flac_path, "flac", output_seconds)?;
+    validate_attached_cover(&flac_path, &options.cover_art)?;
     let aac = probe_encoding(&aac_path, "aac", output_seconds)?;
-    validate_attached_cover(&aac_path)?;
+    validate_attached_cover(&aac_path, &options.cover_art)?;
     let opus = probe_encoding(&opus_path, "opus", output_seconds)?;
+    validate_attached_cover(&opus_path, &options.cover_art)?;
     validate_decodable_in_parallel(&[
         ("FLAC", &flac_path),
         ("AAC", &aac_path),
@@ -576,7 +581,26 @@ fn encode_outputs(
         command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(rf64_path)
-            .args(["-map", "0:a:0", "-c:a", "flac", "-compression_level", "3"]);
+            .args(["-i"])
+            .arg(cover_art)
+            .args([
+                "-map",
+                "0:a:0",
+                "-map",
+                "1:v:0",
+                "-c:a",
+                "flac",
+                "-compression_level",
+                "3",
+                "-c:v",
+                "copy",
+                "-disposition:v:0",
+                "attached_pic",
+                "-metadata:s:v:0",
+                "title=Album cover",
+                "-metadata:s:v:0",
+                "comment=Cover (front)",
+            ]);
         append_metadata(&mut command, metadata, false);
         let child = command
             .arg(&temporary_flac)
@@ -585,7 +609,7 @@ fn encode_outputs(
             .stderr(Stdio::inherit())
             .spawn()
             .context("start parallel FLAC encoder")?;
-        jobs.push(("FLAC", child, temporary_flac, targets.flac.to_owned()));
+        jobs.push(("FLAC", child, temporary_flac, targets.flac.to_owned(), None));
     }
     if rebuild_aac {
         remove_if_present(&temporary_aac)?;
@@ -618,7 +642,7 @@ fn encode_outputs(
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("start parallel AAC encoder {aac_encoder}"))?;
-        jobs.push(("AAC", child, temporary_aac, targets.aac.to_owned()));
+        jobs.push(("AAC", child, temporary_aac, targets.aac.to_owned(), None));
     }
     let opus_encoder = if rebuild_opus {
         Some(preferred_opus_encoder()?)
@@ -627,25 +651,47 @@ fn encode_outputs(
     };
     if rebuild_opus {
         remove_if_present(&temporary_opus)?;
+        let metadata_sidecar = temporary_opus.with_extension("picture.ffmetadata");
+        remove_if_present(&metadata_sidecar)?;
+        fs::write(
+            &metadata_sidecar,
+            format!(
+                ";FFMETADATA1\nMETADATA_BLOCK_PICTURE={}\n",
+                ffmetadata_escape(&cover_picture_metadata(cover_art)?)
+            ),
+        )?;
         let child = spawn_opus(
             rf64_path,
             &temporary_opus,
             opus_encoder.as_deref().unwrap_or("libopus"),
             opus_bitrate_kbps,
             metadata,
-        )?;
-        jobs.push(("Opus", child, temporary_opus, targets.opus.to_owned()));
+            &metadata_sidecar,
+        )
+        .inspect_err(|_| {
+            let _ = remove_if_present(&metadata_sidecar);
+        })?;
+        jobs.push((
+            "Opus",
+            child,
+            temporary_opus,
+            targets.opus.to_owned(),
+            Some(metadata_sidecar),
+        ));
     }
     let names = jobs
         .iter()
-        .map(|(name, _, _, _)| *name)
+        .map(|(name, _, _, _, _)| *name)
         .collect::<Vec<_>>()
         .join(", ");
     eprintln!("encoding in parallel: {names}");
-    for (name, mut child, temporary, final_path) in jobs {
+    for (name, mut child, temporary, final_path, metadata_sidecar) in jobs {
         let status = child
             .wait()
             .with_context(|| format!("wait for {name} encoder"))?;
+        if let Some(path) = metadata_sidecar {
+            remove_if_present(&path)?;
+        }
         if !status.success() {
             bail!("{name} encoding failed with {status}");
         }
@@ -695,12 +741,15 @@ fn spawn_opus(
     encoder: &str,
     bitrate_kbps: u32,
     metadata: &AudioMetadata,
+    picture_metadata: &Path,
 ) -> Result<std::process::Child> {
     let mut command = Command::new("ffmpeg");
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(rf64_path)
-        .args(["-map", "0:a:0", "-c:a"])
+        .args(["-f", "ffmetadata", "-i"])
+        .arg(picture_metadata)
+        .args(["-map", "0:a:0", "-map_metadata", "1", "-c:a"])
         .arg(encoder)
         .arg("-b:a")
         .arg(format!("{bitrate_kbps}k"))
@@ -722,6 +771,89 @@ fn spawn_opus(
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("start {bitrate_kbps}k Opus encoder {encoder}"))
+}
+
+fn ffmetadata_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('=', "\\=")
+        .replace(';', "\\;")
+        .replace('#', "\\#")
+        .replace('\n', "\\\n")
+}
+
+fn cover_picture_metadata(path: &Path) -> Result<String> {
+    let image = fs::read(path).with_context(|| format!("read cover art {}", path.display()))?;
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=codec_name,width,height"])
+        .args(["-of", "json"])
+        .arg(path)
+        .output()
+        .with_context(|| format!("probe cover art {}", path.display()))?;
+    if !probe.status.success() {
+        bail!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&probe.stderr)
+        );
+    }
+    let value: serde_json::Value = serde_json::from_slice(&probe.stdout)?;
+    let stream = value["streams"]
+        .as_array()
+        .and_then(|streams| streams.first())
+        .context("cover art has no image stream")?;
+    if stream["codec_name"].as_str() != Some("mjpeg") {
+        bail!("{}: cover art must be JPEG", path.display());
+    }
+    let width = u32::try_from(stream["width"].as_u64().context("cover width is missing")?)?;
+    let height = u32::try_from(
+        stream["height"]
+            .as_u64()
+            .context("cover height is missing")?,
+    )?;
+    let mime = b"image/jpeg";
+    let description = b"Album cover";
+    let mut picture = Vec::with_capacity(64 + image.len());
+    append_picture_field(&mut picture, 3);
+    append_picture_field(&mut picture, u32::try_from(mime.len())?);
+    picture.extend_from_slice(mime);
+    append_picture_field(&mut picture, u32::try_from(description.len())?);
+    picture.extend_from_slice(description);
+    append_picture_field(&mut picture, width);
+    append_picture_field(&mut picture, height);
+    append_picture_field(&mut picture, 24);
+    append_picture_field(&mut picture, 0);
+    append_picture_field(&mut picture, u32::try_from(image.len())?);
+    picture.extend_from_slice(&image);
+    Ok(base64_encode(&picture))
+}
+
+fn append_picture_field(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_be_bytes());
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(third & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 fn append_metadata(command: &mut Command, metadata: &AudioMetadata, include_description: bool) {
@@ -978,7 +1110,7 @@ fn probe_encoding(
     })
 }
 
-fn validate_attached_cover(path: &Path) -> Result<()> {
+fn validate_attached_cover(path: &Path, expected_cover: &Path) -> Result<()> {
     let output = Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0"])
         .args([
@@ -1000,7 +1132,7 @@ fn validate_attached_cover(path: &Path) -> Result<()> {
     let stream = value["streams"]
         .as_array()
         .and_then(|streams| streams.first())
-        .context("M4A has no embedded cover stream")?;
+        .with_context(|| format!("{} has no embedded cover stream", path.display()))?;
     let codec = stream["codec_name"]
         .as_str()
         .context("embedded cover has no codec name")?;
@@ -1009,6 +1141,28 @@ fn validate_attached_cover(path: &Path) -> Result<()> {
         bail!(
             "{} has invalid cover stream: codec={codec}, attached_pic={attached}",
             path.display()
+        );
+    }
+    let embedded = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-map", "0:v:0", "-c:v", "copy", "-f", "image2pipe", "-"])
+        .output()
+        .with_context(|| format!("extract cover art from {}", path.display()))?;
+    if !embedded.status.success() {
+        bail!(
+            "cover extraction failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&embedded.stderr)
+        );
+    }
+    let expected = fs::read(expected_cover)
+        .with_context(|| format!("read expected cover {}", expected_cover.display()))?;
+    if embedded.stdout != expected {
+        bail!(
+            "{} embedded cover does not match {}",
+            path.display(),
+            expected_cover.display()
         );
     }
     Ok(())
@@ -1118,5 +1272,14 @@ mod tests {
         let mut multiline = valid;
         multiline.title = "Drift\nAlternate".into();
         assert!(validate_metadata(&multiline).is_err());
+    }
+
+    #[test]
+    fn picture_metadata_helpers_use_standard_encodings() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(ffmetadata_escape("a=b;c#d\\e"), "a\\=b\\;c\\#d\\\\e");
     }
 }

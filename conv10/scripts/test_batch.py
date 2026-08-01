@@ -155,7 +155,7 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(metadata["album"], "Convolutions 10")
         self.assertTrue(all(metadata.values()))
 
-    def test_embedded_jpeg_cover_is_required(self) -> None:
+    def test_embedded_jpeg_cover_is_required_and_exact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             plain_path = root / "plain.m4a"
@@ -208,6 +208,10 @@ class MetadataTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing embedded cover"):
                 validate_embedded_cover(plain_path)
             validate_embedded_cover(covered_path)
+            wrong_cover = root / "wrong-cover.jpg"
+            wrong_cover.write_bytes((PROJECT_DIR / "cover.jpg").read_bytes() + b"wrong")
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                validate_embedded_cover(covered_path, wrong_cover)
 
     def test_parallel_queue_encoder_preserves_metadata_and_cover(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -273,7 +277,12 @@ class MetadataTests(unittest.TestCase):
                 output_dir / "opus" / "test.opus",
             ):
                 validate_embedded_metadata(path, metadata)
-            validate_embedded_cover(output_dir / "m4a" / "test.m4a")
+            for path in (
+                output_dir / "flac" / "test.flac",
+                output_dir / "m4a" / "test.m4a",
+                output_dir / "opus" / "test.opus",
+            ):
+                validate_embedded_cover(path)
 
 
 if __name__ == "__main__":

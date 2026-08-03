@@ -159,7 +159,8 @@ try {
         if (!response.ok) throw new Error(`fixture WAV failed: ${response.status}`);
         const wav = new Uint8Array(await response.arrayBuffer());
         const outputDuration =
-          request.algorithm === "full_convolution"
+          request.algorithm === "full_convolution" ||
+          request.algorithm === "complex_geometric_morph"
             ? request.parameters.full_a_duration_seconds +
               request.parameters.full_b_duration_seconds -
               1 / 48_000
@@ -554,12 +555,12 @@ try {
     "rgba(0, 0, 0, 0)",
     "waveform metrics must not show a mismatched box while loading",
   );
-  assert.equal(await page.locator("#algorithmButtons button").count(), 8, "algorithm count");
+  assert.equal(await page.locator("#algorithmButtons button").count(), 9, "algorithm count");
   assert.deepEqual(
     await page.locator("#algorithmButtons button").evaluateAll((buttons) =>
       buttons.slice(0, 3).map((button) => button.dataset.value),
     ),
-    ["windowed_convolution", "full_convolution", "moving_impulse_response"],
+    ["windowed_convolution", "full_convolution", "complex_geometric_morph"],
     "the primary convolution methods appear first in the requested order",
   );
   const uiScale = await page.evaluate(() => {
@@ -840,6 +841,29 @@ try {
   await page.getByLabel("A offset exact value").fill("10");
   await page.getByLabel("B duration exact value").fill("15");
   await waitForPath(page, "/full_convolution/a10.00+20.00_b0.00+15.00");
+
+  await page.getByRole("button", { name: "geom", exact: true }).click();
+  await waitForPath(
+    page,
+    "/complex_geometric_morph/a0.00+61.00_b0.00+61.00_balance0.50_power1.00",
+  );
+  assert.equal(await page.locator("#methodTools .window-control").count(), 0);
+  assert.equal(await page.locator("#methodTools .tool-control").count(), 6);
+  assert.equal(await page.locator("#methodTools input").count(), 12);
+  assert.equal(await page.getByLabel("A/B balance exact value").inputValue(), "0.50");
+  assert.equal(await page.getByLabel("complex power exact value").inputValue(), "1.00");
+  assert.match(
+    await page.getByLabel("A/B balance exact value").getAttribute("title"),
+    /never an additive crossfade/,
+  );
+  assert.match(
+    await page.getByLabel("complex power exact value").getAttribute("title"),
+    /ordinary convolution.*rooted multiplication/,
+  );
+  await assertControlTooltips(page);
+  await page.getByLabel("A/B balance exact value").fill("0.25");
+  await page.getByLabel("complex power exact value").fill("4.00");
+  await waitForPath(page, "_balance0.25_power4.00");
 
   await page.getByRole("button", { name: "dry a", exact: true }).click();
   await waitForPath(page, "/dry_a/source");
@@ -1239,10 +1263,14 @@ async function testCatalog() {
         "Sets the beginning of clip B's selected segment and automatically keeps its duration within the source.",
       full_b_duration_seconds:
         "Sets how much of clip B is selected for full convolution and defaults to the complete source.",
+      geometric_balance:
+        "Sets the complex-geometric position between A and B; this is never an additive crossfade.",
+      geometric_power:
+        "Scales logarithmic magnitude and unwrapped phase together, reaching ordinary convolution or rooted multiplication.",
     }[id],
   });
   return {
-    schema_version: 14,
+    schema_version: 15,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,
@@ -1273,6 +1301,22 @@ async function testCatalog() {
           parameter("full_a_duration_seconds", "A duration", 0.1, 61, 0.1, 61, "s"),
           parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
           parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
+        ],
+      },
+      {
+        id: "complex_geometric_morph",
+        title: "Complex geometric morph",
+        description:
+          "Combines selected A/B segments by configurable complex powers, jointly transforming logarithmic magnitude and unwrapped phase.",
+        rank: 7,
+        windows: [],
+        parameters: [
+          parameter("full_a_offset_seconds", "A offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_a_duration_seconds", "A duration", 0.1, 61, 0.1, 61, "s"),
+          parameter("full_b_offset_seconds", "B offset", 0, 60.9, 0.1, 0, "s"),
+          parameter("full_b_duration_seconds", "B duration", 0.1, 61, 0.1, 61, "s"),
+          parameter("geometric_balance", "A/B balance", 0, 1, 0.01, 0.5),
+          parameter("geometric_power", "complex power", 0.25, 4, 0.01, 1),
         ],
       },
       {

@@ -1,8 +1,10 @@
 use std::f32::consts::PI;
+use std::f64::consts::{PI as PI_64, TAU as TAU_64};
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use rayon::{join, prelude::*};
+use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +19,7 @@ pub enum Algorithm {
     MovingImpulseResponse,
     ChunkCrossfade,
     FullConvolution,
+    ComplexGeometricMorph,
     DryA,
     DryB,
 }
@@ -270,9 +273,10 @@ mod windowed_performance_characterization {
 }
 
 impl Algorithm {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::WindowedConvolution,
         Self::FullConvolution,
+        Self::ComplexGeometricMorph,
         Self::MovingImpulseResponse,
         Self::SourceFilterVocoder,
         Self::LatentConvolutionBank,
@@ -289,6 +293,7 @@ impl Algorithm {
             Self::MovingImpulseResponse => "moving_impulse_response",
             Self::ChunkCrossfade => "chunk_crossfade",
             Self::FullConvolution => "full_convolution",
+            Self::ComplexGeometricMorph => "complex_geometric_morph",
             Self::DryA => "dry_a",
             Self::DryB => "dry_b",
         }
@@ -302,6 +307,7 @@ impl Algorithm {
             Self::MovingImpulseResponse => "Moving impulse response",
             Self::ChunkCrossfade => "Independent chunks + crossfade",
             Self::FullConvolution => "Full linear convolution",
+            Self::ComplexGeometricMorph => "Complex geometric morph",
             Self::DryA => "Dry source A",
             Self::DryB => "Dry source B",
         }
@@ -343,6 +349,13 @@ impl Algorithm {
                  operation. Each selected cut receives a 20 ms edge fade, both segments default \
                  to the complete 61-second sources, and the complete A + B - 1 result is retained."
             }
+            Self::ComplexGeometricMorph => {
+                "Selects the same independently configurable A/B segments as full convolution, \
+                 then combines their complete complex FFT coefficients as X^(k(1-a)) Y^(ka). \
+                 Balance a moves geometrically between both sources, while complex power k moves \
+                 from rooted, diffuse hybrids through geometric morphing to ordinary multiplication; \
+                 magnitude and unwrapped phase always change together."
+            }
             Self::DryA => {
                 "Plays the complete conditioned clip A exactly as it enters the convolution \
                  methods. No convolution, output saturation, or second level-normalization pass \
@@ -364,8 +377,9 @@ impl Algorithm {
             Self::MovingImpulseResponse => 4,
             Self::ChunkCrossfade => 5,
             Self::FullConvolution => 6,
-            Self::DryA => 7,
-            Self::DryB => 8,
+            Self::ComplexGeometricMorph => 7,
+            Self::DryA => 8,
+            Self::DryB => 9,
         }
     }
 
@@ -416,6 +430,8 @@ pub struct AlgorithmParameters {
     pub full_a_duration_seconds: f32,
     pub full_b_offset_seconds: f32,
     pub full_b_duration_seconds: f32,
+    pub geometric_balance: f32,
+    pub geometric_power: f32,
 }
 
 impl Default for AlgorithmParameters {
@@ -437,6 +453,8 @@ impl Default for AlgorithmParameters {
             full_a_duration_seconds: INPUT_SECONDS as f32,
             full_b_offset_seconds: 0.0,
             full_b_duration_seconds: INPUT_SECONDS as f32,
+            geometric_balance: 0.50,
+            geometric_power: 1.00,
         }
     }
 }
@@ -477,7 +495,7 @@ impl AlgorithmParameters {
                 validate_range("chunk crossfade", self.chunk_crossfade_percent, 5.0, 75.0)?;
                 validate_range("chunk crop position", self.chunk_crop_position, 0.0, 1.0)?;
             }
-            Algorithm::FullConvolution => {
+            Algorithm::FullConvolution | Algorithm::ComplexGeometricMorph => {
                 validate_segment(
                     "A",
                     self.full_a_offset_seconds,
@@ -488,6 +506,10 @@ impl AlgorithmParameters {
                     self.full_b_offset_seconds,
                     self.full_b_duration_seconds,
                 )?;
+                if algorithm == Algorithm::ComplexGeometricMorph {
+                    validate_range("geometric balance", self.geometric_balance, 0.0, 1.0)?;
+                    validate_range("complex power", self.geometric_power, 0.25, 4.0)?;
+                }
             }
             Algorithm::DryA | Algorithm::DryB => {}
         }
@@ -601,6 +623,9 @@ pub fn render_algorithm_cancellable(
             cancelled,
         )?,
         Algorithm::FullConvolution => render_full(clip_a, clip_b, parameters, cancelled)?,
+        Algorithm::ComplexGeometricMorph => {
+            render_complex_geometric_morph(clip_a, clip_b, parameters, cancelled)?
+        }
         Algorithm::DryA => clip_a.samples.clone(),
         Algorithm::DryB => clip_b.samples.clone(),
     };
@@ -639,6 +664,39 @@ fn render_full(
         bail!("render cancelled");
     }
     Ok(full)
+}
+
+fn render_complex_geometric_morph(
+    clip_a: &AudioClip,
+    clip_b: &AudioClip,
+    parameters: AlgorithmParameters,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>> {
+    if cancelled() {
+        bail!("render cancelled");
+    }
+    let a = prepared_segment(
+        &clip_a.samples,
+        parameters.full_a_offset_seconds,
+        parameters.full_a_duration_seconds,
+    );
+    let b = prepared_segment(
+        &clip_b.samples,
+        parameters.full_b_offset_seconds,
+        parameters.full_b_duration_seconds,
+    );
+    let output_frames = a.len() + b.len() - 1;
+    let mut morpher = LocalConvolver::new(output_frames);
+    let output = morpher.complex_geometric_morph(
+        &a,
+        &b,
+        parameters.geometric_balance,
+        parameters.geometric_power,
+    )?;
+    if cancelled() {
+        bail!("render cancelled");
+    }
+    Ok(output)
 }
 
 fn prepared_segment(samples: &[f32], offset_seconds: f32, duration_seconds: f32) -> Vec<f32> {
@@ -1518,6 +1576,74 @@ impl LocalConvolver {
         right: &[f32],
         parallel_forwards: bool,
     ) -> Result<LocalConvolution> {
+        let output_frames = self.forward_inputs(left, right, parallel_forwards)?;
+        for (left, right) in self.left_spectrum.iter_mut().zip(&self.right_spectrum) {
+            *left *= *right;
+        }
+        self.inverse_left_spectrum(output_frames)
+    }
+
+    fn complex_geometric_morph(
+        &mut self,
+        left: &[f32],
+        right: &[f32],
+        balance: f32,
+        power: f32,
+    ) -> Result<Vec<f32>> {
+        let output_frames = self.forward_inputs(left, right, true)?;
+        // Z = X^(power * (1 - balance)) * Y^(power * balance).
+        // One exponent pair therefore spans source identity, complex-geometric
+        // interpolation, rooted multiplication, and the ordinary XY product.
+        let left_exponent = power * (1.0 - balance);
+        let right_exponent = power * balance;
+
+        if (left_exponent - 1.0).abs() < 1.0e-6 && (right_exponent - 1.0).abs() < 1.0e-6 {
+            for (left, right) in self.left_spectrum.iter_mut().zip(&self.right_spectrum) {
+                *left *= *right;
+            }
+        } else if left_exponent.abs() < 1.0e-6 && (right_exponent - 1.0).abs() < 1.0e-6 {
+            self.left_spectrum.copy_from_slice(&self.right_spectrum);
+        } else if !((left_exponent - 1.0).abs() < 1.0e-6 && right_exponent.abs() < 1.0e-6) {
+            let mut left_phase = PhaseUnwrapper::new(&self.left_spectrum);
+            let mut right_phase = PhaseUnwrapper::new(&self.right_spectrum);
+            let final_bin = self.left_spectrum.len() - 1;
+            for (index, (left, right)) in self
+                .left_spectrum
+                .iter_mut()
+                .zip(&self.right_spectrum)
+                .enumerate()
+            {
+                let left_unwrapped = left_phase.next(*left);
+                let right_unwrapped = right_phase.next(*right);
+                let left_log_magnitude = powered_log_magnitude(*left, left_exponent);
+                let right_log_magnitude = powered_log_magnitude(*right, right_exponent);
+                let Some(log_magnitude) = left_log_magnitude
+                    .and_then(|left| right_log_magnitude.map(|right| left + right))
+                else {
+                    *left = Complex32::new(0.0, 0.0);
+                    continue;
+                };
+                let magnitude = log_magnitude.exp();
+                let phase = (f64::from(left_exponent) * left_unwrapped
+                    + f64::from(right_exponent) * right_unwrapped)
+                    .rem_euclid(TAU_64);
+                let (sine, cosine) = phase.sin_cos();
+                *left = if index == 0 || index == final_bin {
+                    Complex32::new(magnitude * cosine as f32, 0.0)
+                } else {
+                    Complex32::new(magnitude * cosine as f32, magnitude * sine as f32)
+                };
+            }
+        }
+        Ok(self.inverse_left_spectrum(output_frames)?.samples)
+    }
+
+    fn forward_inputs(
+        &mut self,
+        left: &[f32],
+        right: &[f32],
+        parallel_forwards: bool,
+    ) -> Result<usize> {
         let output_frames = left.len() + right.len() - 1;
         if output_frames > self.fft_len {
             bail!("local convolution exceeds planned FFT");
@@ -1538,9 +1664,10 @@ impl LocalConvolver {
             forward.process(&mut self.left_time, &mut self.left_spectrum)?;
             forward.process(&mut self.right_time, &mut self.right_spectrum)?;
         }
-        for (left, right) in self.left_spectrum.iter_mut().zip(&self.right_spectrum) {
-            *left *= *right;
-        }
+        Ok(output_frames)
+    }
+
+    fn inverse_left_spectrum(&mut self, output_frames: usize) -> Result<LocalConvolution> {
         self.inverse
             .process(&mut self.left_spectrum, &mut self.output_time)?;
         let scale = 1.0 / self.fft_len as f32;
@@ -1557,6 +1684,56 @@ impl LocalConvolver {
             samples,
             rms: (sum_squares / output_frames.max(1) as f64).sqrt() as f32,
         })
+    }
+}
+
+fn powered_log_magnitude(coefficient: Complex32, exponent: f32) -> Option<f32> {
+    if exponent.abs() < 1.0e-6 {
+        return Some(0.0);
+    }
+    let magnitude_squared = coefficient.norm_sqr();
+    if magnitude_squared <= f32::MIN_POSITIVE {
+        None
+    } else {
+        Some(0.5 * exponent * magnitude_squared.ln())
+    }
+}
+
+struct PhaseUnwrapper {
+    significance_floor: f32,
+    previous_wrapped: Option<f64>,
+    previous_unwrapped: f64,
+}
+
+impl PhaseUnwrapper {
+    fn new(spectrum: &[Complex32]) -> Self {
+        let maximum_magnitude_squared = spectrum
+            .iter()
+            .map(|coefficient| coefficient.norm_sqr())
+            .fold(0.0_f32, f32::max);
+        Self {
+            significance_floor: maximum_magnitude_squared * 1.0e-12,
+            previous_wrapped: None,
+            previous_unwrapped: 0.0,
+        }
+    }
+
+    fn next(&mut self, coefficient: Complex32) -> f64 {
+        // Do not let effectively empty bins choose a random branch for the
+        // next audible bin. Their output magnitude is independently handled.
+        if coefficient.norm_sqr() <= self.significance_floor {
+            return self.previous_unwrapped;
+        }
+        let wrapped = f64::from(coefficient.im).atan2(f64::from(coefficient.re));
+        let unwrapped = if let Some(previous) = self.previous_wrapped {
+            let delta = (wrapped - previous + PI_64).rem_euclid(TAU_64) - PI_64;
+            self.previous_unwrapped + delta
+        } else {
+            wrapped
+        };
+        self.previous_wrapped = Some(wrapped);
+        self.previous_unwrapped = unwrapped;
+        unwrapped
     }
 }
 
@@ -1931,6 +2108,21 @@ mod tests {
         assert!(parameters.validate(Algorithm::FullConvolution).is_err());
 
         parameters = AlgorithmParameters::default();
+        parameters.geometric_balance = -0.01;
+        assert!(
+            parameters
+                .validate(Algorithm::ComplexGeometricMorph)
+                .is_err()
+        );
+        parameters = AlgorithmParameters::default();
+        parameters.geometric_power = 4.01;
+        assert!(
+            parameters
+                .validate(Algorithm::ComplexGeometricMorph)
+                .is_err()
+        );
+
+        parameters = AlgorithmParameters::default();
         parameters.window_overlap_percent = 90.0;
         assert!(parameters.validate(Algorithm::WindowedConvolution).is_err());
 
@@ -1986,6 +2178,145 @@ mod tests {
         assert_eq!(segment[0], 0.0);
         assert_eq!(*segment.last().unwrap(), 0.0);
         assert_eq!(segment[SAMPLE_RATE as usize], 1.0);
+    }
+
+    #[test]
+    fn complex_geometric_morph_has_exact_source_and_convolution_landmarks() {
+        let mut a = vec![0.0_f32; 8];
+        let mut b = vec![0.0_f32; 8];
+        a[0] = 4.0;
+        b[4] = 9.0;
+        let output_frames = a.len() + b.len() - 1;
+        let mut morpher = LocalConvolver::new(output_frames);
+
+        let only_a = morpher.complex_geometric_morph(&a, &b, 0.0, 1.0).unwrap();
+        let only_b = morpher.complex_geometric_morph(&a, &b, 1.0, 1.0).unwrap();
+        let mut expected_a = a.clone();
+        let mut expected_b = b.clone();
+        expected_a.resize(output_frames, 0.0);
+        expected_b.resize(output_frames, 0.0);
+        assert_samples_close(&only_a, &expected_a, 1.0e-5);
+        assert_samples_close(&only_b, &expected_b, 1.0e-5);
+
+        let geometric_midpoint = morpher.complex_geometric_morph(&a, &b, 0.5, 1.0).unwrap();
+        assert_single_impulse(&geometric_midpoint, 2, 6.0, 1.0e-4);
+
+        let geometric_product = morpher.complex_geometric_morph(&a, &b, 0.5, 2.0).unwrap();
+        let ordinary_convolution = morpher.convolve(&a, &b).unwrap();
+        assert_samples_close(&geometric_product, &ordinary_convolution, 1.0e-4);
+        assert_single_impulse(&geometric_product, 4, 36.0, 1.0e-3);
+
+        let squared_product = morpher.complex_geometric_morph(&a, &b, 0.5, 4.0).unwrap();
+        assert_single_impulse(&squared_product, 8, 36.0_f32.powi(2), 2.0e-2);
+    }
+
+    #[test]
+    fn geometric_balance_and_power_scale_log_amplitude_and_phase_together() {
+        let mut a = vec![0.0_f32; 8];
+        let mut b = vec![0.0_f32; 8];
+        a[0] = 4.0;
+        b[4] = 9.0;
+        let mut morpher = LocalConvolver::new(a.len() + b.len() - 1);
+
+        let quarter_balance = morpher.complex_geometric_morph(&a, &b, 0.25, 1.0).unwrap();
+        let expected_quarter_amplitude = 4.0_f32.powf(0.75) * 9.0_f32.powf(0.25);
+        assert_single_impulse(&quarter_balance, 1, expected_quarter_amplitude, 1.0e-4);
+
+        let rooted_product = morpher.complex_geometric_morph(&a, &b, 0.5, 0.5).unwrap();
+        assert_single_impulse(&rooted_product, 1, 6.0_f32.sqrt(), 1.0e-4);
+    }
+
+    #[test]
+    fn geometric_phase_unwrap_preserves_a_large_predicted_delay() {
+        let frames = 131_072;
+        let mut a = vec![0.0_f32; frames];
+        let mut b = vec![0.0_f32; frames];
+        a[0] = 1.0;
+        b[100_000] = 1.0;
+        let mut morpher = LocalConvolver::new(a.len() + b.len() - 1);
+        let midpoint = morpher.complex_geometric_morph(&a, &b, 0.5, 1.0).unwrap();
+        assert_single_impulse(&midpoint, 50_000, 1.0, 2.0e-3);
+    }
+
+    #[test]
+    fn identical_complex_spectra_are_invariant_across_geometric_balance() {
+        let signal = [0.4_f32, -0.2, 0.1, 0.3, -0.15, 0.05, 0.2, -0.1];
+        let output_frames = signal.len() * 2 - 1;
+        let mut expected = signal.to_vec();
+        expected.resize(output_frames, 0.0);
+        let mut morpher = LocalConvolver::new(output_frames);
+        for balance in [0.0, 0.17, 0.5, 0.83, 1.0] {
+            let output = morpher
+                .complex_geometric_morph(&signal, &signal, balance, 1.0)
+                .unwrap();
+            assert_samples_close(&output, &expected, 1.0e-4);
+        }
+    }
+
+    #[test]
+    fn complex_geometric_method_dispatches_and_conditions_rich_short_signals() {
+        let frames = seconds_to_frames(0.1);
+        let signal = |frequency: f32, impulse_index: usize| {
+            let mut samples = vec![0.0; INPUT_FRAMES];
+            for (index, sample) in samples.iter_mut().take(frames).enumerate() {
+                let time = index as f32 / SAMPLE_RATE as f32;
+                *sample = 0.24 * (2.0 * PI * frequency * time).sin()
+                    + 0.08 * (2.0 * PI * frequency * 1.731 * time + 0.4).cos();
+            }
+            samples[impulse_index] += 0.45;
+            samples
+        };
+        let clip_a = AudioClip {
+            id: "geometric-test-a".to_owned(),
+            samples: signal(233.0, 600),
+        };
+        let clip_b = AudioClip {
+            id: "geometric-test-b".to_owned(),
+            samples: signal(389.0, 1_400),
+        };
+        let parameters = AlgorithmParameters {
+            full_a_duration_seconds: 0.1,
+            full_b_duration_seconds: 0.1,
+            geometric_balance: 0.37,
+            geometric_power: 1.28,
+            ..AlgorithmParameters::default()
+        };
+        let mut output = render_algorithm_cancellable(
+            Algorithm::ComplexGeometricMorph,
+            None,
+            parameters,
+            &clip_a,
+            &clip_b,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(output.len(), frames * 2 - 1);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(output.iter().any(|sample| sample.abs() > 1.0e-5));
+        let metrics = crate::audio::condition_output(&mut output).unwrap();
+        assert_eq!(metrics.frames, output.len());
+        assert_eq!(metrics.non_finite_samples, 0);
+        assert!(metrics.rms > 0.01);
+        assert!(metrics.peak <= 0.92 + 1.0e-6);
+    }
+
+    fn assert_samples_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len());
+        let maximum_error = actual
+            .iter()
+            .zip(expected)
+            .map(|(&actual, &expected)| (actual - expected).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum_error <= tolerance,
+            "maximum sample error {maximum_error} exceeds {tolerance}"
+        );
+    }
+
+    fn assert_single_impulse(samples: &[f32], index: usize, amplitude: f32, tolerance: f32) {
+        let mut expected = vec![0.0; samples.len()];
+        expected[index] = amplitude;
+        assert_samples_close(samples, &expected, tolerance);
     }
 
     #[test]

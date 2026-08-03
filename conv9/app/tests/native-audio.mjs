@@ -261,7 +261,7 @@ try {
   assert.equal(initial.sourceBCount, 160);
   assert.equal(initial.sourceA, "gamelan_court");
   assert.equal(initial.sourceB, "political_speech");
-  assert.equal(initial.methodCount, 8);
+  assert.equal(initial.methodCount, 9);
   assert.equal(initial.methodHeaderCount, 0);
   assert.equal(initial.appHeaderCaptionCount, 0);
   assert.equal(initial.repeatedDetailCount, 0);

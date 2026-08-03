@@ -153,7 +153,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 14,
+            schema_version: 15,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,
@@ -601,58 +601,95 @@ fn parameter_catalog(algorithm: Algorithm) -> Vec<ParameterCatalogEntry> {
                               1 favors the convolution tail before equal-power overlap.",
             },
         ],
-        Algorithm::FullConvolution => vec![
-            ParameterCatalogEntry {
-                id: "full_a_offset_seconds",
-                label: "A offset",
-                minimum: 0.0,
-                maximum: INPUT_SECONDS as f32 - 0.1,
-                step: 0.1,
-                default: defaults.full_a_offset_seconds,
-                unit: "s",
-                description: "Sets where the selected segment begins in clip A. The segment is \
-                              convolved from this exact source time; changing the offset never pads \
-                              or wraps the source and may shorten the current duration to fit.",
-            },
-            ParameterCatalogEntry {
-                id: "full_a_duration_seconds",
-                label: "A duration",
-                minimum: 0.1,
-                maximum: INPUT_SECONDS as f32,
-                step: 0.1,
-                default: defaults.full_a_duration_seconds,
-                unit: "s",
-                description: "Sets the duration of clip A's selected segment. It defaults to the \
-                              complete 61-second source and is automatically kept within the clip \
-                              after the selected A offset.",
-            },
-            ParameterCatalogEntry {
-                id: "full_b_offset_seconds",
-                label: "B offset",
-                minimum: 0.0,
-                maximum: INPUT_SECONDS as f32 - 0.1,
-                step: 0.1,
-                default: defaults.full_b_offset_seconds,
-                unit: "s",
-                description: "Sets where the selected segment begins in clip B. The segment is \
-                              convolved from this exact source time; changing the offset never pads \
-                              or wraps the source and may shorten the current duration to fit.",
-            },
-            ParameterCatalogEntry {
-                id: "full_b_duration_seconds",
-                label: "B duration",
-                minimum: 0.1,
-                maximum: INPUT_SECONDS as f32,
-                step: 0.1,
-                default: defaults.full_b_duration_seconds,
-                unit: "s",
-                description: "Sets the duration of clip B's selected segment. It defaults to the \
-                              complete 61-second source and is automatically kept within the clip \
-                              after the selected B offset.",
-            },
-        ],
+        Algorithm::FullConvolution => full_segment_parameters(defaults),
+        Algorithm::ComplexGeometricMorph => {
+            let mut parameters = full_segment_parameters(defaults);
+            parameters.extend([
+                ParameterCatalogEntry {
+                    id: "geometric_balance",
+                    label: "A/B balance",
+                    minimum: 0.0,
+                    maximum: 1.0,
+                    step: 0.01,
+                    default: defaults.geometric_balance,
+                    unit: "",
+                    description: "Sets the complex-geometric position between both selected \
+                                  spectra. 0 reconstructs A, 0.5 gives equal logarithmic magnitude \
+                                  and unwrapped-phase weight, and 1 reconstructs B when complex \
+                                  power is 1; this is never an additive crossfade.",
+                },
+                ParameterCatalogEntry {
+                    id: "geometric_power",
+                    label: "complex power",
+                    minimum: 0.25,
+                    maximum: 4.0,
+                    step: 0.01,
+                    default: defaults.geometric_power,
+                    unit: "",
+                    description: "Raises the complete complex morph to one shared power, scaling \
+                                  logarithmic magnitude and unwrapped phase together. 1 is a pure \
+                                  geometric morph; at equal balance, 2 is ordinary convolution, \
+                                  values below 2 are rooted products, and values through 4 square \
+                                  and intensify the complete complex product.",
+                },
+            ]);
+            parameters
+        }
         Algorithm::DryA | Algorithm::DryB => Vec::new(),
     }
+}
+
+fn full_segment_parameters(defaults: AlgorithmParameters) -> Vec<ParameterCatalogEntry> {
+    vec![
+        ParameterCatalogEntry {
+            id: "full_a_offset_seconds",
+            label: "A offset",
+            minimum: 0.0,
+            maximum: INPUT_SECONDS as f32 - 0.1,
+            step: 0.1,
+            default: defaults.full_a_offset_seconds,
+            unit: "s",
+            description: "Sets where the selected segment begins in clip A. The segment is \
+                          transformed from this exact source time; changing the offset never pads \
+                          or wraps the source and may shorten the current duration to fit.",
+        },
+        ParameterCatalogEntry {
+            id: "full_a_duration_seconds",
+            label: "A duration",
+            minimum: 0.1,
+            maximum: INPUT_SECONDS as f32,
+            step: 0.1,
+            default: defaults.full_a_duration_seconds,
+            unit: "s",
+            description: "Sets the duration of clip A's selected segment. It defaults to the \
+                          complete 61-second source and is automatically kept within the clip \
+                          after the selected A offset.",
+        },
+        ParameterCatalogEntry {
+            id: "full_b_offset_seconds",
+            label: "B offset",
+            minimum: 0.0,
+            maximum: INPUT_SECONDS as f32 - 0.1,
+            step: 0.1,
+            default: defaults.full_b_offset_seconds,
+            unit: "s",
+            description: "Sets where the selected segment begins in clip B. The segment is \
+                          transformed from this exact source time; changing the offset never pads \
+                          or wraps the source and may shorten the current duration to fit.",
+        },
+        ParameterCatalogEntry {
+            id: "full_b_duration_seconds",
+            label: "B duration",
+            minimum: 0.1,
+            maximum: INPUT_SECONDS as f32,
+            step: 0.1,
+            default: defaults.full_b_duration_seconds,
+            unit: "s",
+            description: "Sets the duration of clip B's selected segment. It defaults to the \
+                          complete 61-second source and is automatically kept within the clip \
+                          after the selected B offset.",
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -719,8 +756,16 @@ mod tests {
                         && window.scale == "soft_log"
                         && window.description.len() > 100
                 }));
-            } else if algorithm == Algorithm::FullConvolution {
-                assert_eq!(parameters.len(), 4);
+            } else if matches!(
+                algorithm,
+                Algorithm::FullConvolution | Algorithm::ComplexGeometricMorph
+            ) {
+                let expected_count = if algorithm == Algorithm::FullConvolution {
+                    4
+                } else {
+                    6
+                };
+                assert_eq!(parameters.len(), expected_count);
                 assert!(
                     parameters
                         .iter()

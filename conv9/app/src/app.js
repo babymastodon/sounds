@@ -550,7 +550,10 @@ function selectionSignature(request) {
     if (request.algorithm === "dry_a" || request.algorithm === "dry_b") {
       return `${request.leftId}__${request.rightId}/${request.algorithm}/source`;
     }
-    if (request.algorithm !== "full_convolution") {
+    if (
+      request.algorithm !== "full_convolution" &&
+      request.algorithm !== "complex_geometric_morph"
+    ) {
       const parameters = Object.entries(request.parameters)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([id, value]) => `${id}=${Number(value).toFixed(2)}`)
@@ -561,7 +564,12 @@ function selectionSignature(request) {
       `${request.parameters.full_a_duration_seconds.toFixed(2)}_` +
       `b${request.parameters.full_b_offset_seconds.toFixed(2)}+` +
       `${request.parameters.full_b_duration_seconds.toFixed(2)}`;
-    return `${request.leftId}__${request.rightId}/${request.algorithm}/${segments}`;
+    const geometric =
+      request.algorithm === "complex_geometric_morph"
+        ? `_balance${request.parameters.geometric_balance.toFixed(2)}` +
+          `_power${request.parameters.geometric_power.toFixed(2)}`
+        : "";
+    return `${request.leftId}__${request.rightId}/${request.algorithm}/${segments}${geometric}`;
   }
   const windows =
     `${request.windows.clip_a_seconds.toFixed(2)}x` +
@@ -1480,6 +1488,7 @@ function shortAlgorithm(value) {
     moving_impulse_response: "moving IR",
     chunk_crossfade: "chunks",
     full_convolution: "full",
+    complex_geometric_morph: "geom",
     dry_a: "dry a",
     dry_b: "dry b",
   }[value];

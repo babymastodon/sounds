@@ -1,5 +1,12 @@
 (() => {
-  const GROUPS = [
+  const SYNTHETIC_GROUPS = [
+    ["tones", "tones"],
+    ["noise", "noise"],
+    ["signals", "signals"],
+    ["resonance", "resonance"],
+  ];
+
+  const RECORDED_GROUPS = [
     ["music", "music"],
     ["voice", "voice"],
     ["nature", "nature"],
@@ -7,6 +14,19 @@
     ["motion", "motion"],
     ["machines", "machines"],
   ];
+
+  const GROUPS = [...RECORDED_GROUPS, ...SYNTHETIC_GROUPS];
+
+  const SYNTHETIC_GROUP_BY_DIRECTION = {
+    oscillator: "tones",
+    modulation: "tones",
+    noise: "noise",
+    mask: "noise",
+    impulse: "signals",
+    chirp: "signals",
+    resonator: "resonance",
+    phase: "resonance",
+  };
 
   const GROUP_PATTERNS = {
     music:
@@ -24,9 +44,15 @@
   };
 
   function groupFor(source) {
+    if (source.kind.startsWith("synthetic_")) {
+      const direction = source.kind.split("_", 2)[1];
+      const group = SYNTHETIC_GROUP_BY_DIRECTION[direction];
+      if (!group) throw new Error(`Unknown synthetic direction: ${direction}`);
+      return group;
+    }
     const text = `${source.category} ${source.kind}`;
     return (
-      GROUPS.find(([id]) => GROUP_PATTERNS[id].test(text))?.[0] ||
+      RECORDED_GROUPS.find(([id]) => GROUP_PATTERNS[id].test(text))?.[0] ||
       "places"
     );
   }

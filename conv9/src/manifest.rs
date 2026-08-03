@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-pub const SOURCE_COUNT: usize = 96;
+pub const SOURCE_COUNT: usize = 160;
 pub const SOURCE_SECONDS: f64 = 61.0;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -92,14 +92,21 @@ fn validate_entry(entry: &SourceEntry) -> Result<()> {
     if entry.license_url != expected_license_url {
         bail!("{} has a mismatched license URL", entry.id);
     }
-    for (name, value) in [
-        ("license", entry.license_url.as_str()),
-        ("source", entry.source_page.as_str()),
-        ("download", entry.download_url.as_str()),
-    ] {
-        if !value.starts_with("https://") {
-            bail!("{} has a non-HTTPS {name} URL", entry.id);
+    if !entry.license_url.starts_with("https://") {
+        bail!("{} has a non-HTTPS license URL", entry.id);
+    }
+    let generated = entry.download_url.starts_with("synthetic://");
+    if generated {
+        if !entry.source_page.starts_with("synthetic://") || entry.cache_source != "-" {
+            bail!("{} has an invalid synthetic source recipe", entry.id);
         }
+        if entry.trim_start != 0.0 {
+            bail!("{} must generate from a zero trim offset", entry.id);
+        }
+    } else if !entry.source_page.starts_with("https://")
+        || !entry.download_url.starts_with("https://")
+    {
+        bail!("{} has a non-HTTPS source or download URL", entry.id);
     }
     Ok(())
 }
@@ -125,6 +132,21 @@ mod tests {
                 .collect::<HashSet<_>>()
                 .len(),
             SOURCE_COUNT
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|source| source.download_url.starts_with("synthetic://"))
+                .count(),
+            crate::synthetic::SOURCE_IDS.len()
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|source| source.download_url.starts_with("synthetic://"))
+                .map(|source| source.id.as_str())
+                .collect::<HashSet<_>>(),
+            crate::synthetic::SOURCE_IDS.into_iter().collect()
         );
     }
 }

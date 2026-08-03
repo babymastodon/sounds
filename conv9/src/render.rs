@@ -153,7 +153,7 @@ impl OnDemandRenderer {
 
     pub fn catalog(&self) -> Catalog {
         Catalog {
-            schema_version: 11,
+            schema_version: 14,
             mode: "on_demand",
             sample_rate: SAMPLE_RATE,
             channels: 1,

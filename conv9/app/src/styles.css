@@ -246,7 +246,7 @@ select:focus-visible {
   top: 103px;
   z-index: 20;
   display: grid;
-  grid-template-rows: 38px 36px minmax(0, 1fr);
+  grid-template-rows: 38px 62px minmax(0, 1fr);
   gap: 7px;
   width: min(960px, calc(100vw - 40px));
   height: min(600px, calc(100vh - 116px));
@@ -310,7 +310,7 @@ select:focus-visible {
 
 .source-groups {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 3px;
 }
 

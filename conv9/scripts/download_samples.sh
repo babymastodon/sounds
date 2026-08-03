@@ -23,6 +23,23 @@ fi
 
 mkdir -p "$raw_dir" "$prepared_dir"
 
+synthetic_generator=
+synthetic_revision=
+if awk -F '\t' 'NR > 1 && $11 ~ /^synthetic:\/\// { found = 1 } END { exit !found }' "$manifest"; then
+    echo "build deterministic synthetic-source generator" >&2
+    cargo build --release --offline --manifest-path "$project_dir/Cargo.toml" \
+        --bin generate_synthetic
+    synthetic_generator="$project_dir/target/release/generate_synthetic"
+    synthetic_revision=$(
+        find "$project_dir/src/synthetic.rs" "$project_dir/src/synthetic" \
+            -type f -name '*.rs' -print0 |
+            sort -z |
+            xargs -0 sha256sum |
+            sha256sum |
+            awk '{ print $1 }'
+    )
+fi
+
 # Migrate prepared files made before per-source recipes were introduced. A completed
 # SOURCES.tsv is only copied after every source validates, so it is authoritative
 # for the WAVs beside it.
@@ -57,7 +74,13 @@ prepare_one() {
     local recipe_cache_source=$cache_source
     [[ "$recipe_cache_source" == "-" ]] && recipe_cache_source=
     local expected_raw_recipe="$download_url	$recipe_cache_source"
+    if [[ "$download_url" == synthetic://* ]]; then
+        expected_raw_recipe+="	$synthetic_revision"
+    fi
     local expected_recipe="$download_url	$trim_start	$seconds"
+    if [[ "$download_url" == synthetic://* ]]; then
+        expected_recipe+="	$synthetic_revision"
+    fi
     local expected_frames
     expected_frames=$(awk -v seconds="$seconds" 'BEGIN { printf "%.0f", seconds * 48000 }')
 
@@ -66,7 +89,10 @@ prepare_one() {
         actual_raw_recipe=$(<"$raw_recipe_path")
     fi
     if [[ ! -s "$raw_path" || "$actual_raw_recipe" != "$expected_raw_recipe" ]]; then
-        if [[ -n "$cache_source" && -s "$project_dir/$cache_source" ]]; then
+        if [[ "$download_url" == synthetic://* ]]; then
+            echo "generate $id" >&2
+            "$synthetic_generator" "$id" "$raw_path.part"
+        elif [[ -n "$cache_source" && -s "$project_dir/$cache_source" ]]; then
             echo "reuse cached source $id" >&2
             cp --reflink=auto "$project_dir/$cache_source" "$raw_path.part"
         else

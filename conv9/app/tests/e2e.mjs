@@ -254,8 +254,8 @@ try {
     `transport was not locked during visualization analysis: ${JSON.stringify(statusHistory)}`,
   );
 
-  assert.equal(await page.locator("#sourceASelect option").count(), 96, "clip A count");
-  assert.equal(await page.locator("#sourceBSelect option").count(), 96, "clip B count");
+  assert.equal(await page.locator("#sourceASelect option").count(), 160, "clip A count");
+  assert.equal(await page.locator("#sourceBSelect option").count(), 160, "clip B count");
   assert.equal(
     await page.evaluate(() => window.__CONV9_TEST_PREVIEW_REQUESTS__.length),
     0,
@@ -420,7 +420,7 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelectorAll("#source-a-dialog [role='option']").length === 1 &&
-      document.querySelector("#source-a-dialog .source-match-count")?.textContent === "1 / 96",
+      document.querySelector("#source-a-dialog .source-match-count")?.textContent === "1 / 160",
   );
   await page.waitForFunction(
     () =>
@@ -462,9 +462,22 @@ try {
   await sourceDialog.locator("[data-group='music']").click();
   const musicalMatches = await sourceDialog.locator("[role='option']").count();
   assert.ok(
-    musicalMatches > 10 && musicalMatches < 96,
+    musicalMatches > 10 && musicalMatches < 160,
     `music category should meaningfully filter the catalog: ${musicalMatches}`,
   );
+  assert.equal(
+    await sourceDialog.locator("[data-group='synthetic']").count(),
+    0,
+    "the synthetic umbrella is replaced by four focused categories",
+  );
+  for (const group of ["tones", "noise", "signals", "resonance"]) {
+    await sourceDialog.locator(`[data-group='${group}']`).click();
+    assert.equal(
+      await sourceDialog.locator("[role='option']").count(),
+      16,
+      `${group} contains its two eight-clip synthetic directions`,
+    );
+  }
   await assertNoViewportOverflow(page);
   await assertNoUndersizedText(page);
   if (process.env.CONV9_TEST_SCREENSHOT) {
@@ -1229,7 +1242,7 @@ async function testCatalog() {
     }[id],
   });
   return {
-    schema_version: 11,
+    schema_version: 14,
     mode: "on_demand",
     sample_rate: 48_000,
     channels: 1,

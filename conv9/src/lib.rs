@@ -4,6 +4,7 @@ mod latent_convbank;
 mod manifest;
 mod moving_ir;
 mod render;
+pub mod synthetic;
 
 pub use audio::AudioMetrics;
 pub use dsp::{
